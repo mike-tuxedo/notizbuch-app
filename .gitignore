@@ -1,0 +1,6 @@
+*.log
+*.pid
+node_modules/
+icons/
+iconified/
+iconified.zip

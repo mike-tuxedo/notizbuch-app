@@ -3,8 +3,20 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#2d3436">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Notizbuch">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="img/favicon.ico">
+  <link rel="apple-touch-icon" href="img/apple-touch-icon.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="img/apple-touch-icon-180x180.png">
+  <link rel="apple-touch-icon" sizes="152x152" href="img/apple-touch-icon-152x152.png">
+  <link rel="apple-touch-icon" sizes="144x144" href="img/apple-touch-icon-144x144.png">
   <title>Notizbuch App</title>
-  <script src="https://unpkg.com/petite-vue@0.4.1/dist/petite-vue.iife.js"></script>
+  <script src="libs/petite-vue.iife.js"></script>
+  <script src="libs/qrcode.min.js"></script>
   <style>
     * {
       margin: 0;
@@ -433,6 +445,163 @@
     .save-status.saved {
       color: #69db7c;
     }
+
+    /* P2P Sync-Indikator (kleines drehendes Icon in der Toolbar) */
+    .peer-sync-icon {
+      display: flex;
+      align-items: center;
+      color: rgba(255,255,255,0.2);
+      transition: color 0.4s;
+    }
+    .peer-sync-icon.active {
+      color: #4dabf7;
+    }
+    .peer-sync-icon.active svg {
+      animation: spin 0.9s linear infinite;
+    }
+
+    /* Sync overlay (waiting for P2P data) */
+    .sync-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(15,15,25,0.88);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 900;
+      backdrop-filter: blur(6px);
+    }
+
+    .sync-box {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 16px;
+      color: rgba(255,255,255,0.85);
+      font-size: 15px;
+    }
+
+    .sync-spinner {
+      width: 36px;
+      height: 36px;
+      border: 3px solid rgba(255,255,255,0.12);
+      border-top-color: #4dabf7;
+      border-radius: 50%;
+      animation: spin 0.75s linear infinite;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Share Modal */
+    .share-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.75);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+      backdrop-filter: blur(4px);
+    }
+
+    .share-modal {
+      background: #1e1e2e;
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 16px;
+      padding: 28px 24px 24px;
+      width: 360px;
+      max-width: 92vw;
+      box-shadow: 0 24px 64px rgba(0,0,0,0.6);
+    }
+
+    .share-modal h2 {
+      color: #fff;
+      font-size: 17px;
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+
+    .share-modal p {
+      color: rgba(255,255,255,0.5);
+      font-size: 13px;
+      margin-bottom: 20px;
+      line-height: 1.5;
+    }
+
+    .share-url-row {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 20px;
+    }
+
+    .share-url-input {
+      flex: 1;
+      background: rgba(255,255,255,0.07);
+      border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 8px;
+      color: rgba(255,255,255,0.9);
+      padding: 8px 12px;
+      font-size: 12px;
+      font-family: 'Courier New', monospace;
+      min-width: 0;
+    }
+
+    .share-copy-btn {
+      background: #4dabf7;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 8px 14px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background 0.15s;
+    }
+
+    .share-copy-btn:hover { background: #339af0; }
+    .share-copy-btn.copied { background: #69db7c; color: #1a1a2e; }
+
+    .share-qr-wrap {
+      display: flex;
+      justify-content: center;
+      margin-bottom: 20px;
+      background: #fff;
+      border-radius: 10px;
+      padding: 14px;
+    }
+
+    .share-close-btn {
+      width: 100%;
+      background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(255,255,255,0.1);
+      color: rgba(255,255,255,0.7);
+      padding: 10px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 14px;
+      transition: background 0.15s;
+    }
+
+    .share-close-btn:hover { background: rgba(255,255,255,0.14); }
+
+    /* Zen Mode */
+    .app.zen-mode .secondary-bar { display: none; }
+    .app.zen-mode .toolbar {
+      padding: 6px 12px;
+      background: rgba(0,0,0,0.15);
+      border-bottom: none;
+    }
+    .app.zen-mode .notebook-selector,
+    .app.zen-mode .edit-btn,
+    .app.zen-mode .save-status,
+    .app.zen-mode .peer-sync-icon,
+    .app.zen-mode .divider:not(.zen-keep) {
+      display: none;
+    }
+    .app.zen-mode .canvas-container {
+      border-radius: 0;
+    }
   </style>
 </head>
 <body>
@@ -485,6 +654,43 @@
         
         <!-- Save status -->
         <span class="save-status" :class="saveStatus">{{ saveStatusText }}</span>
+
+        <!-- P2P Sync-Indikator -->
+        <span class="peer-sync-icon" :class="{ active: syncing || peerSync }" title="P2P-Sync">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <path d="M23 4v6h-6"/><path d="M1 20v-6h6"/>
+            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+          </svg>
+        </span>
+
+        <!-- Share button -->
+        <button class="tool-btn" @click="openShare()" title="Teilen">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
+            <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/>
+            <line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+          </svg>
+        </button>
+      </div>
+
+      <!-- Zen + Fullscreen (rechts, getrennte Gruppe) -->
+      <div class="toolbar-group" style="margin-left: auto;">
+        <button class="tool-btn" :class="{ active: isFullscreen }" @click="toggleFullscreen()"
+                :title="isFullscreen ? 'Vollbild beenden' : 'Vollbild'">
+          <svg v-if="!isFullscreen" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>
+          </svg>
+          <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/>
+          </svg>
+        </button>
+        <button class="tool-btn" :class="{ active: zenMode }" @click="toggleZenMode()" title="Zen-Modus (ruhige Ansicht)">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"/>
+            <path d="M8 12a4 4 0 0 0 8 0"/>
+            <line x1="12" y1="8" x2="12" y2="8.01"/>
+          </svg>
+        </button>
       </div>
 
       <!-- Tools -->
@@ -571,51 +777,62 @@
         </canvas>
       </div>
     </div>
+
+    <!-- Sync overlay: shown while waiting for P2P data on a shared URL -->
+    <div class="sync-overlay" v-if="syncing">
+      <div class="sync-box">
+        <div class="sync-spinner"></div>
+        <span>Synchronisiere…</span>
+      </div>
+    </div>
+
+    <!-- Share Modal -->
+    <div class="share-overlay" v-if="showShareModal" @click.self="closeShare()">
+      <div class="share-modal">
+        <h2>Link teilen</h2>
+        <p>Wer diesen Link öffnet, kann in Echtzeit mitzeichnen. Kein Login nötig.</p>
+        <div class="share-url-row">
+          <input class="share-url-input" :value="shareUrl" readonly @click="$event.target.select()">
+          <button class="share-copy-btn" :class="{ copied: copySuccess }" @click="copyShareUrl()">
+            {{ copySuccess ? 'Kopiert ✓' : 'Kopieren' }}
+          </button>
+        </div>
+        <div class="share-qr-wrap">
+          <div id="share-qr-container"></div>
+        </div>
+        <button class="share-close-btn" @click="closeShare()">Schließen</button>
+      </div>
+    </div>
   </div>
 
   <script>
     const { createApp } = PetiteVue;
-    
-    // IndexedDB Helper
-    const DB_NAME = 'NotebookApp';
-    const DB_VERSION = 1;
-    const STORE_NAME = 'notebooks';
-    
-    function openDB() {
+
+    // GenosDB instance (initialized in init())
+    let db;
+    let localDB;
+    let dbInitialized = false;
+    let roomKey = '';
+
+    // IndexedDB für gerätespezifische Settings (nach roomKey isoliert)
+    function openLocalDB() {
       return new Promise((resolve, reject) => {
-        const request = indexedDB.open(DB_NAME, DB_VERSION);
-        
-        request.onerror = () => reject(request.error);
-        request.onsuccess = () => resolve(request.result);
-        
-        request.onupgradeneeded = (e) => {
-          const db = e.target.result;
-          if (!db.objectStoreNames.contains(STORE_NAME)) {
-            db.createObjectStore(STORE_NAME, { keyPath: 'id' });
-          }
-        };
+        const req = indexedDB.open('notes-app', 1);
+        req.onupgradeneeded = e => e.target.result.createObjectStore('settings');
+        req.onsuccess = e => resolve(e.target.result);
+        req.onerror = () => reject(req.error);
       });
     }
-    
-    async function saveToIndexedDB(data) {
-      const db = await openDB();
-      return new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE_NAME, 'readwrite');
-        const store = tx.objectStore(STORE_NAME);
-        store.put({ id: 'app-data', ...data });
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => reject(tx.error);
+    function idbGet(key) {
+      return new Promise(resolve => {
+        localDB.transaction('settings', 'readonly')
+          .objectStore('settings').get(key).onsuccess = e => resolve(e.target.result ?? null);
       });
     }
-    
-    async function loadFromIndexedDB() {
-      const db = await openDB();
-      return new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE_NAME, 'readonly');
-        const store = tx.objectStore(STORE_NAME);
-        const request = store.get('app-data');
-        request.onsuccess = () => resolve(request.result);
-        request.onerror = () => reject(request.error);
+    function idbPut(key, value) {
+      return new Promise(resolve => {
+        localDB.transaction('settings', 'readwrite')
+          .objectStore('settings').put(value, key).onsuccess = () => resolve();
       });
     }
 
@@ -750,6 +967,15 @@
       saveStatus: '',
       saveStatusText: '',
       saveTimeout: null,
+
+      showShareModal: false,
+      shareUrl: '',
+      copySuccess: false,
+      syncing: false,
+      peerSync: false,
+      _peerSyncTimer: null,
+      zenMode: false,
+      isFullscreen: false,
       
       // Computed-like getters
       get currentNotebook() {
@@ -782,39 +1008,176 @@
       
       // Methods
       async init() {
-        // Load from IndexedDB
-        try {
-          const data = await loadFromIndexedDB();
-          if (data && data.notebooks && data.notebooks.length > 0) {
-            this.notebooks = data.notebooks;
-            this.currentNotebookId = data.currentNotebookId || this.notebooks[0].id;
-            this.strokeId = data.strokeId || 0;
-            if (typeof data.palmRejection === 'boolean') {
-              this.palmRejection = data.palmRejection;
-            }
-            console.log('Daten aus IndexedDB geladen');
-          } else {
-            this.createDefaultNotebook();
-          }
-        } catch (e) {
-          console.log('Keine gespeicherten Daten gefunden, erstelle Standard-Notizbuch');
-          this.createDefaultNotebook();
+        // IndexedDB für gerätespezifische Settings öffnen
+        localDB = await openLocalDB();
+
+        // Room-Key aus URL-Hash lesen oder neu generieren.
+        // isSharedUrl = true  → Hash war schon in der URL (geteilter Link)
+        // isSharedUrl = false → wir haben den Hash gerade erzeugt (neue Session)
+        roomKey = window.location.hash.slice(1);
+        const isSharedUrl = !!roomKey;
+        if (!roomKey) {
+          roomKey = Array.from(crypto.getRandomValues(new Uint8Array(16)))
+            .map(b => b.toString(16).padStart(2, '0')).join('');
+          window.location.hash = roomKey;
         }
-        
+
+        // Gerätespezifische Settings aus IndexedDB laden (raumspezifisch geprefixxt)
+        const savedCurrentId    = await idbGet(roomKey + ':currentNotebookId');
+        const savedPalmRejection = await idbGet(roomKey + ':palmRejection');
+        if (typeof savedPalmRejection === 'boolean') this.palmRejection = savedPalmRejection;
+
+        // GenosDB laden und initialisieren (nur für Notizbuch-Inhalte, kein Settings-Sync)
+        const { gdb } = await import('./libs/genosdb.js');
+        db = await gdb(roomKey, { rtc: true });
+
+        // Gesammelte Notebooks während der Init-Phase
+        const notebooksMap = {};
+        const self = this;
+
+        // Debounce-Resolver: feuert 400ms nach dem letzten P2P-Event
+        let p2pSettled = false;
+        let p2pResolve = null;
+        let p2pDebounceTimer = null;
+        function triggerP2PDone() {
+          p2pSettled = true;
+          if (p2pResolve) p2pResolve();
+        }
+
+        const { unsubscribe } = db.map(function({ id, value, action }) {
+          // 'settings' komplett ignorieren – wird nicht mehr via P2P geteilt
+          if (id === 'settings') return;
+
+          if (!dbInitialized) {
+            // Init-Phase: lokale OPFS-Daten (initial) UND P2P-Daten (added/updated) sammeln
+            if (action === 'initial' || action === 'added' || action === 'updated') {
+              notebooksMap[id] = value;
+            }
+            // Nach P2P-Events: Debounce-Timer zurücksetzen
+            if (action === 'added' || action === 'updated') {
+              clearTimeout(p2pDebounceTimer);
+              p2pDebounceTimer = setTimeout(triggerP2PDone, 400);
+            }
+          } else {
+            // Nach der Init-Phase: reaktiv auf P2P-Updates reagieren
+            if (action === 'added' || action === 'updated') {
+              const idx = self.notebooks.findIndex(nb => String(nb.id) === String(id));
+              if (idx >= 0) {
+                self.notebooks[idx] = value;
+              } else {
+                self.notebooks.push(value);
+              }
+              if (String(id) === String(self.currentNotebookId)) {
+                self.drawBackground();
+                self.redrawStrokes();
+              }
+              // Sync-Indikator kurz aufleuchten lassen
+              self.peerSync = true;
+              clearTimeout(self._peerSyncTimer);
+              self._peerSyncTimer = setTimeout(() => { self.peerSync = false; }, 1500);
+            } else if (action === 'removed') {
+              self.notebooks = self.notebooks.filter(nb => String(nb.id) !== String(id));
+              if (String(id) === String(self.currentNotebookId) && self.notebooks.length > 0) {
+                self.currentNotebookId = self.notebooks[0].id;
+                self.drawBackground();
+                self.redrawStrokes();
+              }
+            }
+          }
+        });
+
+        // Phase 1: Auf lokale OPFS-Daten warten (schnell, <150ms)
+        await new Promise(resolve => setTimeout(resolve, 150));
+
+        // Phase 2: Bei geteilter URL ohne lokale Daten → auf P2P-Sync warten
+        if (isSharedUrl && Object.keys(notebooksMap).length === 0) {
+          this.syncing = true;
+          await Promise.race([
+            new Promise(resolve => {
+              p2pResolve = resolve;
+              if (p2pSettled) resolve(); // bereits aufgelöst bevor wir hier ankamen
+            }),
+            new Promise(resolve => setTimeout(resolve, 8000)) // max 8s warten
+          ]);
+          this.syncing = false;
+        }
+
+        // Notizbücher laden
+        const existingNotebooks = Object.values(notebooksMap);
+
+        if (existingNotebooks.length > 0) {
+          this.notebooks = existingNotebooks.sort((a, b) => String(a.id) < String(b.id) ? -1 : 1);
+          // Gerätespezifische Settings wiederherstellen
+          const validId = this.notebooks.find(nb => nb.id === savedCurrentId);
+          this.currentNotebookId = validId ? savedCurrentId : this.notebooks[0].id;
+          console.log('Daten aus GenosDB geladen');
+        } else {
+          // Wirklich neue Session (oder P2P-Timeout) → Standard anlegen
+          this.createDefaultNotebook();
+          await this._saveAll();
+        }
+
+        dbInitialized = true;
+
         this.setupCanvases();
         window.addEventListener('resize', () => this.setupCanvases());
-        
-        // Close menu on outside click
+
         document.addEventListener('click', (e) => {
           if (!e.target.closest('.notebook-selector')) {
             this.showNotebookMenu = false;
           }
         });
+
+        // Fullscreen-Zustand mit Browser synchronisieren (z.B. ESC-Taste)
+        document.addEventListener('fullscreenchange', () => {
+          this.isFullscreen = !!document.fullscreenElement;
+          if (!document.fullscreenElement && this.zenMode) {
+            this.zenMode = false;
+            setTimeout(() => this.setupCanvases(), 100);
+          }
+        });
+      },
+
+      toggleFullscreen() {
+        if (!document.fullscreenElement) {
+          document.documentElement.requestFullscreen().catch(() => {});
+        } else {
+          document.exitFullscreen().catch(() => {});
+        }
+      },
+
+      toggleZenMode() {
+        this.zenMode = !this.zenMode;
+        if (this.zenMode) {
+          if (!document.fullscreenElement) {
+            document.documentElement.requestFullscreen().catch(() => {});
+          }
+        } else {
+          if (document.fullscreenElement) {
+            document.exitFullscreen().catch(() => {});
+          }
+        }
+        setTimeout(() => this.setupCanvases(), 100);
+      },
+
+      // Notizbücher in GenosDB (P2P-Sync) + gerätespezifische Settings in IndexedDB speichern
+      async _saveAll() {
+        if (!db) return;
+        // Notizbuch-Inhalte via GenosDB (wird an alle Peers synchronisiert)
+        for (const notebook of this.notebooks) {
+          // JSON round-trip: reaktive Proxy-Objekte zu Plain Objects konvertieren
+          await db.put(JSON.parse(JSON.stringify(notebook)), String(notebook.id));
+        }
+        // Gerätespezifische Settings in IndexedDB (roomKey-Prefix = kein Cross-Room-Konflikt)
+        if (localDB) {
+          await idbPut(roomKey + ':currentNotebookId', this.currentNotebookId);
+          await idbPut(roomKey + ':palmRejection', this.palmRejection);
+        }
       },
       
       createDefaultNotebook() {
         this.notebooks = [{
-          id: Date.now(),
+          id: String(Date.now()),
           name: 'Mein Notizbuch',
           pages: [{ id: 1, strokes: [], background: 'grid' }],
           currentPage: 0
@@ -972,7 +1335,7 @@
       
       createNotebook() {
         const newNb = {
-          id: Date.now(),
+          id: String(Date.now()),
           name: 'Neues Notizbuch',
           pages: [{ id: 1, strokes: [], background: 'grid' }],
           currentPage: 0
@@ -986,9 +1349,10 @@
         }, 0);
         this.scheduleSave();
       },
-      
+
       deleteNotebook(id) {
         if (this.notebooks.length <= 1) return;
+        if (db) db.remove(String(id));
         this.notebooks = this.notebooks.filter(nb => nb.id !== id);
         if (this.currentNotebookId === id) {
           this.currentNotebookId = this.notebooks[0].id;
@@ -1000,6 +1364,29 @@
         this.scheduleSave();
       },
       
+      openShare() {
+        this.shareUrl = window.location.href;
+        this.copySuccess = false;
+        this.showShareModal = true;
+        setTimeout(() => {
+          const container = document.getElementById('share-qr-container');
+          if (container) {
+            container.innerHTML = '';
+            new QRCode(container, { text: this.shareUrl, width: 200, height: 200 });
+          }
+        }, 50);
+      },
+
+      closeShare() {
+        this.showShareModal = false;
+      },
+
+      async copyShareUrl() {
+        await navigator.clipboard.writeText(this.shareUrl);
+        this.copySuccess = true;
+        setTimeout(() => { this.copySuccess = false; }, 2500);
+      },
+
       startRename() {
         this.newName = this.currentNotebook?.name || '';
         this.editingName = true;
@@ -1019,27 +1406,21 @@
         this.scheduleSave();
       },
       
-      // Auto-save to IndexedDB
+      // Auto-save via GenosDB
       scheduleSave() {
         if (this.saveTimeout) {
           clearTimeout(this.saveTimeout);
         }
-        
+
         this.saveStatus = 'saving';
         this.saveStatusText = 'Speichern...';
-        
+
         this.saveTimeout = setTimeout(async () => {
           try {
-            await saveToIndexedDB({
-              notebooks: this.notebooks,
-              currentNotebookId: this.currentNotebookId,
-              strokeId: this.strokeId,
-              palmRejection: this.palmRejection,
-              savedAt: new Date().toISOString()
-            });
+            await this._saveAll();
             this.saveStatus = 'saved';
             this.saveStatusText = 'Gespeichert ✓';
-            
+
             setTimeout(() => {
               this.saveStatus = '';
               this.saveStatusText = '';
@@ -1210,7 +1591,7 @@
           if (this.tool === 'eraser') {
             // Radierer: Stroke als Eraser-Stroke speichern
             const newStroke = {
-              id: this.strokeId++,
+              id: Date.now(),
               points: [...this.currentPoints],
               color: '#000000',
               size: this.penSizes[this.penSizeIndex].size,
@@ -1220,7 +1601,7 @@
           } else {
             // Stift: normaler Stroke
             const newStroke = {
-              id: this.strokeId++,
+              id: Date.now(),
               points: [...this.currentPoints],
               color: this.color,
               size: this.penSizes[this.penSizeIndex].size,
@@ -1245,6 +1626,17 @@
         this.lastPoint = null;
       }
     }).mount('#app');
+  </script>
+
+  <script>
+    // Service Worker registrieren (PWA / Offline-Support)
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function () {
+        navigator.serviceWorker.register('./sw.js')
+          .then(reg => console.log('[SW] Registriert:', reg.scope))
+          .catch(err => console.warn('[SW] Registrierung fehlgeschlagen:', err));
+      });
+    }
   </script>
 </body>
 </html>

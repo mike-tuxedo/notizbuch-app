@@ -1,0 +1,22 @@
+{
+  "short_name": "Notizbuch",
+  "name": "Notizbuch App",
+  "description": "Digitales Notizbuch mit Stift-Unterstützung und P2P-Sync",
+  "theme_color": "#2d3436",
+  "background_color": "#2d3436",
+  "display": "fullscreen",
+  "orientation": "any",
+  "start_url": "./",
+  "scope": "./",
+  "icons": [
+    { "src": "img/favicon.ico",                  "sizes": "48x48",   "type": "image/x-icon" },
+    { "src": "img/apple-touch-icon-57x57.png",   "sizes": "57x57",   "type": "image/png" },
+    { "src": "img/apple-touch-icon-72x72.png",   "sizes": "72x72",   "type": "image/png" },
+    { "src": "img/apple-touch-icon-76x76.png",   "sizes": "76x76",   "type": "image/png" },
+    { "src": "img/apple-touch-icon-114x114.png", "sizes": "114x114", "type": "image/png" },
+    { "src": "img/apple-touch-icon-120x120.png", "sizes": "120x120", "type": "image/png" },
+    { "src": "img/apple-touch-icon-144x144.png", "sizes": "144x144", "type": "image/png", "purpose": "any maskable" },
+    { "src": "img/apple-touch-icon-152x152.png", "sizes": "152x152", "type": "image/png" },
+    { "src": "img/apple-touch-icon-180x180.png", "sizes": "180x180", "type": "image/png" }
+  ]
+}
