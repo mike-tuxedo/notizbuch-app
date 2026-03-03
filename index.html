@@ -1110,33 +1110,38 @@
       viewX: 0,
       viewY: 0,
 
+      // Seitenpositionen – LOKAL, nie in GenosDB, nie synchronisiert
+      // { [notebookId]: pageIndex }
+      currentPages: {},
+
       // Computed-like getters
       get currentNotebook() {
         return this.notebooks.find(n => n.id === this.currentNotebookId);
       },
-      
+
       get currentPage() {
-        return this.currentNotebook?.pages[this.currentNotebook.currentPage];
+        const idx = this.currentPages[this.currentNotebookId] ?? 0;
+        return this.currentNotebook?.pages[idx];
       },
-      
+
       get strokes() {
         return this.currentPage?.strokes || [];
       },
-      
+
       get currentBackground() {
         return this.currentPage?.background || 'grid';
       },
-      
+
       get currentPageIndex() {
-        return this.currentNotebook?.currentPage || 0;
+        return this.currentPages[this.currentNotebookId] ?? 0;
       },
-      
+
       get totalPages() {
         return this.currentNotebook?.pages.length || 1;
       },
-      
+
       get canGoPrev() {
-        return this.currentNotebook && this.currentNotebook.currentPage > 0;
+        return (this.currentPages[this.currentNotebookId] ?? 0) > 0;
       },
       
       // Methods
@@ -1196,15 +1201,12 @@
             if (action === 'added' || action === 'updated') {
               const idx = self.notebooks.findIndex(nb => String(nb.id) === String(id));
               if (idx >= 0) {
-                // Lokale Seitenposition erhalten – wird nicht via P2P synchronisiert
-                const localPage = self.notebooks[idx].currentPage ?? 0;
-                const merged = JSON.parse(JSON.stringify(value));
-                merged.currentPage = localPage;
-                self.notebooks[idx] = merged;
+                // Notebooks enthalten kein currentPage – direkt übernehmen
+                self.notebooks[idx] = JSON.parse(JSON.stringify(value));
               } else {
-                const nb = JSON.parse(JSON.stringify(value));
-                nb.currentPage = 0;
-                self.notebooks.push(nb);
+                self.notebooks.push(JSON.parse(JSON.stringify(value)));
+                // Neue Notebooks starten auf Seite 0 (lokal)
+                if (!(String(id) in self.currentPages)) self.currentPages[String(id)] = 0;
               }
               if (String(id) === String(self.currentNotebookId)) {
                 self.drawBackground();
@@ -1254,10 +1256,10 @@
           // Gerätespezifische Settings wiederherstellen
           const validId = this.notebooks.find(nb => nb.id === savedCurrentId);
           this.currentNotebookId = validId ? savedCurrentId : this.notebooks[0].id;
-          // Seitenpositionen aus IndexedDB wiederherstellen (nicht via P2P synchronisiert)
+          // Seitenpositionen aus IndexedDB wiederherstellen (nie synchronisiert)
           const pagePositions = await idbGet(roomKey + ':pagePositions') || {};
           for (const nb of this.notebooks) {
-            nb.currentPage = pagePositions[String(nb.id)] ?? (nb.currentPage ?? 0);
+            this.currentPages[String(nb.id)] = pagePositions[String(nb.id)] ?? 0;
           }
           console.log('Daten aus GenosDB geladen');
         } else {
@@ -1322,11 +1324,7 @@
         if (!localDB) return;
         await idbPut(roomKey + ':currentNotebookId', this.currentNotebookId);
         await idbPut(roomKey + ':palmRejection', this.palmRejection);
-        const positions = {};
-        for (const nb of this.notebooks) {
-          positions[String(nb.id)] = nb.currentPage ?? 0;
-        }
-        await idbPut(roomKey + ':pagePositions', positions);
+        await idbPut(roomKey + ':pagePositions', { ...this.currentPages });
       },
 
       // Notizbuch-Inhalte via GenosDB (P2P-Sync) + lokale Settings in IndexedDB speichern
@@ -1334,22 +1332,21 @@
         if (!db) return;
         for (const notebook of this.notebooks) {
           // JSON round-trip: reaktive Proxy-Objekte zu Plain Objects konvertieren
-          // currentPage wird NICHT synchronisiert – nur lokal in IndexedDB gespeichert
-          const copy = JSON.parse(JSON.stringify(notebook));
-          delete copy.currentPage;
-          await db.put(copy, String(notebook.id));
+          // Notebooks enthalten KEIN currentPage mehr – keine Gefahr der Synchronisierung
+          await db.put(JSON.parse(JSON.stringify(notebook)), String(notebook.id));
         }
         await this._saveLocalSettings();
       },
       
       createDefaultNotebook() {
+        const id = String(Date.now());
         this.notebooks = [{
-          id: String(Date.now()),
+          id,
           name: 'Mein Notizbuch',
-          pages: [{ id: 1, strokes: [], background: 'grid' }],
-          currentPage: 0
+          pages: [{ id: 1, strokes: [], background: 'grid' }]
         }];
-        this.currentNotebookId = this.notebooks[0].id;
+        this.currentNotebookId = id;
+        this.currentPages[id] = 0;
       },
       
       setupCanvases() {
@@ -1435,8 +1432,8 @@
       },
       
       setBackground(bg) {
-        if (!this.currentNotebook) return;
-        this.currentNotebook.pages[this.currentNotebook.currentPage].background = bg;
+        if (!this.currentPage) return;
+        this.currentPage.background = bg;
         this.drawBackground();
         this.scheduleSave();
       },
@@ -1448,24 +1445,28 @@
         this.isFlipping = true;
         this.flipClass = 'flip-out-next';
 
-        const isNewPage = (this.currentNotebook.currentPage + 1) >= this.currentNotebook.pages.length;
+        const nbId = this.currentNotebookId;
+        const curIdx = this.currentPages[nbId] ?? 0;
+        const isNewPage = (curIdx + 1) >= this.currentNotebook.pages.length;
+        const bgForNewPage = this.currentBackground;
 
         setTimeout(() => {
-          const nextIndex = this.currentNotebook.currentPage + 1;
+          const nextIndex = curIdx + 1;
           if (nextIndex >= this.currentNotebook.pages.length) {
             this.currentNotebook.pages.push({
               id: Date.now(),
               strokes: [],
-              background: this.currentBackground
+              background: bgForNewPage
             });
           }
-          this.currentNotebook.currentPage = nextIndex;
+          this.currentPages[nbId] = nextIndex;
           this.drawBackground();
           this.redrawStrokes();
 
           this.flipClass = '';
           this.isFlipping = false;
-          // Neue Seite → Peers informieren; nur Navigation → lokal speichern
+          // Neue Seite → Peers informieren (neue leere Seite existiert jetzt)
+          // Nur Navigation → lokal speichern
           if (isNewPage) {
             this.scheduleSave();
           } else {
@@ -1473,47 +1474,47 @@
           }
         }, 400);
       },
-      
+
       prevPage() {
         if (!this.canGoPrev || this.isFlipping) return;
-        
+
         this.isFlipping = true;
-        
-        // Wechsle sofort zur vorherigen Seite
-        this.currentNotebook.currentPage--;
+
+        const nbId = this.currentNotebookId;
+        this.currentPages[nbId] = (this.currentPages[nbId] ?? 0) - 1;
         this.drawBackground();
         this.redrawStrokes();
-        
-        // Animiere die Seite herein
+
         this.flipClass = 'flip-in-prev';
-        
+
         setTimeout(() => {
           this.flipClass = '';
           this.isFlipping = false;
-          this._saveLocalSettings(); // nur Navigation → nicht an Peers senden
+          this._saveLocalSettings();
         }, 400);
       },
 
       // Notebook management
       selectNotebook(id) {
         this.currentNotebookId = id;
+        if (!(id in this.currentPages)) this.currentPages[id] = 0;
         this.showNotebookMenu = false;
         setTimeout(() => {
           this.drawBackground();
           this.redrawStrokes();
         }, 0);
-        this._saveLocalSettings(); // nur Navigation → nicht an Peers senden
+        this._saveLocalSettings();
       },
       
       createNotebook() {
         const newNb = {
           id: String(Date.now()),
           name: 'Neues Notizbuch',
-          pages: [{ id: 1, strokes: [], background: 'grid' }],
-          currentPage: 0
+          pages: [{ id: 1, strokes: [], background: 'grid' }]
         };
         this.notebooks.push(newNb);
         this.currentNotebookId = newNb.id;
+        this.currentPages[newNb.id] = 0;
         this.showNotebookMenu = false;
         setTimeout(() => {
           this.drawBackground();
@@ -1526,8 +1527,12 @@
         if (this.notebooks.length <= 1) return;
         if (db) db.remove(String(id));
         this.notebooks = this.notebooks.filter(nb => nb.id !== id);
+        delete this.currentPages[id];
         if (this.currentNotebookId === id) {
           this.currentNotebookId = this.notebooks[0].id;
+          if (!(this.currentNotebookId in this.currentPages)) {
+            this.currentPages[this.currentNotebookId] = 0;
+          }
           setTimeout(() => {
             this.drawBackground();
             this.redrawStrokes();
