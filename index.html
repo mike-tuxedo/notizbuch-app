@@ -602,6 +602,35 @@
     .app.zen-mode .canvas-container {
       border-radius: 0;
     }
+
+    /* Pinch-Zoom Wrapper */
+    .canvas-zoom-wrapper {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      transform-origin: 0 0;
+      transform-style: preserve-3d;
+    }
+
+    /* Zoom-Reset Button (erscheint nur wenn gezoomt) */
+    .zoom-reset-btn {
+      position: absolute;
+      bottom: 12px;
+      right: 12px;
+      z-index: 10;
+      background: rgba(0,0,0,0.55);
+      color: rgba(255,255,255,0.85);
+      border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 6px;
+      padding: 4px 10px;
+      font-size: 11px;
+      cursor: pointer;
+      backdrop-filter: blur(4px);
+      transition: background 0.15s;
+    }
+    .zoom-reset-btn:hover { background: rgba(0,0,0,0.75); }
   </style>
 </head>
 <body>
@@ -764,18 +793,24 @@
 
     <!-- Canvas -->
     <div class="canvas-container" ref="container">
-      <div class="canvas-wrapper" :class="flipClass">
-        <canvas id="bgCanvas" ref="bgCanvas"></canvas>
-        <canvas id="staticCanvas" ref="staticCanvas"></canvas>
-        <canvas id="activeCanvas" ref="activeCanvas" 
-                :class="{ eraser: tool === 'eraser' }"
-                @pointerdown="startDrawing"
-                @pointermove="draw"
-                @pointerup="stopDrawing"
-                @pointerleave="stopDrawing"
-                @pointercancel="stopDrawing">
-        </canvas>
+      <div class="canvas-zoom-wrapper" :style="{ transform: `translate(${viewX}px,${viewY}px) scale(${viewScale})` }">
+        <div class="canvas-wrapper" :class="flipClass">
+          <canvas id="bgCanvas" ref="bgCanvas"></canvas>
+          <canvas id="staticCanvas" ref="staticCanvas"></canvas>
+          <canvas id="activeCanvas" ref="activeCanvas"
+                  :class="{ eraser: tool === 'eraser' }"
+                  @pointerdown="startDrawing"
+                  @pointermove="draw"
+                  @pointerup="stopDrawing"
+                  @pointerleave="stopDrawing"
+                  @pointercancel="stopDrawing">
+          </canvas>
+        </div>
       </div>
+      <button v-if="viewScale !== 1 || viewX !== 0 || viewY !== 0" class="zoom-reset-btn"
+              @click="viewScale = 1; viewX = 0; viewY = 0">
+        {{ Math.round(viewScale * 100) }}% ✕
+      </button>
     </div>
 
     <!-- Sync overlay: shown while waiting for P2P data on a shared URL -->
@@ -813,6 +848,13 @@
     let localDB;
     let dbInitialized = false;
     let roomKey = '';
+
+    // Pinch-Zoom-State (außerhalb PetiteVue für high-frequency updates)
+    const pinchState = {
+      touches: {}, active: false,
+      startViewX: 0, startViewY: 0, startScale: 1,
+      startMidX: 0, startMidY: 0, startDist: 1
+    };
 
     // IndexedDB für gerätespezifische Settings (nach roomKey isoliert)
     function openLocalDB() {
@@ -976,7 +1018,10 @@
       _peerSyncTimer: null,
       zenMode: false,
       isFullscreen: false,
-      
+      viewScale: 1,
+      viewX: 0,
+      viewY: 0,
+
       // Computed-like getters
       get currentNotebook() {
         return this.notebooks.find(n => n.id === this.currentNotebookId);
@@ -1063,9 +1108,15 @@
             if (action === 'added' || action === 'updated') {
               const idx = self.notebooks.findIndex(nb => String(nb.id) === String(id));
               if (idx >= 0) {
-                self.notebooks[idx] = value;
+                // Lokale Seitenposition erhalten – wird nicht via P2P synchronisiert
+                const localPage = self.notebooks[idx].currentPage ?? 0;
+                const merged = JSON.parse(JSON.stringify(value));
+                merged.currentPage = localPage;
+                self.notebooks[idx] = merged;
               } else {
-                self.notebooks.push(value);
+                const nb = JSON.parse(JSON.stringify(value));
+                nb.currentPage = 0;
+                self.notebooks.push(nb);
               }
               if (String(id) === String(self.currentNotebookId)) {
                 self.drawBackground();
@@ -1110,6 +1161,11 @@
           // Gerätespezifische Settings wiederherstellen
           const validId = this.notebooks.find(nb => nb.id === savedCurrentId);
           this.currentNotebookId = validId ? savedCurrentId : this.notebooks[0].id;
+          // Seitenpositionen aus IndexedDB wiederherstellen (nicht via P2P synchronisiert)
+          const pagePositions = await idbGet(roomKey + ':pagePositions') || {};
+          for (const nb of this.notebooks) {
+            nb.currentPage = pagePositions[String(nb.id)] ?? (nb.currentPage ?? 0);
+          }
           console.log('Daten aus GenosDB geladen');
         } else {
           // Wirklich neue Session (oder P2P-Timeout) → Standard anlegen
@@ -1136,6 +1192,14 @@
             setTimeout(() => this.setupCanvases(), 100);
           }
         });
+
+        // Tab-Fokus: Canvases neu zeichnen wenn Tab aktiv wird
+        document.addEventListener('visibilitychange', () => {
+          if (!document.hidden) {
+            this.drawBackground();
+            this.redrawStrokes();
+          }
+        });
       },
 
       toggleFullscreen() {
@@ -1160,19 +1224,29 @@
         setTimeout(() => this.setupCanvases(), 100);
       },
 
-      // Notizbücher in GenosDB (P2P-Sync) + gerätespezifische Settings in IndexedDB speichern
+      // Nur gerätespezifische Einstellungen (Navigation) in IndexedDB speichern – kein P2P-Sync
+      async _saveLocalSettings() {
+        if (!localDB) return;
+        await idbPut(roomKey + ':currentNotebookId', this.currentNotebookId);
+        await idbPut(roomKey + ':palmRejection', this.palmRejection);
+        const positions = {};
+        for (const nb of this.notebooks) {
+          positions[String(nb.id)] = nb.currentPage ?? 0;
+        }
+        await idbPut(roomKey + ':pagePositions', positions);
+      },
+
+      // Notizbuch-Inhalte via GenosDB (P2P-Sync) + lokale Settings in IndexedDB speichern
       async _saveAll() {
         if (!db) return;
-        // Notizbuch-Inhalte via GenosDB (wird an alle Peers synchronisiert)
         for (const notebook of this.notebooks) {
           // JSON round-trip: reaktive Proxy-Objekte zu Plain Objects konvertieren
-          await db.put(JSON.parse(JSON.stringify(notebook)), String(notebook.id));
+          // currentPage wird NICHT synchronisiert – nur lokal in IndexedDB gespeichert
+          const copy = JSON.parse(JSON.stringify(notebook));
+          delete copy.currentPage;
+          await db.put(copy, String(notebook.id));
         }
-        // Gerätespezifische Settings in IndexedDB (roomKey-Prefix = kein Cross-Room-Konflikt)
-        if (localDB) {
-          await idbPut(roomKey + ':currentNotebookId', this.currentNotebookId);
-          await idbPut(roomKey + ':palmRejection', this.palmRejection);
-        }
+        await this._saveLocalSettings();
       },
       
       createDefaultNotebook() {
@@ -1277,28 +1351,33 @@
       // Page navigation
       nextPage() {
         if (!this.currentNotebook || this.isFlipping) return;
-        
+
         this.isFlipping = true;
         this.flipClass = 'flip-out-next';
-        
+
+        const isNewPage = (this.currentNotebook.currentPage + 1) >= this.currentNotebook.pages.length;
+
         setTimeout(() => {
-          // Wechsle zur nächsten Seite
           const nextIndex = this.currentNotebook.currentPage + 1;
           if (nextIndex >= this.currentNotebook.pages.length) {
-            this.currentNotebook.pages.push({ 
-              id: Date.now(), 
-              strokes: [], 
-              background: this.currentBackground 
+            this.currentNotebook.pages.push({
+              id: Date.now(),
+              strokes: [],
+              background: this.currentBackground
             });
           }
           this.currentNotebook.currentPage = nextIndex;
           this.drawBackground();
           this.redrawStrokes();
-          
-          // Neue Seite ist sofort da (keine Animation)
+
           this.flipClass = '';
           this.isFlipping = false;
-          this.scheduleSave();
+          // Neue Seite → Peers informieren; nur Navigation → lokal speichern
+          if (isNewPage) {
+            this.scheduleSave();
+          } else {
+            this._saveLocalSettings();
+          }
         }, 400);
       },
       
@@ -1318,10 +1397,10 @@
         setTimeout(() => {
           this.flipClass = '';
           this.isFlipping = false;
-          this.scheduleSave();
+          this._saveLocalSettings(); // nur Navigation → nicht an Peers senden
         }, 400);
       },
-      
+
       // Notebook management
       selectNotebook(id) {
         this.currentNotebookId = id;
@@ -1330,7 +1409,7 @@
           this.drawBackground();
           this.redrawStrokes();
         }, 0);
-        this.scheduleSave();
+        this._saveLocalSettings(); // nur Navigation → nicht an Peers senden
       },
       
       createNotebook() {
@@ -1437,7 +1516,12 @@
       getPos(e) {
         const canvas = this.$refs.activeCanvas;
         const rect = canvas.getBoundingClientRect();
-        return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+        // getBoundingClientRect berücksichtigt CSS-Transform des Elternelements,
+        // daher durch viewScale teilen um Canvas-Koordinaten zu erhalten
+        return {
+          x: (e.clientX - rect.left) / this.viewScale,
+          y: (e.clientY - rect.top) / this.viewScale
+        };
       },
       
       isPalmOrFinger(e) {
@@ -1474,12 +1558,43 @@
       
       startDrawing(e) {
         e.preventDefault();
-        
+
+        // Pinch-Zoom: Touch-Pointer tracken (vor Palm-Rejection-Check)
+        if (e.pointerType === 'touch') {
+          pinchState.touches[e.pointerId] = { x: e.clientX, y: e.clientY };
+          const touchIds = Object.keys(pinchState.touches);
+          if (touchIds.length >= 2) {
+            const t1 = pinchState.touches[touchIds[0]];
+            const t2 = pinchState.touches[touchIds[1]];
+            pinchState.active = true;
+            pinchState.startScale = this.viewScale;
+            pinchState.startViewX = this.viewX;
+            pinchState.startViewY = this.viewY;
+            pinchState.startMidX = (t1.x + t2.x) / 2;
+            pinchState.startMidY = (t1.y + t2.y) / 2;
+            pinchState.startDist = Math.hypot(t2.x - t1.x, t2.y - t1.y) || 1;
+            // Aktives Zeichnen abbrechen
+            if (this.isDrawing) {
+              this.isDrawing = false;
+              this.activePointerId = null;
+              this.activePointerType = null;
+              this.currentPoints = [];
+              const ac = this.$refs.activeCanvas;
+              if (ac) {
+                const ctx = ac.getContext('2d');
+                const dpr = window.devicePixelRatio || 1;
+                ctx.clearRect(0, 0, ac.width / dpr, ac.height / dpr);
+              }
+            }
+            return;
+          }
+        }
+
         // Palm Rejection
         if (this.isPalmOrFinger(e)) {
           return;
         }
-        
+
         // Wenn bereits gezeichnet wird, ignoriere neue Pointer
         if (this.isDrawing) return;
         
@@ -1499,8 +1614,39 @@
       
       draw(e) {
         e.preventDefault();
+
+        // Pinch-Zoom: laufend aktualisieren
+        if (e.pointerType === 'touch' && e.pointerId in pinchState.touches) {
+          pinchState.touches[e.pointerId] = { x: e.clientX, y: e.clientY };
+          if (pinchState.active) {
+            const touchIds = Object.keys(pinchState.touches);
+            if (touchIds.length >= 2) {
+              const t1 = pinchState.touches[touchIds[0]];
+              const t2 = pinchState.touches[touchIds[1]];
+              const curDist = Math.hypot(t2.x - t1.x, t2.y - t1.y) || 1;
+              const curMidX = (t1.x + t2.x) / 2;
+              const curMidY = (t1.y + t2.y) / 2;
+              const newScale = Math.min(8, Math.max(0.2, pinchState.startScale * curDist / pinchState.startDist));
+
+              // Canvaspunkt unter Start-Mittelpunkt fixiert halten
+              const cr = this.$refs.container.getBoundingClientRect();
+              const midX0 = pinchState.startMidX - cr.left;
+              const midY0 = pinchState.startMidY - cr.top;
+              const canvasX = (midX0 - pinchState.startViewX) / pinchState.startScale;
+              const canvasY = (midY0 - pinchState.startViewY) / pinchState.startScale;
+              const panDX = curMidX - pinchState.startMidX;
+              const panDY = curMidY - pinchState.startMidY;
+
+              this.viewX = midX0 - canvasX * newScale + panDX;
+              this.viewY = midY0 - canvasY * newScale + panDY;
+              this.viewScale = newScale;
+            }
+            return;
+          }
+        }
+
         if (!this.isDrawing) return;
-        
+
         // Nur akzeptieren wenn es der gleiche Pointer ist
         if (e.pointerId !== this.activePointerId) return;
         
@@ -1578,8 +1724,17 @@
       },
       
       stopDrawing(e) {
+        // Pinch-Zoom: Pointer aus Tracking entfernen
+        if (e && e.pointerType === 'touch') {
+          delete pinchState.touches[e.pointerId];
+          if (Object.keys(pinchState.touches).length < 2) {
+            pinchState.active = false;
+          }
+          if (pinchState.active) return; // noch zwei Finger aktiv
+        }
+
         if (!this.isDrawing) return;
-        
+
         // Nur stoppen wenn es der aktive Pointer ist
         if (e && e.pointerId !== this.activePointerId) return;
         
