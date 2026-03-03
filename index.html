@@ -603,6 +603,70 @@
       border-radius: 0;
     }
 
+    /* WebRTC-Warnung */
+    .webrtc-warning {
+      background: rgba(255, 190, 0, 0.12);
+      border-bottom: 1px solid rgba(255, 190, 0, 0.25);
+      padding: 10px 16px;
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      animation: slideDown 0.3s ease;
+    }
+    @keyframes slideDown {
+      from { opacity: 0; transform: translateY(-8px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .webrtc-warning-icon {
+      color: #ffd43b;
+      flex-shrink: 0;
+      margin-top: 1px;
+    }
+    .webrtc-warning-body {
+      flex: 1;
+      min-width: 0;
+    }
+    .webrtc-warning-title {
+      color: #ffd43b;
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+    .webrtc-warning-text {
+      color: rgba(255,255,255,0.7);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    .webrtc-warning-steps {
+      margin: 6px 0 0 0;
+      padding-left: 16px;
+      color: rgba(255,255,255,0.65);
+      font-size: 12px;
+      line-height: 1.7;
+    }
+    .webrtc-warning-steps code {
+      background: rgba(255,255,255,0.1);
+      border-radius: 3px;
+      padding: 1px 5px;
+      font-family: 'Courier New', monospace;
+      font-size: 11px;
+      color: rgba(255,255,255,0.9);
+    }
+    .webrtc-warning-dismiss {
+      background: none;
+      border: 1px solid rgba(255,190,0,0.35);
+      color: rgba(255,190,0,0.8);
+      border-radius: 6px;
+      padding: 4px 10px;
+      font-size: 11px;
+      cursor: pointer;
+      white-space: nowrap;
+      flex-shrink: 0;
+      align-self: center;
+      transition: background 0.15s;
+    }
+    .webrtc-warning-dismiss:hover { background: rgba(255,190,0,0.1); }
+
     /* Pinch-Zoom Wrapper */
     .canvas-zoom-wrapper {
       position: absolute;
@@ -789,6 +853,29 @@
         <span class="page-info">Seite {{ currentPageIndex + 1 }} / {{ totalPages }}</span>
         <button class="page-btn primary" :disabled="isFlipping" @click="nextPage()">Weiter →</button>
       </div>
+    </div>
+
+    <!-- WebRTC-Warnung (erscheint nach Sync-Timeout auf geteiltem Link) -->
+    <div class="webrtc-warning" v-if="webrtcWarning">
+      <span class="webrtc-warning-icon">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+          <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+        </svg>
+      </span>
+      <div class="webrtc-warning-body">
+        <div class="webrtc-warning-title">Sync nicht möglich – WebRTC blockiert?</div>
+        <div class="webrtc-warning-text">
+          Kein Peer hat sich innerhalb von 8 Sekunden verbunden. Das passiert häufig auf Android mit Chromium oder Vivaldi.
+        </div>
+        <ol class="webrtc-warning-steps">
+          <li>Browser-Adresszeile: <code>chrome://flags</code> bzw. <code>vivaldi://flags</code> öffnen</li>
+          <li>Suche: <code>WebRTC IP Handling Policy</code></li>
+          <li>Wert auf <code>Default</code> setzen (nicht „Disable non-proxied UDP")</li>
+          <li>Browser neu starten und Link erneut öffnen</li>
+        </ol>
+      </div>
+      <button class="webrtc-warning-dismiss" @click="webrtcWarning = false">Schließen</button>
     </div>
 
     <!-- Canvas -->
@@ -1018,6 +1105,7 @@
       _peerSyncTimer: null,
       zenMode: false,
       isFullscreen: false,
+      webrtcWarning: false,
       viewScale: 1,
       viewX: 0,
       viewY: 0,
@@ -1143,14 +1231,19 @@
         // Phase 2: Bei geteilter URL ohne lokale Daten → auf P2P-Sync warten
         if (isSharedUrl && Object.keys(notebooksMap).length === 0) {
           this.syncing = true;
+          let syncTimedOut = false;
           await Promise.race([
             new Promise(resolve => {
               p2pResolve = resolve;
               if (p2pSettled) resolve(); // bereits aufgelöst bevor wir hier ankamen
             }),
-            new Promise(resolve => setTimeout(resolve, 8000)) // max 8s warten
+            new Promise(resolve => setTimeout(() => { syncTimedOut = true; resolve(); }, 8000))
           ]);
           this.syncing = false;
+          // Wenn Timeout UND noch immer keine Daten → WebRTC wahrscheinlich blockiert
+          if (syncTimedOut && Object.keys(notebooksMap).length === 0) {
+            this.webrtcWarning = true;
+          }
         }
 
         // Notizbücher laden
