@@ -864,15 +864,15 @@
         </svg>
       </span>
       <div class="webrtc-warning-body">
-        <div class="webrtc-warning-title">Sync nicht möglich – WebRTC blockiert?</div>
+        <div class="webrtc-warning-title">WebRTC / UDP ist in diesem Browser blockiert</div>
         <div class="webrtc-warning-text">
-          Kein Peer hat sich innerhalb von 8 Sekunden verbunden. Das passiert häufig auf Android mit Chromium oder Vivaldi.
+          Echtzeit-Sync funktioniert nicht. Ursache: UDP-Verbindungen werden durch Browser-Einstellungen verhindert. Häufig bei Chromium und Vivaldi auf Android.
         </div>
         <ol class="webrtc-warning-steps">
-          <li>Browser-Adresszeile: <code>chrome://flags</code> bzw. <code>vivaldi://flags</code> öffnen</li>
-          <li>Suche: <code>WebRTC IP Handling Policy</code></li>
+          <li>Adresszeile: <code>chrome://flags</code> bzw. <code>vivaldi://flags</code> öffnen</li>
+          <li>Suche nach <code>WebRTC IP Handling Policy</code></li>
           <li>Wert auf <code>Default</code> setzen (nicht „Disable non-proxied UDP")</li>
-          <li>Browser neu starten und Link erneut öffnen</li>
+          <li>Browser neu starten</li>
         </ol>
       </div>
       <button class="webrtc-warning-dismiss" @click="webrtcWarning = false">Schließen</button>
@@ -962,6 +962,32 @@
       return new Promise(resolve => {
         localDB.transaction('settings', 'readwrite')
           .objectStore('settings').put(value, key).onsuccess = () => resolve();
+      });
+    }
+
+    // WebRTC-Fähigkeit prüfen: Versucht lokale ICE-Kandidaten zu sammeln (kein STUN nötig).
+    // Schlägt fehl wenn der Browser UDP blockiert (z.B. Chromium/Vivaldi "Disable non-proxied UDP").
+    function checkWebRTCCapability() {
+      return new Promise(resolve => {
+        try {
+          if (typeof RTCPeerConnection === 'undefined') return resolve(false);
+          const pc = new RTCPeerConnection({ iceServers: [] });
+          pc.createDataChannel('_probe');
+          const timeout = setTimeout(() => { try { pc.close(); } catch {} resolve(false); }, 4000);
+          pc.onicecandidate = ({ candidate }) => {
+            clearTimeout(timeout);
+            try { pc.close(); } catch {}
+            // candidate !== null → mindestens ein lokaler Kandidat gesammelt → UDP funktioniert
+            resolve(candidate !== null);
+          };
+          pc.createOffer().then(o => pc.setLocalDescription(o)).catch(() => {
+            clearTimeout(timeout);
+            try { pc.close(); } catch {}
+            resolve(false);
+          });
+        } catch {
+          resolve(false);
+        }
       });
     }
 
@@ -1169,6 +1195,12 @@
         const { gdb } = await import('./libs/genosdb.js');
         db = await gdb(roomKey, { rtc: true });
 
+        // WebRTC-Fähigkeit prüfen (läuft parallel, blockiert init nicht)
+        // Ergebnis nach ~0-4s: false → UDP blockiert → Warnung anzeigen
+        checkWebRTCCapability().then(ok => {
+          if (!ok) this.webrtcWarning = true;
+        });
+
         // Gesammelte Notebooks während der Init-Phase
         const notebooksMap = {};
         const self = this;
@@ -1233,19 +1265,14 @@
         // Phase 2: Bei geteilter URL ohne lokale Daten → auf P2P-Sync warten
         if (isSharedUrl && Object.keys(notebooksMap).length === 0) {
           this.syncing = true;
-          let syncTimedOut = false;
           await Promise.race([
             new Promise(resolve => {
               p2pResolve = resolve;
               if (p2pSettled) resolve(); // bereits aufgelöst bevor wir hier ankamen
             }),
-            new Promise(resolve => setTimeout(() => { syncTimedOut = true; resolve(); }, 8000))
+            new Promise(resolve => setTimeout(resolve, 8000))
           ]);
           this.syncing = false;
-          // Wenn Timeout UND noch immer keine Daten → WebRTC wahrscheinlich blockiert
-          if (syncTimedOut && Object.keys(notebooksMap).length === 0) {
-            this.webrtcWarning = true;
-          }
         }
 
         // Notizbücher laden
