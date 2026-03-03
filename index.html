@@ -1,0 +1,1250 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Notizbuch App</title>
+  <script src="https://unpkg.com/petite-vue@0.4.1/dist/petite-vue.iife.js"></script>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      -webkit-tap-highlight-color: transparent;
+    }
+    
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: linear-gradient(135deg, #2d3436 0%, #636e72 100%);
+      touch-action: none;
+    }
+    
+    .app {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+    }
+    
+    /* Toolbar */
+    .toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 16px;
+      background: rgba(0,0,0,0.4);
+      border-bottom: 1px solid rgba(255,255,255,0.1);
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    
+    .toolbar-group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    
+    .tool-btn {
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
+      border: none;
+      background: rgba(255,255,255,0.05);
+      color: rgba(255,255,255,0.6);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.15s ease;
+    }
+    
+    .tool-btn:hover {
+      background: rgba(255,255,255,0.1);
+    }
+    
+    .tool-btn.active {
+      background: rgba(255,255,255,0.2);
+      color: #fff;
+    }
+    
+    .tool-btn:disabled {
+      opacity: 0.3;
+      cursor: not-allowed;
+    }
+    
+    .divider {
+      width: 1px;
+      height: 20px;
+      background: rgba(255,255,255,0.15);
+      margin: 0 6px;
+    }
+    
+    /* Colors */
+    .color-btn {
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      border: 2px solid rgba(255,255,255,0.2);
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    
+    .color-btn.active {
+      width: 26px;
+      height: 26px;
+      border: 3px solid rgba(255,255,255,0.9);
+    }
+    
+    .color-btn.white {
+      border-color: rgba(0,0,0,0.2);
+    }
+    
+    .color-picker {
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      border: 2px solid rgba(255,255,255,0.2);
+      cursor: pointer;
+      background: conic-gradient(red, yellow, lime, aqua, blue, magenta, red);
+      padding: 0;
+      overflow: hidden;
+    }
+    
+    .color-picker::-webkit-color-swatch-wrapper { padding: 0; }
+    .color-picker::-webkit-color-swatch { border: none; border-radius: 50%; }
+    
+    /* Size buttons */
+    .size-btn {
+      width: 32px;
+      height: 32px;
+      border-radius: 6px;
+      background: rgba(255,255,255,0.05);
+      border: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    
+    .size-btn.active {
+      background: rgba(255,255,255,0.2);
+    }
+    
+    .size-dot {
+      border-radius: 50%;
+      background: rgba(255,255,255,0.5);
+    }
+    
+    .size-btn.active .size-dot {
+      background: white;
+    }
+    
+    /* Secondary bar */
+    .secondary-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 16px;
+      background: rgba(0,0,0,0.25);
+      border-bottom: 1px solid rgba(255,255,255,0.05);
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    
+    .bg-btn {
+      padding: 4px 10px;
+      border-radius: 4px;
+      background: rgba(255,255,255,0.05);
+      border: none;
+      color: white;
+      font-size: 11px;
+      cursor: pointer;
+    }
+    
+    .bg-btn.active {
+      background: rgba(255,255,255,0.2);
+    }
+    
+    /* Toggle */
+    .toggle {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      user-select: none;
+    }
+    
+    .toggle-track {
+      width: 38px;
+      height: 20px;
+      border-radius: 10px;
+      background: rgba(255,255,255,0.15);
+      position: relative;
+      transition: all 0.2s ease;
+    }
+    
+    .toggle-track.active {
+      background: #4dabf7;
+    }
+    
+    .toggle-thumb {
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: #fff;
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      transition: all 0.2s ease;
+    }
+    
+    .toggle-track.active .toggle-thumb {
+      left: 20px;
+    }
+    
+    .toggle-label {
+      color: rgba(255,255,255,0.5);
+      font-size: 12px;
+      font-weight: 500;
+    }
+    
+    .toggle-track.active + .toggle-label {
+      color: rgba(255,255,255,0.9);
+    }
+    
+    /* Page nav */
+    .page-nav {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    
+    .page-btn {
+      padding: 6px 12px;
+      background: rgba(255,255,255,0.1);
+      border: none;
+      border-radius: 6px;
+      color: white;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    
+    .page-btn:disabled {
+      opacity: 0.3;
+      cursor: not-allowed;
+    }
+    
+    .page-btn.primary {
+      background: rgba(77, 171, 247, 0.3);
+    }
+    
+    .page-info {
+      color: rgba(255,255,255,0.7);
+      font-size: 12px;
+      min-width: 80px;
+      text-align: center;
+    }
+    
+    /* Canvas container */
+    .canvas-container {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+      margin: 12px;
+      border-radius: 12px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+      perspective: 2000px;
+      background: #d0d0d0;
+    }
+    
+    .canvas-wrapper {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      transform-style: preserve-3d;
+      transform-origin: left center;
+    }
+    
+    /* Vorblättern: Aktuelle Seite klappt weg */
+    .canvas-wrapper.flip-out-next {
+      animation: flipOutNext 0.4s ease-in forwards;
+    }
+    
+    /* Zurückblättern: Vorherige Seite klappt rein */
+    .canvas-wrapper.flip-in-prev {
+      animation: flipInPrev 0.4s ease-out forwards;
+    }
+    
+    @keyframes flipOutNext {
+      0% { 
+        transform: rotateY(0deg); 
+        box-shadow: 0 0 0 rgba(0,0,0,0);
+      }
+      100% { 
+        transform: rotateY(-100deg); 
+        box-shadow: 20px 0 40px rgba(0,0,0,0.5);
+      }
+    }
+    
+    @keyframes flipInPrev {
+      0% { 
+        transform: rotateY(-100deg); 
+        box-shadow: 20px 0 40px rgba(0,0,0,0.5);
+      }
+      100% { 
+        transform: rotateY(0deg); 
+        box-shadow: 0 0 0 rgba(0,0,0,0);
+      }
+    }
+    
+    canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      border-radius: 12px;
+    }
+    
+    #activeCanvas {
+      cursor: crosshair;
+      touch-action: none;
+    }
+    
+    #activeCanvas.eraser {
+      cursor: cell;
+    }
+    
+    /* Notebook menu */
+    .notebook-selector {
+      position: relative;
+    }
+    
+    .notebook-btn {
+      padding: 8px 12px;
+      background: rgba(255,255,255,0.1);
+      border: 1px solid rgba(255,255,255,0.2);
+      border-radius: 8px;
+      color: white;
+      font-size: 13px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    
+    .notebook-menu {
+      position: absolute;
+      top: 100%;
+      left: 0;
+      margin-top: 4px;
+      background: rgba(40,40,40,0.98);
+      border-radius: 8px;
+      border: 1px solid rgba(255,255,255,0.1);
+      min-width: 220px;
+      z-index: 100;
+      overflow: hidden;
+    }
+    
+    .notebook-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 12px;
+      cursor: pointer;
+      color: white;
+      font-size: 13px;
+    }
+    
+    .notebook-item:hover {
+      background: rgba(255,255,255,0.05);
+    }
+    
+    .notebook-item.active {
+      background: rgba(255,255,255,0.1);
+    }
+    
+    .notebook-item-delete {
+      background: none;
+      border: none;
+      color: #ff6b6b;
+      cursor: pointer;
+      padding: 2px;
+    }
+    
+    .notebook-menu-footer {
+      border-top: 1px solid rgba(255,255,255,0.1);
+      padding: 8px;
+    }
+    
+    .new-notebook-btn {
+      width: 100%;
+      padding: 8px;
+      background: rgba(77, 171, 247, 0.2);
+      border: none;
+      border-radius: 6px;
+      color: #4dabf7;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    
+    .rename-input {
+      padding: 6px 10px;
+      background: rgba(255,255,255,0.1);
+      border: 1px solid rgba(255,255,255,0.3);
+      border-radius: 6px;
+      color: white;
+      font-size: 12px;
+      width: 120px;
+    }
+    
+    .rename-ok {
+      padding: 6px 10px;
+      background: #4dabf7;
+      border: none;
+      border-radius: 6px;
+      color: white;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    
+    .edit-btn {
+      background: none;
+      border: none;
+      color: rgba(255,255,255,0.5);
+      cursor: pointer;
+      padding: 4px;
+    }
+    
+    .save-status {
+      color: rgba(255,255,255,0.5);
+      font-size: 11px;
+      padding: 4px 8px;
+    }
+    
+    .save-status.saving {
+      color: #ffd43b;
+    }
+    
+    .save-status.saved {
+      color: #69db7c;
+    }
+  </style>
+</head>
+<body>
+  <div id="app" class="app" @vue:mounted="init()">
+    <!-- Toolbar -->
+    <div class="toolbar">
+      <!-- Notebook selector -->
+      <div class="toolbar-group">
+        <div class="notebook-selector">
+          <button class="notebook-btn" @click="showNotebookMenu = !showNotebookMenu">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+              <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+            </svg>
+            {{ currentNotebook?.name || 'Notizbuch' }}
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M6 9l6 6 6-6"/>
+            </svg>
+          </button>
+          
+          <div class="notebook-menu" v-if="showNotebookMenu">
+            <div v-for="nb in notebooks" :key="nb.id" 
+                 class="notebook-item" 
+                 :class="{ active: nb.id === currentNotebookId }"
+                 @click="selectNotebook(nb.id)">
+              <span>{{ nb.name }}</span>
+              <button v-if="notebooks.length > 1" class="notebook-item-delete" @click.stop="deleteNotebook(nb.id)">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M18 6L6 18"/><path d="M6 6l12 12"/>
+                </svg>
+              </button>
+            </div>
+            <div class="notebook-menu-footer">
+              <button class="new-notebook-btn" @click="createNotebook()">+ Neues Notizbuch</button>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Rename -->
+        <template v-if="editingName">
+          <input class="rename-input" v-model="newName" @keydown.enter="renameNotebook()" autofocus>
+          <button class="rename-ok" @click="renameNotebook()">OK</button>
+        </template>
+        <button v-else class="edit-btn" @click="startRename()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+          </svg>
+        </button>
+        
+        <!-- Save status -->
+        <span class="save-status" :class="saveStatus">{{ saveStatusText }}</span>
+      </div>
+
+      <!-- Tools -->
+      <div class="toolbar-group">
+        <button class="tool-btn" :class="{ active: tool === 'pen' }" @click="tool = 'pen'" title="Stift">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/>
+          </svg>
+        </button>
+        <button class="tool-btn" :class="{ active: tool === 'eraser' }" @click="tool = 'eraser'" title="Radierer">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M20 20H7L3 16c-.6-.6-.6-1.5 0-2.1l10-10c.6-.6 1.5-.6 2.1 0l6 6c.6.6.6 1.5 0 2.1L13 20"/>
+          </svg>
+        </button>
+        <div class="divider"></div>
+        <button class="tool-btn" @click="clearPage()" title="Seite löschen">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
+          </svg>
+        </button>
+      </div>
+
+      <!-- Colors -->
+      <div class="toolbar-group">
+        <button v-for="c in colors" :key="c" 
+                class="color-btn" 
+                :class="{ active: color === c, white: c === '#ffffff' }"
+                :style="{ background: c }"
+                @click="color = c">
+        </button>
+        <input type="color" class="color-picker" v-model="color" title="Eigene Farbe">
+      </div>
+
+      <!-- Pen sizes -->
+      <div class="toolbar-group">
+        <button v-for="(ps, idx) in penSizes" :key="ps.name"
+                class="size-btn" :class="{ active: penSizeIndex === idx }"
+                @click="penSizeIndex = idx">
+          <div class="size-dot" :style="{ width: Math.min(ps.size * 1.5, 16) + 'px', height: Math.min(ps.size * 1.5, 16) + 'px' }"></div>
+        </button>
+      </div>
+    </div>
+
+    <!-- Secondary bar -->
+    <div class="secondary-bar">
+      <!-- Background -->
+      <div class="toolbar-group">
+        <span style="color: rgba(255,255,255,0.5); font-size: 11px;">Hintergrund:</span>
+        <button v-for="bg in backgrounds" :key="bg.id"
+                class="bg-btn" :class="{ active: currentBackground === bg.id }"
+                @click="setBackground(bg.id)">
+          {{ bg.name }}
+        </button>
+      </div>
+
+      <!-- Palm Rejection Toggle -->
+      <label class="toggle" @click="palmRejection = !palmRejection; scheduleSave()">
+        <div class="toggle-track" :class="{ active: palmRejection }">
+          <div class="toggle-thumb"></div>
+        </div>
+        <span class="toggle-label">Handerkennung</span>
+      </label>
+
+      <!-- Page navigation -->
+      <div class="page-nav">
+        <button class="page-btn" :disabled="!canGoPrev || isFlipping" @click="prevPage()">← Zurück</button>
+        <span class="page-info">Seite {{ currentPageIndex + 1 }} / {{ totalPages }}</span>
+        <button class="page-btn primary" :disabled="isFlipping" @click="nextPage()">Weiter →</button>
+      </div>
+    </div>
+
+    <!-- Canvas -->
+    <div class="canvas-container" ref="container">
+      <div class="canvas-wrapper" :class="flipClass">
+        <canvas id="bgCanvas" ref="bgCanvas"></canvas>
+        <canvas id="staticCanvas" ref="staticCanvas"></canvas>
+        <canvas id="activeCanvas" ref="activeCanvas" 
+                :class="{ eraser: tool === 'eraser' }"
+                @pointerdown="startDrawing"
+                @pointermove="draw"
+                @pointerup="stopDrawing"
+                @pointerleave="stopDrawing"
+                @pointercancel="stopDrawing">
+        </canvas>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const { createApp } = PetiteVue;
+    
+    // IndexedDB Helper
+    const DB_NAME = 'NotebookApp';
+    const DB_VERSION = 1;
+    const STORE_NAME = 'notebooks';
+    
+    function openDB() {
+      return new Promise((resolve, reject) => {
+        const request = indexedDB.open(DB_NAME, DB_VERSION);
+        
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => resolve(request.result);
+        
+        request.onupgradeneeded = (e) => {
+          const db = e.target.result;
+          if (!db.objectStoreNames.contains(STORE_NAME)) {
+            db.createObjectStore(STORE_NAME, { keyPath: 'id' });
+          }
+        };
+      });
+    }
+    
+    async function saveToIndexedDB(data) {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE_NAME, 'readwrite');
+        const store = tx.objectStore(STORE_NAME);
+        store.put({ id: 'app-data', ...data });
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+    }
+    
+    async function loadFromIndexedDB() {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE_NAME, 'readonly');
+        const store = tx.objectStore(STORE_NAME);
+        const request = store.get('app-data');
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+    }
+
+    // Stroke smoothing
+    function smoothPoints(points) {
+      if (points.length < 3) return points;
+      const result = [];
+      const numSegments = 4;
+      
+      for (let i = 0; i < points.length - 1; i++) {
+        const p0 = points[Math.max(0, i - 1)];
+        const p1 = points[i];
+        const p2 = points[i + 1];
+        const p3 = points[Math.min(points.length - 1, i + 2)];
+        
+        for (let t = 0; t < numSegments; t++) {
+          const s = t / numSegments;
+          const s2 = s * s;
+          const s3 = s2 * s;
+          
+          result.push({
+            x: 0.5 * ((2 * p1.x) + (-p0.x + p2.x) * s + (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * s2 + (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * s3),
+            y: 0.5 * ((2 * p1.y) + (-p0.y + p2.y) * s + (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * s2 + (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * s3)
+          });
+        }
+      }
+      result.push(points[points.length - 1]);
+      return result;
+    }
+
+    // Build stroke polygon
+    function buildStrokePolygon(points, width) {
+      if (points.length < 2) return null;
+      
+      const leftEdge = [];
+      const rightEdge = [];
+      const halfWidth = width / 2;
+      
+      for (let i = 0; i < points.length; i++) {
+        const curr = points[i];
+        
+        let dx, dy;
+        if (i === 0) {
+          dx = points[1].x - curr.x;
+          dy = points[1].y - curr.y;
+        } else if (i === points.length - 1) {
+          dx = curr.x - points[i - 1].x;
+          dy = curr.y - points[i - 1].y;
+        } else {
+          dx = points[i + 1].x - points[i - 1].x;
+          dy = points[i + 1].y - points[i - 1].y;
+        }
+        
+        const len = Math.sqrt(dx * dx + dy * dy) || 1;
+        const nx = -dy / len;
+        const ny = dx / len;
+        
+        leftEdge.push({ x: curr.x + nx * halfWidth, y: curr.y + ny * halfWidth });
+        rightEdge.push({ x: curr.x - nx * halfWidth, y: curr.y - ny * halfWidth });
+      }
+      
+      return [...leftEdge, ...rightEdge.reverse()];
+    }
+
+    // Draw stroke to canvas
+    function drawStrokeToCanvas(ctx, stroke) {
+      if (!stroke.points || stroke.points.length < 2) return;
+      
+      const pts = stroke.points.length >= 3 ? smoothPoints(stroke.points) : stroke.points;
+      const size = stroke.tool === 'eraser' ? stroke.size * 3 : stroke.size;
+      
+      ctx.globalCompositeOperation = stroke.tool === 'eraser' ? 'destination-out' : 'source-over';
+      ctx.fillStyle = stroke.tool === 'eraser' ? 'rgba(0,0,0,1)' : stroke.color;
+      
+      // Draw circles at every point for smooth joins
+      for (let i = 0; i < pts.length; i++) {
+        ctx.beginPath();
+        ctx.arc(pts[i].x, pts[i].y, size / 2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      
+      // Draw polygon
+      const polygon = buildStrokePolygon(pts, size);
+      if (polygon && polygon.length >= 3) {
+        ctx.beginPath();
+        ctx.moveTo(polygon[0].x, polygon[0].y);
+        for (let i = 1; i < polygon.length; i++) {
+          ctx.lineTo(polygon[i].x, polygon[i].y);
+        }
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+
+    createApp({
+      // State
+      notebooks: [],
+      currentNotebookId: null,
+      showNotebookMenu: false,
+      editingName: false,
+      newName: '',
+      
+      tool: 'pen',
+      color: '#363636',
+      penSizeIndex: 2,
+      palmRejection: true,
+      palmThreshold: 25, // Kontaktfläche > 25px = Handballen/Finger ignorieren
+      
+      colors: ['#363636', '#ffffff', '#ff6b6b', '#ffa94d', '#ffd43b', '#69db7c', '#38d9a9', '#4dabf7', '#748ffc', '#da77f2'],
+      penSizes: [
+        { name: 'XS', size: 1 },
+        { name: 'S', size: 2 },
+        { name: 'M', size: 4 },
+        { name: 'L', size: 8 },
+        { name: 'XL', size: 16 }
+      ],
+      backgrounds: [
+        { id: 'grid', name: 'Kariert' },
+        { id: 'lined', name: 'Liniert' },
+        { id: 'blank', name: 'Blank' }
+      ],
+      
+      flipClass: '',
+      isFlipping: false,
+      isDrawing: false,
+      currentPoints: [],
+      lastPoint: null,
+      strokeId: 0,
+      activePointerId: null,
+      activePointerType: null,
+      
+      saveStatus: '',
+      saveStatusText: '',
+      saveTimeout: null,
+      
+      // Computed-like getters
+      get currentNotebook() {
+        return this.notebooks.find(n => n.id === this.currentNotebookId);
+      },
+      
+      get currentPage() {
+        return this.currentNotebook?.pages[this.currentNotebook.currentPage];
+      },
+      
+      get strokes() {
+        return this.currentPage?.strokes || [];
+      },
+      
+      get currentBackground() {
+        return this.currentPage?.background || 'grid';
+      },
+      
+      get currentPageIndex() {
+        return this.currentNotebook?.currentPage || 0;
+      },
+      
+      get totalPages() {
+        return this.currentNotebook?.pages.length || 1;
+      },
+      
+      get canGoPrev() {
+        return this.currentNotebook && this.currentNotebook.currentPage > 0;
+      },
+      
+      // Methods
+      async init() {
+        // Load from IndexedDB
+        try {
+          const data = await loadFromIndexedDB();
+          if (data && data.notebooks && data.notebooks.length > 0) {
+            this.notebooks = data.notebooks;
+            this.currentNotebookId = data.currentNotebookId || this.notebooks[0].id;
+            this.strokeId = data.strokeId || 0;
+            if (typeof data.palmRejection === 'boolean') {
+              this.palmRejection = data.palmRejection;
+            }
+            console.log('Daten aus IndexedDB geladen');
+          } else {
+            this.createDefaultNotebook();
+          }
+        } catch (e) {
+          console.log('Keine gespeicherten Daten gefunden, erstelle Standard-Notizbuch');
+          this.createDefaultNotebook();
+        }
+        
+        this.setupCanvases();
+        window.addEventListener('resize', () => this.setupCanvases());
+        
+        // Close menu on outside click
+        document.addEventListener('click', (e) => {
+          if (!e.target.closest('.notebook-selector')) {
+            this.showNotebookMenu = false;
+          }
+        });
+      },
+      
+      createDefaultNotebook() {
+        this.notebooks = [{
+          id: Date.now(),
+          name: 'Mein Notizbuch',
+          pages: [{ id: 1, strokes: [], background: 'grid' }],
+          currentPage: 0
+        }];
+        this.currentNotebookId = this.notebooks[0].id;
+      },
+      
+      setupCanvases() {
+        const container = this.$refs.container;
+        if (!container) return;
+        
+        const rect = container.getBoundingClientRect();
+        const dpr = window.devicePixelRatio || 1;
+        
+        ['bgCanvas', 'staticCanvas', 'activeCanvas'].forEach(name => {
+          const canvas = this.$refs[name];
+          if (canvas) {
+            canvas.width = rect.width * dpr;
+            canvas.height = rect.height * dpr;
+            canvas.style.width = rect.width + 'px';
+            canvas.style.height = rect.height + 'px';
+            canvas.getContext('2d').scale(dpr, dpr);
+          }
+        });
+        
+        this.drawBackground();
+        this.redrawStrokes();
+      },
+      
+      drawBackground() {
+        const canvas = this.$refs.bgCanvas;
+        if (!canvas) return;
+        
+        const ctx = canvas.getContext('2d');
+        const dpr = window.devicePixelRatio || 1;
+        const w = canvas.width / dpr;
+        const h = canvas.height / dpr;
+        const bg = this.currentBackground;
+        
+        ctx.fillStyle = '#fafafa';
+        ctx.fillRect(0, 0, w, h);
+        
+        if (bg === 'grid') {
+          const gridSize = 20;
+          ctx.strokeStyle = '#c5d8f0';
+          ctx.lineWidth = 0.5;
+          
+          for (let x = gridSize; x < w; x += gridSize) {
+            ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+          }
+          for (let y = gridSize; y < h; y += gridSize) {
+            ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+          }
+          
+          ctx.strokeStyle = '#a3c2e8';
+          ctx.lineWidth = 1;
+          for (let x = gridSize * 5; x < w; x += gridSize * 5) {
+            ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+          }
+          for (let y = gridSize * 5; y < h; y += gridSize * 5) {
+            ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+          }
+        } else if (bg === 'lined') {
+          const lineHeight = 28;
+          const marginTop = 60;
+          ctx.strokeStyle = '#c5d8f0';
+          ctx.lineWidth = 1;
+          
+          for (let y = marginTop; y < h; y += lineHeight) {
+            ctx.beginPath(); ctx.moveTo(40, y); ctx.lineTo(w - 20, y); ctx.stroke();
+          }
+          
+          ctx.strokeStyle = '#ffaaaa';
+          ctx.lineWidth = 1;
+          ctx.beginPath(); ctx.moveTo(60, 0); ctx.lineTo(60, h); ctx.stroke();
+        }
+      },
+      
+      redrawStrokes() {
+        const canvas = this.$refs.staticCanvas;
+        if (!canvas) return;
+        
+        const ctx = canvas.getContext('2d');
+        const dpr = window.devicePixelRatio || 1;
+        ctx.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr);
+        
+        this.strokes.forEach(stroke => drawStrokeToCanvas(ctx, stroke));
+      },
+      
+      setBackground(bg) {
+        if (!this.currentNotebook) return;
+        this.currentNotebook.pages[this.currentNotebook.currentPage].background = bg;
+        this.drawBackground();
+        this.scheduleSave();
+      },
+      
+      // Page navigation
+      nextPage() {
+        if (!this.currentNotebook || this.isFlipping) return;
+        
+        this.isFlipping = true;
+        this.flipClass = 'flip-out-next';
+        
+        setTimeout(() => {
+          // Wechsle zur nächsten Seite
+          const nextIndex = this.currentNotebook.currentPage + 1;
+          if (nextIndex >= this.currentNotebook.pages.length) {
+            this.currentNotebook.pages.push({ 
+              id: Date.now(), 
+              strokes: [], 
+              background: this.currentBackground 
+            });
+          }
+          this.currentNotebook.currentPage = nextIndex;
+          this.drawBackground();
+          this.redrawStrokes();
+          
+          // Neue Seite ist sofort da (keine Animation)
+          this.flipClass = '';
+          this.isFlipping = false;
+          this.scheduleSave();
+        }, 400);
+      },
+      
+      prevPage() {
+        if (!this.canGoPrev || this.isFlipping) return;
+        
+        this.isFlipping = true;
+        
+        // Wechsle sofort zur vorherigen Seite
+        this.currentNotebook.currentPage--;
+        this.drawBackground();
+        this.redrawStrokes();
+        
+        // Animiere die Seite herein
+        this.flipClass = 'flip-in-prev';
+        
+        setTimeout(() => {
+          this.flipClass = '';
+          this.isFlipping = false;
+          this.scheduleSave();
+        }, 400);
+      },
+      
+      // Notebook management
+      selectNotebook(id) {
+        this.currentNotebookId = id;
+        this.showNotebookMenu = false;
+        setTimeout(() => {
+          this.drawBackground();
+          this.redrawStrokes();
+        }, 0);
+        this.scheduleSave();
+      },
+      
+      createNotebook() {
+        const newNb = {
+          id: Date.now(),
+          name: 'Neues Notizbuch',
+          pages: [{ id: 1, strokes: [], background: 'grid' }],
+          currentPage: 0
+        };
+        this.notebooks.push(newNb);
+        this.currentNotebookId = newNb.id;
+        this.showNotebookMenu = false;
+        setTimeout(() => {
+          this.drawBackground();
+          this.redrawStrokes();
+        }, 0);
+        this.scheduleSave();
+      },
+      
+      deleteNotebook(id) {
+        if (this.notebooks.length <= 1) return;
+        this.notebooks = this.notebooks.filter(nb => nb.id !== id);
+        if (this.currentNotebookId === id) {
+          this.currentNotebookId = this.notebooks[0].id;
+          setTimeout(() => {
+            this.drawBackground();
+            this.redrawStrokes();
+          }, 0);
+        }
+        this.scheduleSave();
+      },
+      
+      startRename() {
+        this.newName = this.currentNotebook?.name || '';
+        this.editingName = true;
+      },
+      
+      renameNotebook() {
+        if (!this.newName.trim() || !this.currentNotebook) return;
+        this.currentNotebook.name = this.newName.trim();
+        this.editingName = false;
+        this.scheduleSave();
+      },
+      
+      clearPage() {
+        if (!this.currentPage) return;
+        this.currentPage.strokes = [];
+        this.redrawStrokes();
+        this.scheduleSave();
+      },
+      
+      // Auto-save to IndexedDB
+      scheduleSave() {
+        if (this.saveTimeout) {
+          clearTimeout(this.saveTimeout);
+        }
+        
+        this.saveStatus = 'saving';
+        this.saveStatusText = 'Speichern...';
+        
+        this.saveTimeout = setTimeout(async () => {
+          try {
+            await saveToIndexedDB({
+              notebooks: this.notebooks,
+              currentNotebookId: this.currentNotebookId,
+              strokeId: this.strokeId,
+              palmRejection: this.palmRejection,
+              savedAt: new Date().toISOString()
+            });
+            this.saveStatus = 'saved';
+            this.saveStatusText = 'Gespeichert ✓';
+            
+            setTimeout(() => {
+              this.saveStatus = '';
+              this.saveStatusText = '';
+            }, 2000);
+          } catch (e) {
+            console.error('Speichern fehlgeschlagen:', e);
+            this.saveStatus = '';
+            this.saveStatusText = 'Fehler!';
+          }
+        }, 500);
+      },
+      
+      // Drawing with Palm Rejection
+      getPos(e) {
+        const canvas = this.$refs.activeCanvas;
+        const rect = canvas.getBoundingClientRect();
+        return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+      },
+      
+      isPalmOrFinger(e) {
+        if (!this.palmRejection) return false;
+        
+        // Pen/Stylus wird immer akzeptiert
+        if (e.pointerType === 'pen') return false;
+        
+        // Mouse wird akzeptiert
+        if (e.pointerType === 'mouse') return false;
+        
+        // Touch: Prüfe Kontaktfläche
+        if (e.pointerType === 'touch') {
+          const contactWidth = e.width || 0;
+          const contactHeight = e.height || 0;
+          const contactSize = Math.max(contactWidth, contactHeight);
+          
+          // Debug: Zeige Touch-Größe in Konsole
+          // console.log('Touch size:', contactSize, 'px');
+          
+          // Große Kontaktfläche = Handballen oder Finger
+          if (contactSize > this.palmThreshold) {
+            return true;
+          }
+          
+          // Wenn bereits mit Pen gezeichnet wird, ignoriere Touch
+          if (this.isDrawing && this.activePointerType === 'pen') {
+            return true;
+          }
+        }
+        
+        return false;
+      },
+      
+      startDrawing(e) {
+        e.preventDefault();
+        
+        // Palm Rejection
+        if (this.isPalmOrFinger(e)) {
+          return;
+        }
+        
+        // Wenn bereits gezeichnet wird, ignoriere neue Pointer
+        if (this.isDrawing) return;
+        
+        const pos = this.getPos(e);
+        
+        this.isDrawing = true;
+        this.activePointerId = e.pointerId;
+        this.activePointerType = e.pointerType;
+        this.lastPoint = pos;
+        this.currentPoints = [{ x: pos.x, y: pos.y }];
+        
+        // Für Radierer: direkt auf staticCanvas zeichnen
+        if (this.tool === 'eraser') {
+          this.drawEraserPoint(pos);
+        }
+      },
+      
+      draw(e) {
+        e.preventDefault();
+        if (!this.isDrawing) return;
+        
+        // Nur akzeptieren wenn es der gleiche Pointer ist
+        if (e.pointerId !== this.activePointerId) return;
+        
+        const pos = this.getPos(e);
+        this.currentPoints.push({ x: pos.x, y: pos.y });
+        this.lastPoint = pos;
+        
+        if (this.tool === 'eraser') {
+          // Radierer: direkt auf staticCanvas
+          this.drawEraserSegment();
+        } else {
+          // Stift: auf activeCanvas (Preview)
+          this.drawActiveStroke();
+        }
+      },
+      
+      drawEraserPoint(pos) {
+        const canvas = this.$refs.staticCanvas;
+        if (!canvas) return;
+        
+        const ctx = canvas.getContext('2d');
+        const size = this.penSizes[this.penSizeIndex].size * 3;
+        
+        ctx.globalCompositeOperation = 'destination-out';
+        ctx.fillStyle = 'rgba(0,0,0,1)';
+        ctx.beginPath();
+        ctx.arc(pos.x, pos.y, size / 2, 0, Math.PI * 2);
+        ctx.fill();
+      },
+      
+      drawEraserSegment() {
+        const canvas = this.$refs.staticCanvas;
+        if (!canvas || this.currentPoints.length < 2) return;
+        
+        const ctx = canvas.getContext('2d');
+        const size = this.penSizes[this.penSizeIndex].size * 3;
+        const pts = this.currentPoints;
+        const from = pts[pts.length - 2];
+        const to = pts[pts.length - 1];
+        
+        ctx.globalCompositeOperation = 'destination-out';
+        ctx.fillStyle = 'rgba(0,0,0,1)';
+        
+        // Kreis am neuen Punkt
+        ctx.beginPath();
+        ctx.arc(to.x, to.y, size / 2, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // Linie zwischen den Punkten
+        ctx.lineWidth = size;
+        ctx.lineCap = 'round';
+        ctx.strokeStyle = 'rgba(0,0,0,1)';
+        ctx.beginPath();
+        ctx.moveTo(from.x, from.y);
+        ctx.lineTo(to.x, to.y);
+        ctx.stroke();
+      },
+      
+      drawActiveStroke() {
+        const canvas = this.$refs.activeCanvas;
+        if (!canvas || this.currentPoints.length < 2) return;
+        
+        const ctx = canvas.getContext('2d');
+        const dpr = window.devicePixelRatio || 1;
+        ctx.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr);
+        
+        const tempStroke = {
+          points: this.currentPoints,
+          color: this.color,
+          size: this.penSizes[this.penSizeIndex].size,
+          tool: this.tool
+        };
+        
+        drawStrokeToCanvas(ctx, tempStroke);
+      },
+      
+      stopDrawing(e) {
+        if (!this.isDrawing) return;
+        
+        // Nur stoppen wenn es der aktive Pointer ist
+        if (e && e.pointerId !== this.activePointerId) return;
+        
+        this.isDrawing = false;
+        this.activePointerId = null;
+        this.activePointerType = null;
+        
+        if (this.currentPoints.length > 0 && this.currentPage) {
+          if (this.tool === 'eraser') {
+            // Radierer: Stroke als Eraser-Stroke speichern
+            const newStroke = {
+              id: this.strokeId++,
+              points: [...this.currentPoints],
+              color: '#000000',
+              size: this.penSizes[this.penSizeIndex].size,
+              tool: 'eraser'
+            };
+            this.currentPage.strokes.push(newStroke);
+          } else {
+            // Stift: normaler Stroke
+            const newStroke = {
+              id: this.strokeId++,
+              points: [...this.currentPoints],
+              color: this.color,
+              size: this.penSizes[this.penSizeIndex].size,
+              tool: 'pen'
+            };
+            this.currentPage.strokes.push(newStroke);
+            this.redrawStrokes();
+          }
+          
+          this.scheduleSave();
+        }
+        
+        // Clear active canvas
+        const canvas = this.$refs.activeCanvas;
+        if (canvas) {
+          const ctx = canvas.getContext('2d');
+          const dpr = window.devicePixelRatio || 1;
+          ctx.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr);
+        }
+        
+        this.currentPoints = [];
+        this.lastPoint = null;
+      }
+    }).mount('#app');
+  </script>
+</body>
+</html>
