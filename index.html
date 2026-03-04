@@ -984,7 +984,7 @@
     </div>
 
     <!-- Disconnected Banner -->
-    <div class="disconnected-banner" x-show="connectionLost && !syncing" x-cloak>
+    <div class="disconnected-banner" x-show="connectionLost && connectedPeers.length === 0 && !syncing" x-cloak>
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <line x1="1" y1="1" x2="23" y2="23"></line>
         <path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"></path>
@@ -1323,7 +1323,10 @@
         this.selfPeerId = db.selfId;
         if (db.room) {
           const initialPeers = db.room.getPeers();
-          if (initialPeers) this.connectedPeers = initialPeers instanceof Map ? Array.from(initialPeers.keys()) : Object.keys(initialPeers);
+          if (initialPeers) {
+            this.connectedPeers = initialPeers instanceof Map ? Array.from(initialPeers.keys()) : Object.keys(initialPeers);
+            if (this.connectedPeers.length > 0) this._hadPeers = true;
+          }
 
           db.room.on('peer:join', (peerId) => {
             if (!this.connectedPeers.includes(peerId)) {
