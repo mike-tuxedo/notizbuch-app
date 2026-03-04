@@ -1470,11 +1470,15 @@
           }
         });
 
-        // Tab-Fokus: Canvases neu zeichnen wenn Tab aktiv wird
+        // Tab-Fokus: Canvases neu zeichnen und ggf. Reconnect
         document.addEventListener('visibilitychange', () => {
           if (!document.hidden) {
             this.drawBackground();
             this.redrawStrokes();
+            // Nach Pause: wenn Peers verloren, automatisch neu laden
+            if (this.hadPeers && this.connectedPeers.length === 0) {
+              location.reload();
+            }
           }
         });
       },
