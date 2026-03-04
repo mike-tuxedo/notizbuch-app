@@ -456,16 +456,13 @@
     }
 
     /* P2P Sync-Indikator (kleines drehendes Icon in der Toolbar) */
-    .peer-sync-icon {
-      display: flex;
-      align-items: center;
-      color: rgba(255,255,255,0.2);
-      transition: color 0.4s;
+    .sync-toggle {
+      color: rgba(255,255,255,0.35);
     }
-    .peer-sync-icon.active {
-      color: #4dabf7;
+    .sync-toggle.active {
+      color: #51cf66;
     }
-    .peer-sync-icon.active svg {
+    .sync-toggle.syncing svg {
       animation: spin 0.9s linear infinite;
     }
 
@@ -604,7 +601,7 @@
     .app.zen-mode .notebook-selector,
     .app.zen-mode .edit-btn,
     .app.zen-mode .save-status,
-    .app.zen-mode .peer-sync-icon,
+    .app.zen-mode .sync-toggle,
     .app.zen-mode .divider:not(.zen-keep) {
       display: none;
     }
@@ -823,13 +820,19 @@
         <!-- Save status -->
         <span class="save-status" :class="saveStatus">{{ saveStatusText }}</span>
 
-        <!-- P2P Sync-Indikator -->
-        <span class="peer-sync-icon" :class="{ active: syncing || peerSync }" title="P2P-Sync">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+        <!-- P2P Sync Toggle -->
+        <button class="tool-btn sync-toggle" :class="{ active: syncEnabled, syncing: syncing || peerSync }"
+                @click="toggleSync()" :title="syncEnabled ? 'Sync aktiv – klicken zum Deaktivieren' : 'Sync deaktiviert – klicken zum Aktivieren'">
+          <svg v-if="syncEnabled" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M23 4v6h-6"/><path d="M1 20v-6h6"/>
             <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
           </svg>
-        </span>
+          <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="1" y1="1" x2="23" y2="23"/>
+            <path d="M23 4v6h-6"/><path d="M1 20v-6h6"/>
+            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+          </svg>
+        </button>
 
         <!-- Share button -->
         <button class="tool-btn" @click="openShare()" title="Teilen">
@@ -1247,6 +1250,7 @@
       showShareModal: false,
       shareUrl: '',
       copySuccess: false,
+      syncEnabled: true,
       syncing: false,
       peerSync: false,
       _peerSyncTimer: null,
@@ -1314,10 +1318,12 @@
         const savedCurrentId    = await idbGet(roomKey + ':currentNotebookId');
         const savedPalmRejection = await idbGet(roomKey + ':palmRejection');
         if (typeof savedPalmRejection === 'boolean') this.palmRejection = savedPalmRejection;
+        const savedSyncEnabled = await idbGet(roomKey + ':syncEnabled');
+        if (typeof savedSyncEnabled === 'boolean') this.syncEnabled = savedSyncEnabled;
 
         // GenosDB laden und initialisieren (nur für Notizbuch-Inhalte, kein Settings-Sync)
         const { gdb } = await import('./libs/genosdb.js');
-        db = await gdb(roomKey, { rtc: true });
+        db = await gdb(roomKey, { rtc: this.syncEnabled });
 
         this.selfPeerId = db.selfId;
         if (db.room) {
@@ -1335,6 +1341,19 @@
           });
           db.room.on('peer:leave', (peerId) => {
             this.connectedPeers = this.connectedPeers.filter(id => id !== peerId);
+          });
+        }
+
+        // Bei Reconnect: Sync-Overlay zeigen bis Peers verbunden
+        const isReconnect = sessionStorage.getItem('reconnect');
+        if (isReconnect) {
+          sessionStorage.removeItem('reconnect');
+          this.syncing = true;
+          const waitForPeer = new Promise(resolve => {
+            db.room.on('peer:join', () => resolve());
+          });
+          Promise.race([waitForPeer, new Promise(r => setTimeout(r, 5000))]).then(() => {
+            this.syncing = false;
           });
         }
 
@@ -1476,11 +1495,18 @@
             this.drawBackground();
             this.redrawStrokes();
             // Nach Pause: wenn Peers verloren, automatisch neu laden
-            if (this.hadPeers && this.connectedPeers.length === 0) {
+            if (this.syncEnabled && this.hadPeers && this.connectedPeers.length === 0) {
+              sessionStorage.setItem('reconnect', '1');
               location.reload();
             }
           }
         });
+      },
+
+      toggleSync() {
+        this.syncEnabled = !this.syncEnabled;
+        idbSet(roomKey + ':syncEnabled', this.syncEnabled);
+        location.reload();
       },
 
       toggleFullscreen() {
