@@ -984,7 +984,7 @@
     </div>
 
     <!-- Disconnected Banner -->
-    <div class="disconnected-banner" x-show="connectionLost && connectedPeers.length === 0 && !syncing" x-cloak>
+    <div class="disconnected-banner" x-show="_hadPeers && connectedPeers.length === 0 && !syncing" x-cloak>
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <line x1="1" y1="1" x2="23" y2="23"></line>
         <path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"></path>
@@ -1253,7 +1253,6 @@
       zenMode: false,
       isFullscreen: false,
       webrtcWarning: false,
-      connectionLost: false,
       _hadPeers: false,
       connectedPeers: [],
       selfPeerId: null,
@@ -1333,13 +1332,9 @@
               this.connectedPeers.push(peerId);
             }
             this._hadPeers = true;
-            this.connectionLost = false;
           });
           db.room.on('peer:leave', (peerId) => {
             this.connectedPeers = this.connectedPeers.filter(id => id !== peerId);
-            if (this.connectedPeers.length === 0 && this._hadPeers) {
-              this.connectionLost = true;
-            }
           });
         }
 
