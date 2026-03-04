@@ -326,8 +326,6 @@
       position: absolute;
       top: 0;
       left: 0;
-      width: 100%;
-      height: 100%;
       transform-style: preserve-3d;
       transform-origin: left center;
     }
@@ -368,8 +366,6 @@
       position: absolute;
       top: 0;
       left: 0;
-      width: 100%;
-      height: 100%;
       border-radius: 12px;
     }
     
@@ -796,8 +792,6 @@
       position: absolute;
       top: 0;
       left: 0;
-      width: 100%;
-      height: 100%;
       transform-origin: 0 0;
       transform-style: preserve-3d;
     }
@@ -1208,8 +1202,8 @@
           </canvas>
         </div>
       </div>
-      <button v-if="viewScale !== 1 || viewX !== 0 || viewY !== 0" class="zoom-reset-btn"
-              @click="viewScale = 1; viewX = 0; viewY = 0">
+      <button v-if="Math.abs(viewScale - fitScale) > 0.01 || Math.abs(viewX - fitX) > 1 || Math.abs(viewY - fitY) > 1" class="zoom-reset-btn"
+              @click="fitToContent()">
         {{ Math.round(viewScale * 100) }}% ✕
       </button>
     </div>
@@ -1254,6 +1248,8 @@
 
   <script>
     const { createApp } = PetiteVue;
+
+    const CANVAS_SIZE = 3000;
 
     // GenosDB instance (initialized in init())
     let db;
@@ -1467,6 +1463,9 @@
       viewScale: 1,
       viewX: 0,
       viewY: 0,
+      fitScale: 1,
+      fitX: 0,
+      fitY: 0,
 
       // Seitenpositionen – LOKAL, nie in GenosDB, nie synchronisiert
       // { [notebookId]: pageIndex }
@@ -1677,7 +1676,8 @@
         dbInitialized = true;
 
         this.setupCanvases();
-        window.addEventListener('resize', () => this.setupCanvases());
+        this.fitToContent();
+        window.addEventListener('resize', () => this.updateFitReference());
 
         document.addEventListener('click', (e) => {
           if (!e.target.closest('.notebook-selector')) {
@@ -1692,7 +1692,7 @@
         document.addEventListener('fullscreenchange', () => {
           if (!document.fullscreenElement && this.zenMode) {
             this.zenMode = false;
-            setTimeout(() => this.setupCanvases(), 100);
+            setTimeout(() => this.updateFitReference(), 100);
           }
         });
 
@@ -1727,7 +1727,7 @@
             document.exitFullscreen().catch(() => {});
           }
         }
-        setTimeout(() => this.setupCanvases(), 100);
+        setTimeout(() => this.updateFitReference(), 100);
       },
 
       // Nur gerätespezifische Einstellungen (Navigation) in IndexedDB speichern – kein P2P-Sync
@@ -1763,21 +1763,20 @@
       setupCanvases() {
         const container = this.$refs.container;
         if (!container) return;
-        
-        const rect = container.getBoundingClientRect();
-        const dpr = window.devicePixelRatio || 1;
-        
+
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+
         ['bgCanvas', 'staticCanvas', 'activeCanvas'].forEach(name => {
           const canvas = this.$refs[name];
           if (canvas) {
-            canvas.width = rect.width * dpr;
-            canvas.height = rect.height * dpr;
-            canvas.style.width = rect.width + 'px';
-            canvas.style.height = rect.height + 'px';
+            canvas.width = CANVAS_SIZE * dpr;
+            canvas.height = CANVAS_SIZE * dpr;
+            canvas.style.width = CANVAS_SIZE + 'px';
+            canvas.style.height = CANVAS_SIZE + 'px';
             canvas.getContext('2d').scale(dpr, dpr);
           }
         });
-        
+
         this.drawBackground();
         this.redrawStrokes();
       },
@@ -1785,9 +1784,9 @@
       drawBackground() {
         const canvas = this.$refs.bgCanvas;
         if (!canvas) return;
-        
+
         const ctx = canvas.getContext('2d');
-        const dpr = window.devicePixelRatio || 1;
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
         const w = canvas.width / dpr;
         const h = canvas.height / dpr;
         const bg = this.currentBackground;
@@ -1834,14 +1833,74 @@
       redrawStrokes() {
         const canvas = this.$refs.staticCanvas;
         if (!canvas) return;
-        
+
         const ctx = canvas.getContext('2d');
-        const dpr = window.devicePixelRatio || 1;
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
         ctx.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr);
         
         this.strokes.forEach(stroke => drawStrokeToCanvas(ctx, stroke));
       },
       
+      computeStrokeBounds() {
+        const strokes = this.strokes;
+        if (!strokes || strokes.length === 0) return null;
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const stroke of strokes) {
+          if (!stroke.points) continue;
+          const halfW = (stroke.size || 2) / 2;
+          for (const p of stroke.points) {
+            if (p.x - halfW < minX) minX = p.x - halfW;
+            if (p.y - halfW < minY) minY = p.y - halfW;
+            if (p.x + halfW > maxX) maxX = p.x + halfW;
+            if (p.y + halfW > maxY) maxY = p.y + halfW;
+          }
+        }
+        if (!isFinite(minX)) return null;
+        return { minX, minY, maxX, maxY };
+      },
+
+      computeFitView() {
+        const container = this.$refs.container;
+        if (!container) return { scale: 1, x: 0, y: 0 };
+        const cRect = container.getBoundingClientRect();
+        const cw = cRect.width;
+        const ch = cRect.height;
+        const bounds = this.computeStrokeBounds();
+        if (!bounds) {
+          // No strokes: fit full canvas centered
+          const scale = Math.min(cw / CANVAS_SIZE, ch / CANVAS_SIZE);
+          const x = (cw - CANVAS_SIZE * scale) / 2;
+          const y = (ch - CANVAS_SIZE * scale) / 2;
+          return { scale, x, y };
+        }
+        const pad = 40;
+        const bw = bounds.maxX - bounds.minX + pad * 2;
+        const bh = bounds.maxY - bounds.minY + pad * 2;
+        const scale = Math.min(cw / bw, ch / bh, 1);
+        const cx = bounds.minX - pad;
+        const cy = bounds.minY - pad;
+        const x = (cw - bw * scale) / 2 - cx * scale;
+        const y = (ch - bh * scale) / 2 - cy * scale;
+        return { scale, x, y };
+      },
+
+      fitToContent() {
+        const { scale, x, y } = this.computeFitView();
+        this.viewScale = scale;
+        this.viewX = x;
+        this.viewY = y;
+        this.fitScale = scale;
+        this.fitX = x;
+        this.fitY = y;
+      },
+
+      updateFitReference() {
+        const { scale, x, y } = this.computeFitView();
+        this.fitScale = scale;
+        this.fitX = x;
+        this.fitY = y;
+      },
+
       setBackground(bg) {
         if (!this.currentPage) return;
         this.currentPage.background = bg;
@@ -1868,6 +1927,7 @@
         this.currentPages[nbId] = nextIndex;
         this.drawBackground();
         this.redrawStrokes();
+        this.fitToContent();
 
         if (isNewPage) {
           this.scheduleSave();
@@ -1888,6 +1948,7 @@
         this.currentPages[nbId] = (this.currentPages[nbId] ?? 0) - 1;
         this.drawBackground();
         this.redrawStrokes();
+        this.fitToContent();
         this._saveLocalSettings();
 
         // Animation (nicht-blockierend)
@@ -2102,7 +2163,7 @@
               const ac = this.$refs.activeCanvas;
               if (ac) {
                 const ctx = ac.getContext('2d');
-                const dpr = window.devicePixelRatio || 1;
+                const dpr = Math.min(window.devicePixelRatio || 1, 2);
                 ctx.clearRect(0, 0, ac.width / dpr, ac.height / dpr);
               }
             }
@@ -2287,13 +2348,14 @@
           }
           
           this.scheduleSave();
+          this.updateFitReference();
         }
-        
+
         // Clear active canvas
         const canvas = this.$refs.activeCanvas;
         if (canvas) {
           const ctx = canvas.getContext('2d');
-          const dpr = window.devicePixelRatio || 1;
+          const dpr = Math.min(window.devicePixelRatio || 1, 2);
           ctx.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr);
         }
         
