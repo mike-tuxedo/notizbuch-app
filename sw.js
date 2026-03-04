@@ -54,7 +54,8 @@ async function cacheFirst(request) {
 
   if (cached) {
     // HTML im Hintergrund aktualisieren (stale-while-revalidate)
-    if (request.url.endsWith('.html') || request.url.endsWith('/')) {
+    if (request.url.endsWith('.html') || request.url.endsWith('/') ||
+        request.url.includes('/libs/')) {
       fetch(request).then(res => {
         if (res.ok) caches.open(CACHE_NAME).then(c => c.put(request, res));
       }).catch(() => {});

@@ -226,6 +226,15 @@
       color: rgba(255,255,255,0.9);
     }
     
+    .peer-info {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      color: rgba(255,255,255,0.6);
+      font-size: 11px;
+      padding: 2px 6px;
+    }
+
     /* Page nav */
     .page-nav {
       display: flex;
@@ -695,6 +704,40 @@
       transition: background 0.15s;
     }
     .zoom-reset-btn:hover { background: rgba(0,0,0,0.75); }
+
+    /* Color trigger & swatches wrapper */
+    .color-trigger {
+      display: none;
+      width: 26px; height: 26px;
+      border-radius: 50%;
+      border: 2px solid rgba(255,255,255,0.5);
+      cursor: pointer;
+    }
+    .color-group-swatches { display: flex; gap: 6px; align-items: center; }
+
+    @media (max-width: 768px) {
+      .notebook-btn .nb-label,
+      .notebook-btn .nb-chevron { display: none; }
+      .notebook-btn { padding: 8px; }
+
+      .color-group-swatches { display: none; }
+      .color-trigger { display: flex; }
+
+      .color-menu {
+        position: absolute;
+        bottom: 100%;
+        right: 0;
+        margin-bottom: 6px;
+        background: rgba(40,40,40,0.98);
+        border-radius: 8px;
+        border: 1px solid rgba(255,255,255,0.1);
+        padding: 10px;
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        gap: 8px;
+        z-index: 100;
+      }
+    }
   </style>
 </head>
 <body>
@@ -709,8 +752,8 @@
               <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
               <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
             </svg>
-            {{ currentNotebook?.name || 'Notizbuch' }}
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <span class="nb-label">{{ currentNotebook?.name || 'Notizbuch' }}</span>
+            <svg class="nb-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M6 9l6 6 6-6"/>
             </svg>
           </button>
@@ -807,14 +850,25 @@
       </div>
 
       <!-- Colors -->
-      <div class="toolbar-group">
-        <button v-for="c in colors" :key="c" 
-                class="color-btn" 
-                :class="{ active: color === c, white: c === '#ffffff' }"
-                :style="{ background: c }"
-                @click="color = c">
-        </button>
-        <input type="color" class="color-picker" v-model="color" title="Eigene Farbe">
+      <div class="toolbar-group" style="position: relative;">
+        <div class="color-group-swatches">
+          <button v-for="c in colors" :key="c"
+                  class="color-btn"
+                  :class="{ active: color === c, white: c === '#ffffff' }"
+                  :style="{ background: c }"
+                  @click="color = c">
+          </button>
+          <input type="color" class="color-picker" v-model="color" title="Eigene Farbe">
+        </div>
+        <button class="color-trigger" @click.stop="showColorMenu = !showColorMenu"
+                :style="{ background: color }"></button>
+        <div class="color-menu" v-if="showColorMenu" @click.stop>
+          <button v-for="c in colors" :key="c" class="color-btn"
+                  :class="{ active: color === c, white: c === '#ffffff' }"
+                  :style="{ background: c }"
+                  @click="color = c; showColorMenu = false"></button>
+          <input type="color" class="color-picker" v-model="color" title="Eigene Farbe">
+        </div>
       </div>
 
       <!-- Pen sizes -->
@@ -846,6 +900,25 @@
         </div>
         <span class="toggle-label">Handerkennung</span>
       </label>
+
+      <!-- Debug -->
+      <div class="toolbar-group debug-group">
+        <button class="tool-btn" @click="clearCache()" title="Cache leeren & neu laden">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="23 4 23 10 17 10"/>
+            <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+          </svg>
+        </button>
+        <span class="peer-info" title="Verbundene Peers">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+            <circle cx="9" cy="7" r="4"/>
+            <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+            <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+          </svg>
+          {{ connectedPeers.length }}
+        </span>
+      </div>
 
       <!-- Page navigation -->
       <div class="page-nav">
@@ -1087,6 +1160,7 @@
       notebooks: [],
       currentNotebookId: null,
       showNotebookMenu: false,
+      showColorMenu: false,
       editingName: false,
       newName: '',
       
@@ -1132,6 +1206,8 @@
       zenMode: false,
       isFullscreen: false,
       webrtcWarning: false,
+      connectedPeers: [],
+      selfPeerId: null,
       viewScale: 1,
       viewX: 0,
       viewY: 0,
@@ -1195,6 +1271,21 @@
         const { gdb } = await import('./libs/genosdb.js');
         db = await gdb(roomKey, { rtc: true });
 
+        this.selfPeerId = db.selfId;
+        if (db.room) {
+          const initialPeers = db.room.getPeers();
+          if (initialPeers) this.connectedPeers = initialPeers instanceof Map ? Array.from(initialPeers.keys()) : Object.keys(initialPeers);
+
+          db.room.on('peer:join', (peerId) => {
+            if (!this.connectedPeers.includes(peerId)) {
+              this.connectedPeers.push(peerId);
+            }
+          });
+          db.room.on('peer:leave', (peerId) => {
+            this.connectedPeers = this.connectedPeers.filter(id => id !== peerId);
+          });
+        }
+
         // WebRTC-Fähigkeit prüfen (läuft parallel, blockiert init nicht)
         // Ergebnis nach ~0-4s: false → UDP blockiert → Warnung anzeigen
         checkWebRTCCapability().then(ok => {
@@ -1214,6 +1305,9 @@
           if (p2pResolve) p2pResolve();
         }
 
+        let earlyResolve = null;
+        const earlyPromise = new Promise(r => earlyResolve = r);
+
         const { unsubscribe } = db.map(function({ id, value, action }) {
           // 'settings' komplett ignorieren – wird nicht mehr via P2P geteilt
           if (id === 'settings') return;
@@ -1222,6 +1316,7 @@
             // Init-Phase: lokale OPFS-Daten (initial) UND P2P-Daten (added/updated) sammeln
             if (action === 'initial' || action === 'added' || action === 'updated') {
               notebooksMap[id] = value;
+              if (earlyResolve) { earlyResolve(); earlyResolve = null; }
             }
             // Nach P2P-Events: Debounce-Timer zurücksetzen
             if (action === 'added' || action === 'updated') {
@@ -1233,12 +1328,19 @@
             if (action === 'added' || action === 'updated') {
               const idx = self.notebooks.findIndex(nb => String(nb.id) === String(id));
               if (idx >= 0) {
-                // Notebooks enthalten kein currentPage – direkt übernehmen
-                self.notebooks[idx] = JSON.parse(JSON.stringify(value));
+                // splice triggert PetiteVue-Reaktivität (Index-Zuweisung tut es nicht)
+                self.notebooks.splice(idx, 1, JSON.parse(JSON.stringify(value)));
               } else {
                 self.notebooks.push(JSON.parse(JSON.stringify(value)));
                 // Neue Notebooks starten auf Seite 0 (lokal)
                 if (!(String(id) in self.currentPages)) self.currentPages[String(id)] = 0;
+              }
+              // Seitenindex auf gültigen Bereich begrenzen
+              const updatedNb = self.notebooks.find(nb => String(nb.id) === String(id));
+              if (updatedNb && updatedNb.pages) {
+                const maxPage = updatedNb.pages.length - 1;
+                const curPage = self.currentPages[String(id)] ?? 0;
+                if (curPage > maxPage) self.currentPages[String(id)] = maxPage;
               }
               if (String(id) === String(self.currentNotebookId)) {
                 self.drawBackground();
@@ -1259,8 +1361,8 @@
           }
         });
 
-        // Phase 1: Auf lokale OPFS-Daten warten (schnell, <150ms)
-        await new Promise(resolve => setTimeout(resolve, 150));
+        // Phase 1: Warte auf erste Daten ODER max 600ms
+        await Promise.race([earlyPromise, new Promise(r => setTimeout(r, 600))]);
 
         // Phase 2: Bei geteilter URL ohne lokale Daten → auf P2P-Sync warten
         if (isSharedUrl && Object.keys(notebooksMap).length === 0) {
@@ -1304,6 +1406,7 @@
           if (!e.target.closest('.notebook-selector')) {
             this.showNotebookMenu = false;
           }
+          this.showColorMenu = false;
         });
 
         // Fullscreen-Zustand mit Browser synchronisieren (z.B. ESC-Taste)
@@ -1610,6 +1713,26 @@
         this.scheduleSave();
       },
       
+      async clearCache() {
+        localStorage.clear();
+        const dbs = await indexedDB.databases();
+        for (const d of dbs) { if (d.name) indexedDB.deleteDatabase(d.name); }
+        const cacheNames = await caches.keys();
+        for (const name of cacheNames) await caches.delete(name);
+        const regs = await navigator.serviceWorker.getRegistrations();
+        for (const reg of regs) await reg.unregister();
+        if (navigator.storage?.getDirectory) {
+          try {
+            const root = await navigator.storage.getDirectory();
+            for await (const [name] of root.entries()) {
+              await root.removeEntry(name, { recursive: true });
+            }
+          } catch(e) { console.warn('OPFS clear failed:', e); }
+        }
+        window.location.href = window.location.pathname + window.location.hash;
+        window.location.reload();
+      },
+
       // Auto-save via GenosDB
       scheduleSave() {
         if (this.saveTimeout) {
