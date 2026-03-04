@@ -984,7 +984,7 @@
     </div>
 
     <!-- Disconnected Banner -->
-    <div class="disconnected-banner" x-show="_hadPeers && connectedPeers.length === 0 && !syncing" x-cloak>
+    <div class="disconnected-banner" v-show="hadPeers && connectedPeers.length === 0 && !syncing" v-cloak>
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <line x1="1" y1="1" x2="23" y2="23"></line>
         <path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"></path>
@@ -1253,7 +1253,7 @@
       zenMode: false,
       isFullscreen: false,
       webrtcWarning: false,
-      _hadPeers: false,
+      hadPeers: false,
       connectedPeers: [],
       selfPeerId: null,
       viewScale: 1,
@@ -1324,14 +1324,14 @@
           const initialPeers = db.room.getPeers();
           if (initialPeers) {
             this.connectedPeers = initialPeers instanceof Map ? Array.from(initialPeers.keys()) : Object.keys(initialPeers);
-            if (this.connectedPeers.length > 0) this._hadPeers = true;
+            if (this.connectedPeers.length > 0) this.hadPeers = true;
           }
 
           db.room.on('peer:join', (peerId) => {
             if (!this.connectedPeers.includes(peerId)) {
               this.connectedPeers.push(peerId);
             }
-            this._hadPeers = true;
+            this.hadPeers = true;
           });
           db.room.on('peer:leave', (peerId) => {
             this.connectedPeers = this.connectedPeers.filter(id => id !== peerId);
