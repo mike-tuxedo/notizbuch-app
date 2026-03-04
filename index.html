@@ -319,13 +319,15 @@
       border-radius: 12px;
       box-shadow: 0 4px 24px rgba(0,0,0,0.4);
       perspective: 2000px;
-      background: #d0d0d0;
+      background: #fafafa;
     }
     
     .canvas-wrapper {
       position: absolute;
       top: 0;
       left: 0;
+      width: 100%;
+      height: 100%;
       transform-style: preserve-3d;
       transform-origin: left center;
     }
@@ -366,6 +368,8 @@
       position: absolute;
       top: 0;
       left: 0;
+      width: 100%;
+      height: 100%;
       border-radius: 12px;
     }
     
@@ -792,6 +796,8 @@
       position: absolute;
       top: 0;
       left: 0;
+      width: 100%;
+      height: 100%;
       transform-origin: 0 0;
       transform-style: preserve-3d;
     }
@@ -824,7 +830,7 @@
     }
     .color-group-swatches { display: flex; gap: 6px; align-items: center; }
 
-    .burger-btn { display: none; }
+    .burger-btn { display: none; min-width: 36px; }
     .zen-group { margin-left: auto; }
     .share-btn {
       display: flex;
@@ -1188,7 +1194,7 @@
         <span class="page-info">{{ currentPageIndex + 1 }} / {{ totalPages }}</span>
         <button class="page-btn primary"  @click="nextPage()">→</button>
       </div>
-      <div class="canvas-zoom-wrapper" :style="{ transform: `translate(${viewX}px,${viewY}px) scale(${viewScale})` }">
+      <div class="canvas-zoom-wrapper">
         <div class="canvas-wrapper" :class="flipClass">
           <canvas id="bgCanvas" ref="bgCanvas"></canvas>
           <canvas id="staticCanvas" ref="staticCanvas"></canvas>
@@ -1204,7 +1210,7 @@
       </div>
       <button v-if="Math.abs(viewScale - fitScale) > 0.01 || Math.abs(viewX - fitX) > 1 || Math.abs(viewY - fitY) > 1" class="zoom-reset-btn"
               @click="fitToContent()">
-        {{ Math.round(viewScale * 100) }}% ✕
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
       </button>
     </div>
 
@@ -1248,8 +1254,6 @@
 
   <script>
     const { createApp } = PetiteVue;
-
-    const CANVAS_SIZE = 3000;
 
     // GenosDB instance (initialized in init())
     let db;
@@ -1621,6 +1625,7 @@
               if (String(id) === String(self.currentNotebookId)) {
                 self.drawBackground();
                 self.redrawStrokes();
+                self.updateFitReference();
               }
               // Sync-Indikator kurz aufleuchten lassen
               self.peerSync = true;
@@ -1632,6 +1637,7 @@
                 self.currentNotebookId = self.notebooks[0].id;
                 self.drawBackground();
                 self.redrawStrokes();
+                self.updateFitReference();
               }
             }
           }
@@ -1677,7 +1683,10 @@
 
         this.setupCanvases();
         this.fitToContent();
-        window.addEventListener('resize', () => this.updateFitReference());
+        window.addEventListener('resize', () => {
+          this.setupCanvases();
+          this.updateFitReference();
+        });
 
         document.addEventListener('click', (e) => {
           if (!e.target.closest('.notebook-selector')) {
@@ -1692,7 +1701,7 @@
         document.addEventListener('fullscreenchange', () => {
           if (!document.fullscreenElement && this.zenMode) {
             this.zenMode = false;
-            setTimeout(() => this.updateFitReference(), 100);
+            setTimeout(() => { this.setupCanvases(); this.updateFitReference(); }, 100);
           }
         });
 
@@ -1727,7 +1736,7 @@
             document.exitFullscreen().catch(() => {});
           }
         }
-        setTimeout(() => this.updateFitReference(), 100);
+        setTimeout(() => { this.setupCanvases(); this.updateFitReference(); }, 100);
       },
 
       // Nur gerätespezifische Einstellungen (Navigation) in IndexedDB speichern – kein P2P-Sync
@@ -1764,15 +1773,15 @@
         const container = this.$refs.container;
         if (!container) return;
 
+        const rect = container.getBoundingClientRect();
         const dpr = Math.min(window.devicePixelRatio || 1, 2);
 
         ['bgCanvas', 'staticCanvas', 'activeCanvas'].forEach(name => {
           const canvas = this.$refs[name];
           if (canvas) {
-            canvas.width = CANVAS_SIZE * dpr;
-            canvas.height = CANVAS_SIZE * dpr;
-            canvas.style.width = CANVAS_SIZE + 'px';
-            canvas.style.height = CANVAS_SIZE + 'px';
+            // Setting width/height resets the context transform
+            canvas.width = rect.width * dpr;
+            canvas.height = rect.height * dpr;
             canvas.getContext('2d').scale(dpr, dpr);
           }
         });
@@ -1790,43 +1799,76 @@
         const w = canvas.width / dpr;
         const h = canvas.height / dpr;
         const bg = this.currentBackground;
-        
+
         ctx.fillStyle = '#fafafa';
         ctx.fillRect(0, 0, w, h);
-        
+
         if (bg === 'grid') {
           const gridSize = 20;
+          const s = this.viewScale;
+          const vx = this.viewX;
+          const vy = this.viewY;
+
+          // Sichtbarer Weltbereich
+          const worldLeft = -vx / s;
+          const worldTop = -vy / s;
+          const worldRight = (w - vx) / s;
+          const worldBottom = (h - vy) / s;
+
+          // Kleine Linien
           ctx.strokeStyle = '#c5d8f0';
           ctx.lineWidth = 0.5;
-          
-          for (let x = gridSize; x < w; x += gridSize) {
-            ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+          const startX = Math.floor(worldLeft / gridSize) * gridSize;
+          const startY = Math.floor(worldTop / gridSize) * gridSize;
+          for (let wx = startX; wx <= worldRight; wx += gridSize) {
+            const sx = wx * s + vx;
+            ctx.beginPath(); ctx.moveTo(sx, 0); ctx.lineTo(sx, h); ctx.stroke();
           }
-          for (let y = gridSize; y < h; y += gridSize) {
-            ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+          for (let wy = startY; wy <= worldBottom; wy += gridSize) {
+            const sy = wy * s + vy;
+            ctx.beginPath(); ctx.moveTo(0, sy); ctx.lineTo(w, sy); ctx.stroke();
           }
-          
+
+          // Große Linien (alle 5)
+          const bigGrid = gridSize * 5;
           ctx.strokeStyle = '#a3c2e8';
           ctx.lineWidth = 1;
-          for (let x = gridSize * 5; x < w; x += gridSize * 5) {
-            ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+          const startBX = Math.floor(worldLeft / bigGrid) * bigGrid;
+          const startBY = Math.floor(worldTop / bigGrid) * bigGrid;
+          for (let wx = startBX; wx <= worldRight; wx += bigGrid) {
+            const sx = wx * s + vx;
+            ctx.beginPath(); ctx.moveTo(sx, 0); ctx.lineTo(sx, h); ctx.stroke();
           }
-          for (let y = gridSize * 5; y < h; y += gridSize * 5) {
-            ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+          for (let wy = startBY; wy <= worldBottom; wy += bigGrid) {
+            const sy = wy * s + vy;
+            ctx.beginPath(); ctx.moveTo(0, sy); ctx.lineTo(w, sy); ctx.stroke();
           }
         } else if (bg === 'lined') {
           const lineHeight = 28;
           const marginTop = 60;
+          const s = this.viewScale;
+          const vx = this.viewX;
+          const vy = this.viewY;
+
+          const worldTop = -vy / s;
+          const worldBottom = (h - vy) / s;
+          const worldLeft = -vx / s;
+          const worldRight = (w - vx) / s;
+
           ctx.strokeStyle = '#c5d8f0';
           ctx.lineWidth = 1;
-          
-          for (let y = marginTop; y < h; y += lineHeight) {
-            ctx.beginPath(); ctx.moveTo(40, y); ctx.lineTo(w - 20, y); ctx.stroke();
+          const startY = Math.max(marginTop, Math.floor((worldTop - marginTop) / lineHeight) * lineHeight + marginTop);
+          for (let wy = startY; wy <= worldBottom; wy += lineHeight) {
+            const sy = wy * s + vy;
+            const sxLeft = 40 * s + vx;
+            const sxRight = worldRight * s + vx;
+            ctx.beginPath(); ctx.moveTo(sxLeft, sy); ctx.lineTo(sxRight, sy); ctx.stroke();
           }
-          
+
           ctx.strokeStyle = '#ffaaaa';
           ctx.lineWidth = 1;
-          ctx.beginPath(); ctx.moveTo(60, 0); ctx.lineTo(60, h); ctx.stroke();
+          const marginX = 60 * s + vx;
+          ctx.beginPath(); ctx.moveTo(marginX, 0); ctx.lineTo(marginX, h); ctx.stroke();
         }
       },
       
@@ -1837,8 +1879,12 @@
         const ctx = canvas.getContext('2d');
         const dpr = Math.min(window.devicePixelRatio || 1, 2);
         ctx.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr);
-        
+
+        ctx.save();
+        ctx.translate(this.viewX, this.viewY);
+        ctx.scale(this.viewScale, this.viewScale);
         this.strokes.forEach(stroke => drawStrokeToCanvas(ctx, stroke));
+        ctx.restore();
       },
       
       computeStrokeBounds() {
@@ -1867,11 +1913,8 @@
         const ch = cRect.height;
         const bounds = this.computeStrokeBounds();
         if (!bounds) {
-          // No strokes: fit full canvas centered
-          const scale = Math.min(cw / CANVAS_SIZE, ch / CANVAS_SIZE);
-          const x = (cw - CANVAS_SIZE * scale) / 2;
-          const y = (ch - CANVAS_SIZE * scale) / 2;
-          return { scale, x, y };
+          // No strokes: 1:1, no offset
+          return { scale: 1, x: 0, y: 0 };
         }
         const pad = 40;
         const bw = bounds.maxX - bounds.minX + pad * 2;
@@ -1892,6 +1935,8 @@
         this.fitScale = scale;
         this.fitX = x;
         this.fitY = y;
+        this.drawBackground();
+        this.redrawStrokes();
       },
 
       updateFitReference() {
@@ -2095,13 +2140,12 @@
       
       // Drawing with Palm Rejection
       getPos(e) {
-        const canvas = this.$refs.activeCanvas;
-        const rect = canvas.getBoundingClientRect();
-        // getBoundingClientRect berücksichtigt CSS-Transform des Elternelements,
-        // daher durch viewScale teilen um Canvas-Koordinaten zu erhalten
+        const container = this.$refs.container;
+        const rect = container.getBoundingClientRect();
+        // Screen → World: Offset abziehen, durch Scale teilen
         return {
-          x: (e.clientX - rect.left) / this.viewScale,
-          y: (e.clientY - rect.top) / this.viewScale
+          x: (e.clientX - rect.left - this.viewX) / this.viewScale,
+          y: (e.clientY - rect.top - this.viewY) / this.viewScale
         };
       },
       
@@ -2221,6 +2265,8 @@
               this.viewX = midX0 - canvasX * newScale + panDX;
               this.viewY = midY0 - canvasY * newScale + panDY;
               this.viewScale = newScale;
+              this.drawBackground();
+              this.redrawStrokes();
             }
             return;
           }
@@ -2247,35 +2293,42 @@
       drawEraserPoint(pos) {
         const canvas = this.$refs.staticCanvas;
         if (!canvas) return;
-        
+
         const ctx = canvas.getContext('2d');
         const size = this.penSizes[this.penSizeIndex].size * 3;
-        
+
+        ctx.save();
+        ctx.translate(this.viewX, this.viewY);
+        ctx.scale(this.viewScale, this.viewScale);
         ctx.globalCompositeOperation = 'destination-out';
         ctx.fillStyle = 'rgba(0,0,0,1)';
         ctx.beginPath();
         ctx.arc(pos.x, pos.y, size / 2, 0, Math.PI * 2);
         ctx.fill();
+        ctx.restore();
       },
-      
+
       drawEraserSegment() {
         const canvas = this.$refs.staticCanvas;
         if (!canvas || this.currentPoints.length < 2) return;
-        
+
         const ctx = canvas.getContext('2d');
         const size = this.penSizes[this.penSizeIndex].size * 3;
         const pts = this.currentPoints;
         const from = pts[pts.length - 2];
         const to = pts[pts.length - 1];
-        
+
+        ctx.save();
+        ctx.translate(this.viewX, this.viewY);
+        ctx.scale(this.viewScale, this.viewScale);
         ctx.globalCompositeOperation = 'destination-out';
         ctx.fillStyle = 'rgba(0,0,0,1)';
-        
+
         // Kreis am neuen Punkt
         ctx.beginPath();
         ctx.arc(to.x, to.y, size / 2, 0, Math.PI * 2);
         ctx.fill();
-        
+
         // Linie zwischen den Punkten
         ctx.lineWidth = size;
         ctx.lineCap = 'round';
@@ -2284,24 +2337,29 @@
         ctx.moveTo(from.x, from.y);
         ctx.lineTo(to.x, to.y);
         ctx.stroke();
+        ctx.restore();
       },
       
       drawActiveStroke() {
         const canvas = this.$refs.activeCanvas;
         if (!canvas || this.currentPoints.length < 2) return;
-        
+
         const ctx = canvas.getContext('2d');
-        const dpr = window.devicePixelRatio || 1;
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
         ctx.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr);
-        
+
         const tempStroke = {
           points: this.currentPoints,
           color: this.color,
           size: this.penSizes[this.penSizeIndex].size,
           tool: this.tool
         };
-        
+
+        ctx.save();
+        ctx.translate(this.viewX, this.viewY);
+        ctx.scale(this.viewScale, this.viewScale);
         drawStrokeToCanvas(ctx, tempStroke);
+        ctx.restore();
       },
       
       stopDrawing(e) {
