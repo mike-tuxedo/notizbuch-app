@@ -1142,9 +1142,9 @@
 
       <!-- Page navigation (Desktop) -->
       <div class="page-nav desktop-only">
-        <button class="page-btn" :disabled="!canGoPrev || isFlipping" @click="prevPage()">← Zurück</button>
+        <button class="page-btn" :disabled="!canGoPrev" @click="prevPage()">← Zurück</button>
         <span class="page-info">Seite {{ currentPageIndex + 1 }} / {{ totalPages }}</span>
-        <button class="page-btn primary" :disabled="isFlipping" @click="nextPage()">Weiter →</button>
+        <button class="page-btn primary"  @click="nextPage()">Weiter →</button>
       </div>
     </div>
 
@@ -1190,9 +1190,9 @@
     <div class="canvas-container" ref="container">
       <!-- Floating page nav (Mobil) -->
       <div class="floating-page-nav">
-        <button class="page-btn" :disabled="!canGoPrev || isFlipping" @click="prevPage()">←</button>
+        <button class="page-btn" :disabled="!canGoPrev" @click="prevPage()">←</button>
         <span class="page-info">{{ currentPageIndex + 1 }} / {{ totalPages }}</span>
-        <button class="page-btn primary" :disabled="isFlipping" @click="nextPage()">→</button>
+        <button class="page-btn primary"  @click="nextPage()">→</button>
       </div>
       <div class="canvas-zoom-wrapper" :style="{ transform: `translate(${viewX}px,${viewY}px) scale(${viewScale})` }">
         <div class="canvas-wrapper" :class="flipClass">
@@ -1440,7 +1440,7 @@
       ],
       
       flipClass: '',
-      isFlipping: false,
+      flipTimer: null,
       isDrawing: false,
       currentPoints: [],
       lastPoint: null,
@@ -1851,58 +1851,49 @@
       
       // Page navigation
       nextPage() {
-        if (!this.currentNotebook || this.isFlipping) return;
-
-        this.isFlipping = true;
-        this.flipClass = 'flip-out-next';
+        if (!this.currentNotebook) return;
 
         const nbId = this.currentNotebookId;
         const curIdx = this.currentPages[nbId] ?? 0;
-        const isNewPage = (curIdx + 1) >= this.currentNotebook.pages.length;
-        const bgForNewPage = this.currentBackground;
+        const nextIndex = curIdx + 1;
+        const isNewPage = nextIndex >= this.currentNotebook.pages.length;
 
-        setTimeout(() => {
-          const nextIndex = curIdx + 1;
-          if (nextIndex >= this.currentNotebook.pages.length) {
-            this.currentNotebook.pages.push({
-              id: Date.now(),
-              strokes: [],
-              background: bgForNewPage
-            });
-          }
-          this.currentPages[nbId] = nextIndex;
-          this.drawBackground();
-          this.redrawStrokes();
+        if (isNewPage) {
+          this.currentNotebook.pages.push({
+            id: Date.now(),
+            strokes: [],
+            background: this.currentBackground
+          });
+        }
+        this.currentPages[nbId] = nextIndex;
+        this.drawBackground();
+        this.redrawStrokes();
 
-          this.flipClass = '';
-          this.isFlipping = false;
-          // Neue Seite → Peers informieren (neue leere Seite existiert jetzt)
-          // Nur Navigation → lokal speichern
-          if (isNewPage) {
-            this.scheduleSave();
-          } else {
-            this._saveLocalSettings();
-          }
-        }, 400);
+        if (isNewPage) {
+          this.scheduleSave();
+        } else {
+          this._saveLocalSettings();
+        }
+
+        // Animation (nicht-blockierend)
+        this.flipClass = 'flip-out-next';
+        clearTimeout(this.flipTimer);
+        this.flipTimer = setTimeout(() => { this.flipClass = ''; }, 400);
       },
 
       prevPage() {
-        if (!this.canGoPrev || this.isFlipping) return;
-
-        this.isFlipping = true;
+        if (!this.canGoPrev) return;
 
         const nbId = this.currentNotebookId;
         this.currentPages[nbId] = (this.currentPages[nbId] ?? 0) - 1;
         this.drawBackground();
         this.redrawStrokes();
+        this._saveLocalSettings();
 
+        // Animation (nicht-blockierend)
         this.flipClass = 'flip-in-prev';
-
-        setTimeout(() => {
-          this.flipClass = '';
-          this.isFlipping = false;
-          this._saveLocalSettings();
-        }, 400);
+        clearTimeout(this.flipTimer);
+        this.flipTimer = setTimeout(() => { this.flipClass = ''; }, 400);
       },
 
       // Notebook management
