@@ -1564,10 +1564,17 @@
         roomKey = window.location.hash.slice(1);
         const isSharedUrl = !!roomKey;
         if (!roomKey) {
-          roomKey = Array.from(crypto.getRandomValues(new Uint8Array(16)))
-            .map(b => b.toString(16).padStart(2, '0')).join('');
+          // PWA-Start ohne Hash: gespeicherten Key wiederherstellen
+          const savedKey = localStorage.getItem('lastRoomKey');
+          if (savedKey) {
+            roomKey = savedKey;
+          } else {
+            roomKey = Array.from(crypto.getRandomValues(new Uint8Array(16)))
+              .map(b => b.toString(16).padStart(2, '0')).join('');
+          }
           window.location.hash = roomKey;
         }
+        localStorage.setItem('lastRoomKey', roomKey);
 
         // Gerätespezifische Settings aus IndexedDB laden (raumspezifisch geprefixxt)
         const savedCurrentId    = await idbGet(roomKey + ':currentNotebookId');
