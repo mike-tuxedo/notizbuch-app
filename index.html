@@ -17,6 +17,7 @@
   <title>Notizbuch App</title>
   <script src="libs/petite-vue.iife.js"></script>
   <script src="libs/qrcode.min.js"></script>
+  <script src="libs/iro.min.js"></script>
   <style>
     * {
       margin: 0;
@@ -113,7 +114,7 @@
       border-color: rgba(0,0,0,0.2);
     }
     
-    .color-picker {
+    .color-picker-btn {
       width: 20px;
       height: 20px;
       border-radius: 50%;
@@ -121,11 +122,21 @@
       cursor: pointer;
       background: conic-gradient(red, yellow, lime, aqua, blue, magenta, red);
       padding: 0;
-      overflow: hidden;
     }
-    
-    .color-picker::-webkit-color-swatch-wrapper { padding: 0; }
-    .color-picker::-webkit-color-swatch { border: none; border-radius: 50%; }
+
+    .iro-popup {
+      position: absolute;
+      top: 100%;
+      left: 50%;
+      transform: translateX(-50%);
+      margin-top: 8px;
+      background: #1e1e2e;
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 12px;
+      padding: 12px;
+      z-index: 300;
+      box-shadow: 0 12px 32px rgba(0,0,0,0.5);
+    }
     
     /* Size buttons */
     .size-trigger {
@@ -380,6 +391,14 @@
     
     #activeCanvas.eraser {
       cursor: cell;
+    }
+
+    #activeCanvas.hand {
+      cursor: grab;
+    }
+
+    #activeCanvas.hand.grabbing {
+      cursor: grabbing;
     }
     
     /* Notebook menu */
@@ -661,6 +680,14 @@
       background: #fff;
       border-radius: 10px;
       padding: 14px;
+      overflow: hidden;
+    }
+
+    .share-qr-wrap img,
+    .share-qr-wrap canvas {
+      display: block;
+      max-width: 100%;
+      height: auto;
     }
 
     .share-close-btn {
@@ -864,7 +891,8 @@
       }
       .notebook-menu,
       .color-menu,
-      .size-menu {
+      .size-menu,
+      .iro-popup {
         position: fixed;
         top: 50%;
         left: 50%;
@@ -1029,7 +1057,7 @@
                   :style="{ background: c }"
                   @click="color = c">
           </button>
-          <input type="color" class="color-picker" v-model="color" title="Eigene Farbe">
+          <button class="color-picker-btn" @click.stop="toggleIroPicker()" title="Eigene Farbe"></button>
         </div>
         <button class="color-trigger" @click.stop="showColorMenu = !showColorMenu"
                 :style="{ background: color }"></button>
@@ -1038,7 +1066,10 @@
                   :class="{ active: color === c, white: c === '#ffffff' }"
                   :style="{ background: c }"
                   @click="color = c; showColorMenu = false"></button>
-          <input type="color" class="color-picker" v-model="color" title="Eigene Farbe">
+          <button class="color-picker-btn" @click.stop="toggleIroPicker()" title="Eigene Farbe"></button>
+        </div>
+        <div class="iro-popup" v-if="showIroPicker" @click.stop>
+          <div id="iro-picker-container"></div>
         </div>
       </div>
 
@@ -1068,6 +1099,11 @@
             <path d="M20 20H7L3 16c-.6-.6-.6-1.5 0-2.1l10-10c.6-.6 1.5-.6 2.1 0l6 6c.6.6.6 1.5 0 2.1L13 20"/>
           </svg>
         </button>
+        <button class="tool-btn desktop-only" :class="{ active: tool === 'hand' }" @click="tool = 'hand'" title="Verschieben & Zoomen">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M18 11V6a2 2 0 0 0-4 0v1M14 10V4a2 2 0 0 0-4 0v6M10 10.5V5a2 2 0 0 0-4 0v9"/><path d="M18 11a2 2 0 0 1 4 0v5a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 17"/>
+          </svg>
+        </button>
         <div class="divider"></div>
         <button class="tool-btn" @click="showClearConfirm = true" title="Seite löschen">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -1088,8 +1124,8 @@
 
     <!-- Secondary bar -->
     <!-- Backdrop für Mobile Popups -->
-    <div class="popup-backdrop" v-if="showNotebookMenu || showColorMenu || showSizeMenu || showBurgerMenu"
-         @click="showNotebookMenu = false; showColorMenu = false; showSizeMenu = false; showBurgerMenu = false"></div>
+    <div class="popup-backdrop" v-if="showNotebookMenu || showColorMenu || showSizeMenu || showBurgerMenu || showIroPicker"
+         @click="showNotebookMenu = false; showColorMenu = false; showSizeMenu = false; showBurgerMenu = false; showIroPicker = false"></div>
 
     <div class="secondary-bar" :class="{ open: showBurgerMenu }">
       <!-- Background -->
@@ -1199,7 +1235,7 @@
           <canvas id="bgCanvas" ref="bgCanvas"></canvas>
           <canvas id="staticCanvas" ref="staticCanvas"></canvas>
           <canvas id="activeCanvas" ref="activeCanvas"
-                  :class="{ eraser: tool === 'eraser' }"
+                  :class="{ eraser: tool === 'eraser', hand: tool === 'hand', grabbing: tool === 'hand' && isPanning }"
                   @pointerdown="startDrawing"
                   @pointermove="draw"
                   @pointerup="stopDrawing"
@@ -1413,6 +1449,7 @@
       currentNotebookId: null,
       showNotebookMenu: false,
       showColorMenu: false,
+      showIroPicker: false,
       showSizeMenu: false,
       showBurgerMenu: false,
       showClearConfirm: false,
@@ -1420,6 +1457,7 @@
       newName: '',
       
       tool: 'pen',
+      isPanning: false,
       color: '#363636',
       penSizeIndex: 2,
       palmRejection: true,
@@ -1688,6 +1726,27 @@
           this.updateFitReference();
         });
 
+        // Mausrad-Zoom im Hand-Modus
+        const container = this.$refs.container;
+        if (container) {
+          container.addEventListener('wheel', (e) => {
+            if (this.tool !== 'hand') return;
+            e.preventDefault();
+            const cr = container.getBoundingClientRect();
+            const mouseX = e.clientX - cr.left;
+            const mouseY = e.clientY - cr.top;
+            const delta = e.deltaY > 0 ? 0.9 : 1.1;
+            const newScale = Math.min(8, Math.max(0.2, this.viewScale * delta));
+            const canvasX = (mouseX - this.viewX) / this.viewScale;
+            const canvasY = (mouseY - this.viewY) / this.viewScale;
+            this.viewX = mouseX - canvasX * newScale;
+            this.viewY = mouseY - canvasY * newScale;
+            this.viewScale = newScale;
+            this.drawBackground();
+            this.redrawStrokes();
+          }, { passive: false });
+        }
+
         document.addEventListener('click', (e) => {
           if (!e.target.closest('.notebook-selector')) {
             this.showNotebookMenu = false;
@@ -1695,6 +1754,7 @@
           this.showColorMenu = false;
           this.showSizeMenu = false;
           this.showBurgerMenu = false;
+          this.showIroPicker = false;
         });
 
         // Zen-Modus beenden wenn Fullscreen per ESC verlassen wird
@@ -1857,12 +1917,10 @@
 
           ctx.strokeStyle = '#c5d8f0';
           ctx.lineWidth = 1;
-          const startY = Math.max(marginTop, Math.floor((worldTop - marginTop) / lineHeight) * lineHeight + marginTop);
+          const startY = Math.floor((worldTop - marginTop) / lineHeight) * lineHeight + marginTop;
           for (let wy = startY; wy <= worldBottom; wy += lineHeight) {
             const sy = wy * s + vy;
-            const sxLeft = 40 * s + vx;
-            const sxRight = worldRight * s + vx;
-            ctx.beginPath(); ctx.moveTo(sxLeft, sy); ctx.lineTo(sxRight, sy); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(0, sy); ctx.lineTo(w, sy); ctx.stroke();
           }
 
           ctx.strokeStyle = '#ffaaaa';
@@ -1890,19 +1948,58 @@
       computeStrokeBounds() {
         const strokes = this.strokes;
         if (!strokes || strokes.length === 0) return null;
-        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        // Grobe Bounds aller Nicht-Eraser-Strokes für Offscreen-Canvas-Größe
+        let rMinX = Infinity, rMinY = Infinity, rMaxX = -Infinity, rMaxY = -Infinity;
         for (const stroke of strokes) {
-          if (!stroke.points) continue;
+          if (!stroke.points || stroke.tool === 'eraser') continue;
           const halfW = (stroke.size || 2) / 2;
           for (const p of stroke.points) {
-            if (p.x - halfW < minX) minX = p.x - halfW;
-            if (p.y - halfW < minY) minY = p.y - halfW;
-            if (p.x + halfW > maxX) maxX = p.x + halfW;
-            if (p.y + halfW > maxY) maxY = p.y + halfW;
+            if (p.x - halfW < rMinX) rMinX = p.x - halfW;
+            if (p.y - halfW < rMinY) rMinY = p.y - halfW;
+            if (p.x + halfW > rMaxX) rMaxX = p.x + halfW;
+            if (p.y + halfW > rMaxY) rMaxY = p.y + halfW;
           }
         }
-        if (!isFinite(minX)) return null;
-        return { minX, minY, maxX, maxY };
+        if (!isFinite(rMinX)) return null;
+        // Keine Eraser-Strokes? Schneller Pfad
+        if (!strokes.some(s => s.tool === 'eraser')) {
+          return { minX: rMinX, minY: rMinY, maxX: rMaxX, maxY: rMaxY };
+        }
+        // Pixel-basierte Bounds: Strokes auf Offscreen-Canvas rendern und scannen
+        const margin = 4;
+        const rawW = rMaxX - rMinX + margin * 2;
+        const rawH = rMaxY - rMinY + margin * 2;
+        const maxDim = 800;
+        const ds = Math.max(1, rawW / maxDim, rawH / maxDim);
+        const w = Math.ceil(rawW / ds);
+        const h = Math.ceil(rawH / ds);
+        if (w < 1 || h < 1) return null;
+        const offscreen = document.createElement('canvas');
+        offscreen.width = w;
+        offscreen.height = h;
+        const ctx = offscreen.getContext('2d');
+        ctx.scale(1 / ds, 1 / ds);
+        ctx.translate(-rMinX + margin, -rMinY + margin);
+        strokes.forEach(stroke => drawStrokeToCanvas(ctx, stroke));
+        const imgData = ctx.getImageData(0, 0, w, h).data;
+        let pMinX = w, pMinY = h, pMaxX = 0, pMaxY = 0;
+        for (let y = 0; y < h; y++) {
+          for (let x = 0; x < w; x++) {
+            if (imgData[(y * w + x) * 4 + 3] > 0) {
+              if (x < pMinX) pMinX = x;
+              if (x > pMaxX) pMaxX = x;
+              if (y < pMinY) pMinY = y;
+              if (y > pMaxY) pMaxY = y;
+            }
+          }
+        }
+        if (pMinX > pMaxX) return null;
+        return {
+          minX: rMinX - margin + pMinX * ds,
+          minY: rMinY - margin + pMinY * ds,
+          maxX: rMinX - margin + (pMaxX + 1) * ds,
+          maxY: rMinY - margin + (pMaxY + 1) * ds
+        };
       },
 
       computeFitView() {
@@ -2049,6 +2146,31 @@
         this.scheduleSave();
       },
       
+      toggleIroPicker() {
+        this.showIroPicker = !this.showIroPicker;
+        this.showColorMenu = false;
+        if (this.showIroPicker) {
+          setTimeout(() => {
+            const container = document.getElementById('iro-picker-container');
+            if (!container) return;
+            container.innerHTML = '';
+            const picker = new iro.ColorPicker(container, {
+              width: 200,
+              color: this.color,
+              borderWidth: 1,
+              borderColor: 'rgba(255,255,255,0.15)',
+              layout: [
+                { component: iro.ui.Wheel },
+                { component: iro.ui.Slider, options: { sliderType: 'value' } }
+              ]
+            });
+            picker.on('color:change', (c) => {
+              this.color = c.hexString;
+            });
+          }, 0);
+        }
+      },
+
       openShare() {
         this.shareUrl = window.location.href;
         this.copySuccess = false;
@@ -2215,6 +2337,17 @@
           }
         }
 
+        // Hand-Tool: Panning starten
+        if (this.tool === 'hand') {
+          this.isPanning = true;
+          this.activePointerId = e.pointerId;
+          this.panStartX = e.clientX;
+          this.panStartY = e.clientY;
+          this.panStartViewX = this.viewX;
+          this.panStartViewY = this.viewY;
+          return;
+        }
+
         // Palm Rejection
         if (this.isPalmOrFinger(e)) {
           return;
@@ -2222,15 +2355,15 @@
 
         // Wenn bereits gezeichnet wird, ignoriere neue Pointer
         if (this.isDrawing) return;
-        
+
         const pos = this.getPos(e);
-        
+
         this.isDrawing = true;
         this.activePointerId = e.pointerId;
         this.activePointerType = e.pointerType;
         this.lastPoint = pos;
         this.currentPoints = [{ x: pos.x, y: pos.y }];
-        
+
         // Für Radierer: direkt auf staticCanvas zeichnen
         if (this.tool === 'eraser') {
           this.drawEraserPoint(pos);
@@ -2272,15 +2405,24 @@
           }
         }
 
+        // Hand-Tool: Panning
+        if (this.isPanning && e.pointerId === this.activePointerId) {
+          this.viewX = this.panStartViewX + (e.clientX - this.panStartX);
+          this.viewY = this.panStartViewY + (e.clientY - this.panStartY);
+          this.drawBackground();
+          this.redrawStrokes();
+          return;
+        }
+
         if (!this.isDrawing) return;
 
         // Nur akzeptieren wenn es der gleiche Pointer ist
         if (e.pointerId !== this.activePointerId) return;
-        
+
         const pos = this.getPos(e);
         this.currentPoints.push({ x: pos.x, y: pos.y });
         this.lastPoint = pos;
-        
+
         if (this.tool === 'eraser') {
           // Radierer: direkt auf staticCanvas
           this.drawEraserSegment();
@@ -2372,11 +2514,18 @@
           if (pinchState.active) return; // noch zwei Finger aktiv
         }
 
+        // Hand-Tool: Panning beenden
+        if (this.isPanning) {
+          this.isPanning = false;
+          this.activePointerId = null;
+          return;
+        }
+
         if (!this.isDrawing) return;
 
         // Nur stoppen wenn es der aktive Pointer ist
         if (e && e.pointerId !== this.activePointerId) return;
-        
+
         this.isDrawing = false;
         this.activePointerId = null;
         this.activePointerType = null;
