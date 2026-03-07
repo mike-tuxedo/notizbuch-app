@@ -139,14 +139,15 @@
     }
     
     /* Size buttons */
+    .size-group-swatches { display: flex; gap: 4px; align-items: center; }
     .size-trigger {
+      display: none;
       width: 32px;
       height: 32px;
       border-radius: 6px;
       background: rgba(255,255,255,0.05);
       border: 1px solid rgba(255,255,255,0.1);
       cursor: pointer;
-      display: flex;
       align-items: center;
       justify-content: center;
     }
@@ -879,6 +880,8 @@
 
       .color-group-swatches { display: none; }
       .color-trigger { display: flex; }
+      .size-group-swatches { display: none; }
+      .size-trigger { display: flex; }
       .edit-btn { display: none; }
       .rename-menu-btn { display: block; }
 
@@ -1075,6 +1078,13 @@
 
       <!-- Pen sizes -->
       <div class="toolbar-group" style="position: relative;">
+        <div class="size-group-swatches">
+          <button v-for="(ps, idx) in penSizes" :key="ps.name"
+                  class="size-btn" :class="{ active: penSizeIndex === idx }"
+                  @click="penSizeIndex = idx">
+            <div class="size-dot" :style="{ width: Math.min(ps.size * 1.5, 16) + 'px', height: Math.min(ps.size * 1.5, 16) + 'px' }"></div>
+          </button>
+        </div>
         <button class="size-trigger" @click.stop="showSizeMenu = !showSizeMenu">
           <div class="size-dot" :style="{ width: Math.min(penSizes[penSizeIndex].size * 1.5, 16) + 'px', height: Math.min(penSizes[penSizeIndex].size * 1.5, 16) + 'px' }"></div>
         </button>
