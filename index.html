@@ -1190,6 +1190,11 @@
           </svg>
         </button>
         <div class="divider"></div>
+        <button class="tool-btn" @click="undo()" :disabled="!currentPage || !currentPage.strokes || currentPage.strokes.length === 0" title="Rückgängig">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
+          </svg>
+        </button>
         <button class="tool-btn" @click="showClearConfirm = true" title="Seite löschen">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
@@ -1672,6 +1677,7 @@
       saveStatus: '',
       saveStatusText: '',
       saveTimeout: null,
+      undoStack: [], // Stack of removed stroke IDs per page for undo
 
       showShareModal: false,
       shareUrl: '',
@@ -2025,10 +2031,15 @@
       async _saveAll() {
         if (!db) return;
         for (const notebook of this.notebooks) {
-          // JSON round-trip: reaktive Proxy-Objekte zu Plain Objects konvertieren
-          // Notebooks enthalten KEIN currentPage mehr – keine Gefahr der Synchronisierung
           await db.put(JSON.parse(JSON.stringify(notebook)), String(notebook.id));
         }
+        await this._saveLocalSettings();
+      },
+
+      // Nur das aktuelle Notebook speichern (schneller als _saveAll)
+      async _saveCurrentNotebook() {
+        if (!db || !this.currentNotebook) return;
+        await db.put(JSON.parse(JSON.stringify(this.currentNotebook)), String(this.currentNotebook.id));
         await this._saveLocalSettings();
       },
       
@@ -2530,6 +2541,13 @@
         this.scheduleSave();
       },
       
+      undo() {
+        if (!this.currentPage || this.currentPage.strokes.length === 0) return;
+        this.currentPage.strokes.pop();
+        this.redrawStrokes();
+        this.scheduleSave();
+      },
+
       clearPage() {
         if (!this.currentPage) return;
         this.currentPage.strokes = [];
@@ -2558,20 +2576,18 @@
         window.location.reload();
       },
 
-      // Auto-save via GenosDB
+      // Auto-save via GenosDB (debounced – nur aktuelles Notebook)
       scheduleSave() {
         if (this.saveTimeout) {
           clearTimeout(this.saveTimeout);
         }
 
         this.saveStatus = 'saving';
-        // this.saveStatusText = 'Speichern...';
 
         this.saveTimeout = setTimeout(async () => {
           try {
-            await this._saveAll();
+            await this._saveCurrentNotebook();
             this.saveStatus = 'saved';
-            // this.saveStatusText = 'Gespeichert ✓';
 
             setTimeout(() => {
               this.saveStatus = '';
@@ -2582,7 +2598,7 @@
             this.saveStatus = '';
             this.saveStatusText = 'Fehler!';
           }
-        }, 500);
+        }, 2000);
       },
       
       // Drawing with Palm Rejection
