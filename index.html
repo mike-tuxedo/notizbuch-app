@@ -896,7 +896,7 @@
     .zoom-reset-btn:hover { background: rgba(0,0,0,0.75); }
 
     .zoom-lock-btn {
-      display: none;
+      display: flex;
       position: absolute;
       bottom: 12px;
       left: 12px;
@@ -1333,7 +1333,7 @@
               @click="fitToContent()">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
       </button>
-      <button class="zoom-lock-btn mobile-only" :class="{ locked: zoomLocked }" @click="zoomLocked = !zoomLocked" :title="zoomLocked ? 'Zoom/Verschieben entsperren' : 'Zoom/Verschieben sperren'">
+      <button v-if="hasTouchscreen" class="zoom-lock-btn" :class="{ locked: zoomLocked }" @click="zoomLocked = !zoomLocked" :title="zoomLocked ? 'Zoom/Verschieben entsperren' : 'Zoom/Verschieben sperren'">
         <svg v-if="zoomLocked" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
         <svg v-else width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>
       </button>
@@ -1684,7 +1684,8 @@
       viewScale: 1,
       viewX: 0,
       viewY: 0,
-      zoomLocked: window.matchMedia('(max-width: 768px)').matches || 'ontouchstart' in window,
+      hasTouchscreen: 'ontouchstart' in window || navigator.maxTouchPoints > 0,
+      zoomLocked: 'ontouchstart' in window || navigator.maxTouchPoints > 0,
       fitScale: 1,
       fitX: 0,
       fitY: 0,
