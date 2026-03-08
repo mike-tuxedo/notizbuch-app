@@ -2610,12 +2610,9 @@
         // Mouse wird akzeptiert
         if (e.pointerType === 'mouse') return false;
 
-        // Touch: Wenn Stift erkannt wurde, alle Touches blockieren
-        // Timeout 500ms nach letztem Pen-Event → Finger wieder erlauben
+        // Touch: Wenn Stiftmodus aktiv, alle Touches blockieren
         if (e.pointerType === 'touch' && this.penDetected) {
-          if (Date.now() - this.penLastSeen < 500) {
-            return true;
-          }
+          return true;
         }
 
         return false;
