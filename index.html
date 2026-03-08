@@ -728,6 +728,30 @@
 
     .share-close-btn:hover { background: rgba(255,255,255,0.14); }
 
+    .scanner-container {
+      position: relative;
+      width: 100%;
+      margin-bottom: 12px;
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    .scanner-container video {
+      width: 100%;
+      height: auto;
+      display: block;
+    }
+    .scanner-overlay-box {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 60%;
+      height: 60%;
+      transform: translate(-50%, -50%);
+      border: 2px solid #4dabf7;
+      border-radius: 8px;
+      pointer-events: none;
+    }
+
     /* Zen Mode */
     .app.zen-mode .secondary-bar { display: none; }
     .app.zen-mode .toolbar {
@@ -1209,6 +1233,14 @@
           </svg>
           Teilen
         </button>
+        <button class="share-btn" @click="showConnectModal = true; showBurgerMenu = false">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/>
+            <polyline points="10 17 15 12 10 7"/>
+            <line x1="15" y1="12" x2="3" y2="12"/>
+          </svg>
+          Verbinden
+        </button>
         <button class="share-btn" @click="clearCache()">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polyline points="23 4 23 10 17 10"/>
@@ -1341,6 +1373,44 @@
           <div id="share-qr-container"></div>
         </div>
         <button class="share-close-btn" @click="closeShare()">Schließen</button>
+      </div>
+    </div>
+
+    <!-- Connect Modal -->
+    <div class="share-overlay" v-if="showConnectModal" @click.self="closeConnect()">
+      <div class="share-modal">
+        <h2>Mit bestehendem Notizbuch verbinden</h2>
+        <p>Scanne den QR-Code eines geteilten Notizbuchs oder gib den Schlüssel manuell ein.</p>
+
+        <!-- Scanner -->
+        <div v-if="scannerActive" class="scanner-container">
+          <video id="qr-video" muted playsinline></video>
+          <div class="scanner-overlay-box"></div>
+        </div>
+        <div v-if="!scannerActive" style="display: flex; gap: 8px; margin-bottom: 12px;">
+          <button class="share-copy-btn" @click="startQRScanner()" style="flex: 1;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: -2px; margin-right: 4px;">
+              <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+              <circle cx="12" cy="13" r="4"/>
+            </svg>
+            QR-Code scannen
+          </button>
+        </div>
+        <div v-if="scannerActive" style="margin-bottom: 12px;">
+          <button class="share-close-btn" @click="stopQRScanner()">Scanner beenden</button>
+        </div>
+
+        <!-- Manual input -->
+        <div v-if="!scannerActive">
+          <div class="share-url-row">
+            <input class="share-url-input" v-model="connectKeyInput" placeholder="Schlüssel oder Link eingeben" @keydown.enter="applyConnectKey()">
+            <button class="share-copy-btn" @click="applyConnectKey()" :disabled="!connectKeyInput.trim()">Verbinden</button>
+          </div>
+        </div>
+
+        <div v-if="connectError" style="color: #ff6b6b; font-size: 12px; margin-bottom: 12px;">{{ connectError }}</div>
+
+        <button class="share-close-btn" @click="closeConnect()">Abbrechen</button>
       </div>
     </div>
   </div>
@@ -1598,6 +1668,10 @@
       showShareModal: false,
       shareUrl: '',
       copySuccess: false,
+      showConnectModal: false,
+      connectKeyInput: '',
+      connectError: '',
+      scannerActive: false,
       syncEnabled: true,
       syncing: false,
       peerSync: false,
@@ -2340,6 +2414,93 @@
 
       closeShare() {
         this.showShareModal = false;
+      },
+
+      closeConnect() {
+        this.stopQRScanner();
+        this.showConnectModal = false;
+        this.connectKeyInput = '';
+        this.connectError = '';
+      },
+
+      async startQRScanner() {
+        this.connectError = '';
+        this.scannerActive = true;
+        try {
+          // jsQR lazy laden
+          if (!window.jsQR) {
+            const script = document.createElement('script');
+            script.src = './libs/jsqr.js';
+            await new Promise((resolve, reject) => {
+              script.onload = resolve;
+              script.onerror = reject;
+              document.head.appendChild(script);
+            });
+          }
+          await new Promise(r => setTimeout(r, 50));
+          const video = document.getElementById('qr-video');
+          const stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: 'environment' }
+          });
+          video.srcObject = stream;
+          video.setAttribute('playsinline', 'true');
+          await video.play();
+
+          const canvas = document.createElement('canvas');
+          const ctx = canvas.getContext('2d', { willReadFrequently: true });
+          const self = this;
+
+          function tick() {
+            if (!self.scannerActive || !video.srcObject) return;
+            if (video.readyState === video.HAVE_ENOUGH_DATA) {
+              canvas.width = video.videoWidth;
+              canvas.height = video.videoHeight;
+              ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+              const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+              const code = window.jsQR(imageData.data, imageData.width, imageData.height, {
+                inversionAttempts: 'dontInvert'
+              });
+              if (code && code.data) {
+                self.connectKeyInput = code.data;
+                self.stopQRScanner();
+                self.applyConnectKey();
+                return;
+              }
+            }
+            requestAnimationFrame(tick);
+          }
+          requestAnimationFrame(tick);
+        } catch (err) {
+          console.error('Kamera-Fehler:', err);
+          this.connectError = 'Kamera konnte nicht geöffnet werden.';
+          this.scannerActive = false;
+        }
+      },
+
+      stopQRScanner() {
+        this.scannerActive = false;
+        const video = document.getElementById('qr-video');
+        if (video && video.srcObject) {
+          video.srcObject.getTracks().forEach(t => t.stop());
+          video.srcObject = null;
+        }
+      },
+
+      applyConnectKey() {
+        let input = this.connectKeyInput.trim();
+        if (!input) return;
+        // URL → Hash extrahieren
+        if (input.includes('#')) {
+          input = input.split('#')[1];
+        }
+        if (!input || input.length < 8) {
+          this.connectError = 'Ungültiger Schlüssel. Mindestens 8 Zeichen erwartet.';
+          return;
+        }
+        // Neuen Key übernehmen und App neu laden
+        localStorage.setItem('lastRoomKey', input);
+        window.location.hash = input;
+        window.location.reload();
       },
 
       async copyShareUrl() {
