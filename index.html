@@ -81,10 +81,8 @@
       background: rgba(255,255,255,0.2);
       color: #fff;
     }
-    .eraser-btn.active {
-      background: rgba(255,107,107,0.25);
-      color: #ff6b6b;
-    }
+    .eraser-btn { color: #ff6b6b; }
+    .eraser-btn.active { background: rgba(255,107,107,0.25); }
     
     .tool-btn:disabled {
       opacity: 0.3;
@@ -141,6 +139,25 @@
       z-index: 300;
       box-shadow: 0 12px 32px rgba(0,0,0,0.5);
     }
+    .iro-custom-colors {
+      display: flex;
+      gap: 4px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+    }
+    .iro-confirm-btn {
+      display: block;
+      width: 100%;
+      margin-top: 8px;
+      padding: 6px;
+      background: rgba(77, 171, 247, 0.2);
+      border: 1px solid rgba(77, 171, 247, 0.3);
+      border-radius: 6px;
+      color: #4dabf7;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .iro-confirm-btn:hover { background: rgba(77, 171, 247, 0.3); }
     
     /* Size buttons */
     .size-group-swatches { display: flex; gap: 4px; align-items: center; }
@@ -1087,12 +1104,6 @@
                   :style="{ background: c }"
                   @click="setColor(c)">
           </button>
-          <button v-for="c in customColors" :key="'cc'+c"
-                  class="color-btn"
-                  :class="{ active: color === c }"
-                  :style="{ background: c }"
-                  @click="setColor(c)">
-          </button>
           <button class="color-picker-btn" @click.stop="toggleIroPicker()" title="Eigene Farbe"></button>
         </div>
         <button class="color-trigger" @click.stop="showColorMenu = !showColorMenu"
@@ -1102,14 +1113,17 @@
                   :class="{ active: color === c, white: c === '#ffffff' }"
                   :style="{ background: c }"
                   @click="setColor(c); showColorMenu = false"></button>
-          <button v-for="c in customColors" :key="'cc'+c" class="color-btn"
-                  :class="{ active: color === c }"
-                  :style="{ background: c }"
-                  @click="setColor(c); showColorMenu = false"></button>
           <button class="color-picker-btn" @click.stop="toggleIroPicker()" title="Eigene Farbe"></button>
         </div>
         <div class="iro-popup" v-if="showIroPicker" @click.stop>
           <div id="iro-picker-container"></div>
+          <div v-if="customColors.length" class="iro-custom-colors">
+            <button v-for="c in customColors" :key="'cc'+c" class="color-btn"
+                    :class="{ active: color === c }"
+                    :style="{ background: c }"
+                    @click="setColor(c)"></button>
+          </div>
+          <button class="iro-confirm-btn" @click="addCustomColor(color); showIroPicker = false">Übernehmen</button>
         </div>
       </div>
 
@@ -2283,9 +2297,6 @@
             });
             picker.on('color:change', (c) => {
               this.color = c.hexString;
-            });
-            picker.on('input:end', (c) => {
-              this.addCustomColor(c.hexString);
             });
           }, 0);
         }
