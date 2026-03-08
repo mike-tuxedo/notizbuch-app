@@ -309,6 +309,7 @@
     }
     .burger-actions .share-btn {
       flex: 1;
+      white-space: nowrap;
     }
     .burger-info {
       display: flex;
@@ -321,6 +322,7 @@
       display: none;
     }
     .desktop-only { display: flex; }
+    .mobile-only { display: none; }
 
     /* Canvas container */
     .canvas-container {
@@ -848,6 +850,26 @@
     }
     .zoom-reset-btn:hover { background: rgba(0,0,0,0.75); }
 
+    .zoom-lock-btn {
+      display: none;
+      position: absolute;
+      bottom: 12px;
+      left: 12px;
+      z-index: 10;
+      background: rgba(0,0,0,0.55);
+      color: rgba(255,255,255,0.85);
+      border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 6px;
+      padding: 6px;
+      cursor: pointer;
+      backdrop-filter: blur(4px);
+      transition: background 0.15s, color 0.15s;
+      align-items: center;
+      justify-content: center;
+    }
+    .zoom-lock-btn:hover { background: rgba(0,0,0,0.75); }
+    .zoom-lock-btn.locked { color: #ffa94d; border-color: rgba(255,169,77,0.3); }
+
     /* Color trigger & swatches wrapper */
     .color-trigger {
       display: none;
@@ -945,6 +967,7 @@
         display: flex;
       }
       .desktop-only { display: none !important; }
+      .mobile-only { display: flex !important; }
       .floating-page-nav {
         display: flex;
         align-items: center;
@@ -1148,14 +1171,6 @@
         </button>
       </div>
 
-      <!-- Palm Rejection Toggle -->
-      <label class="toggle" @click="palmRejection = !palmRejection; scheduleSave()">
-        <div class="toggle-track" :class="{ active: palmRejection }">
-          <div class="toggle-thumb"></div>
-        </div>
-        <span class="toggle-label">Handerkennung</span>
-      </label>
-
       <!-- Aktionen -->
       <div class="burger-actions">
         <button class="share-btn" @click="openShare(); showBurgerMenu = false">
@@ -1257,6 +1272,10 @@
       <button v-if="Math.abs(viewScale - fitScale) > 0.01 || Math.abs(viewX - fitX) > 1 || Math.abs(viewY - fitY) > 1" class="zoom-reset-btn"
               @click="fitToContent()">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+      </button>
+      <button class="zoom-lock-btn mobile-only" :class="{ locked: zoomLocked }" @click="zoomLocked = !zoomLocked" :title="zoomLocked ? 'Zoom/Verschieben entsperren' : 'Zoom/Verschieben sperren'">
+        <svg v-if="zoomLocked" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        <svg v-else width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>
       </button>
     </div>
 
@@ -1423,6 +1442,53 @@
       return [...leftEdge, ...rightEdge.reverse()];
     }
 
+    // Merge remote notebook into local: union of strokes per page
+    function mergeNotebooks(local, remote) {
+      const merged = JSON.parse(JSON.stringify(remote));
+      if (!local || !local.pages) return merged;
+
+      // Index lokale Seiten nach ID
+      const localPageMap = {};
+      for (const page of local.pages) {
+        localPageMap[String(page.id)] = page;
+      }
+
+      // Remote-Seiten: Strokes mit lokalen vereinigen
+      for (const remotePage of merged.pages) {
+        const localPage = localPageMap[String(remotePage.id)];
+        if (!localPage) continue; // Neue Seite vom Peer → übernehmen
+        delete localPageMap[String(remotePage.id)]; // als verarbeitet markieren
+
+        // clearedAt: Der neueste Lösch-Zeitstempel gewinnt
+        const clearedAt = Math.max(localPage.clearedAt || 0, remotePage.clearedAt || 0);
+        if (clearedAt) remotePage.clearedAt = clearedAt;
+
+        // Alle Strokes sammeln die neuer als clearedAt sind
+        const strokeMap = {};
+        for (const s of remotePage.strokes) {
+          if (Number(s.id) > clearedAt) strokeMap[String(s.id)] = s;
+        }
+        for (const s of localPage.strokes) {
+          if (Number(s.id) > clearedAt && !strokeMap[String(s.id)]) {
+            strokeMap[String(s.id)] = JSON.parse(JSON.stringify(s));
+          }
+        }
+
+        // Strokes nach ID sortieren (chronologisch, da ID = timestamp)
+        remotePage.strokes = Object.values(strokeMap).sort((a, b) => Number(a.id) - Number(b.id));
+      }
+
+      // Lokale Seiten die Remote nicht kennt → anfügen (nur wenn sie Strokes haben)
+      for (const pageId of Object.keys(localPageMap)) {
+        const page = localPageMap[pageId];
+        if (page.strokes && page.strokes.length > 0) {
+          merged.pages.push(JSON.parse(JSON.stringify(page)));
+        }
+      }
+
+      return merged;
+    }
+
     // Draw stroke to canvas
     function drawStrokeToCanvas(ctx, stroke) {
       if (!stroke.points || stroke.points.length < 2) return;
@@ -1515,6 +1581,7 @@
       viewScale: 1,
       viewX: 0,
       viewY: 0,
+      zoomLocked: window.matchMedia('(max-width: 768px)').matches || 'ontouchstart' in window,
       fitScale: 1,
       fitX: 0,
       fitY: 0,
@@ -1648,9 +1715,9 @@
           if (id === 'settings') return;
 
           if (!dbInitialized) {
-            // Init-Phase: lokale OPFS-Daten (initial) UND P2P-Daten (added/updated) sammeln
+            // Init-Phase: lokale OPFS-Daten (initial) UND P2P-Daten (added/updated) mergen
             if (action === 'initial' || action === 'added' || action === 'updated') {
-              notebooksMap[id] = value;
+              notebooksMap[id] = notebooksMap[id] ? mergeNotebooks(notebooksMap[id], value) : value;
               if (earlyResolve) { earlyResolve(); earlyResolve = null; }
             }
             // Nach P2P-Events: Debounce-Timer zurücksetzen
@@ -1659,12 +1726,21 @@
               p2pDebounceTimer = setTimeout(triggerP2PDone, 400);
             }
           } else {
-            // Nach der Init-Phase: reaktiv auf P2P-Updates reagieren
+            // Nach der Init-Phase: reaktiv auf P2P-Updates reagieren (Stroke-Level Merge)
             if (action === 'added' || action === 'updated') {
               const idx = self.notebooks.findIndex(nb => String(nb.id) === String(id));
               if (idx >= 0) {
-                // splice triggert PetiteVue-Reaktivität (Index-Zuweisung tut es nicht)
-                self.notebooks.splice(idx, 1, JSON.parse(JSON.stringify(value)));
+                // Merge: lokale Strokes behalten, Remote-Strokes dazuführen
+                const local = self.notebooks[idx];
+                const merged = mergeNotebooks(local, value);
+                // Nur updaten wenn Merge tatsächlich etwas geändert hat (verhindert Endlosschleife)
+                const localJson = JSON.stringify(local);
+                const mergedJson = JSON.stringify(merged);
+                if (localJson !== mergedJson) {
+                  self.notebooks.splice(idx, 1, merged);
+                  // Merge zurück in DB speichern damit beide Seiten konvergieren
+                  db.put(JSON.parse(mergedJson), String(id));
+                }
               } else {
                 self.notebooks.push(JSON.parse(JSON.stringify(value)));
                 // Neue Notebooks starten auf Seite 0 (lokal)
@@ -2226,6 +2302,7 @@
       clearPage() {
         if (!this.currentPage) return;
         this.currentPage.strokes = [];
+        this.currentPage.clearedAt = Date.now(); // Tombstone: Merge ignoriert ältere Strokes
         this.redrawStrokes();
         this.scheduleSave();
       },
@@ -2324,7 +2401,7 @@
         e.preventDefault();
 
         // Pinch-Zoom: Touch-Pointer tracken (vor Palm-Rejection-Check)
-        if (e.pointerType === 'touch') {
+        if (e.pointerType === 'touch' && !this.zoomLocked) {
           pinchState.touches[e.pointerId] = { x: e.clientX, y: e.clientY };
           const touchIds = Object.keys(pinchState.touches);
           if (touchIds.length >= 2) {
@@ -2354,8 +2431,8 @@
           }
         }
 
-        // Hand-Tool: Panning starten
-        if (this.tool === 'hand') {
+        // Hand-Tool: Panning starten (gesperrt für Touch wenn zoomLocked)
+        if (this.tool === 'hand' && !(this.zoomLocked && e.pointerType === 'touch')) {
           this.isPanning = true;
           this.activePointerId = e.pointerId;
           this.panStartX = e.clientX;
@@ -2391,7 +2468,7 @@
         e.preventDefault();
 
         // Pinch-Zoom: laufend aktualisieren
-        if (e.pointerType === 'touch' && e.pointerId in pinchState.touches) {
+        if (!this.zoomLocked && e.pointerType === 'touch' && e.pointerId in pinchState.touches) {
           pinchState.touches[e.pointerId] = { x: e.clientX, y: e.clientY };
           if (pinchState.active) {
             const touchIds = Object.keys(pinchState.touches);
