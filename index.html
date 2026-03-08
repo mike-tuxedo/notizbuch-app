@@ -1635,8 +1635,8 @@
       color: '#363636',
       penSizeIndex: 2,
       customColors: [],
-      palmRejection: true,
-      palmThreshold: 25, // Kontaktfläche > 25px = Handballen/Finger ignorieren
+      penDetected: false,
+      penLastSeen: 0,
       
       colors: ['#363636', '#ffffff', '#ff6b6b', '#ffa94d', '#ffd43b', '#69db7c', '#38d9a9', '#4dabf7', '#748ffc', '#da77f2'],
       penSizes: [
@@ -1749,8 +1749,6 @@
 
         // Gerätespezifische Settings aus IndexedDB laden (raumspezifisch geprefixxt)
         const savedCurrentId    = await idbGet(roomKey + ':currentNotebookId');
-        const savedPalmRejection = await idbGet(roomKey + ':palmRejection');
-        if (typeof savedPalmRejection === 'boolean') this.palmRejection = savedPalmRejection;
         const savedColor = await idbGet(roomKey + ':color');
         if (savedColor) this.color = savedColor;
         const savedPenSizeIndex = await idbGet(roomKey + ':penSizeIndex');
@@ -2006,7 +2004,6 @@
       async _saveLocalSettings() {
         if (!localDB) return;
         await idbPut(roomKey + ':currentNotebookId', this.currentNotebookId);
-        await idbPut(roomKey + ':palmRejection', this.palmRejection);
         await idbPut(roomKey + ':pagePositions', { ...this.currentPages });
         await idbPut(roomKey + ':color', this.color);
         await idbPut(roomKey + ':penSizeIndex', this.penSizeIndex);
@@ -2589,34 +2586,24 @@
       },
       
       isPalmOrFinger(e) {
-        if (!this.palmRejection) return false;
-        
-        // Pen/Stylus wird immer akzeptiert
-        if (e.pointerType === 'pen') return false;
-        
+        // Pen/Stylus: merken und akzeptieren
+        if (e.pointerType === 'pen') {
+          this.penDetected = true;
+          this.penLastSeen = Date.now();
+          return false;
+        }
+
         // Mouse wird akzeptiert
         if (e.pointerType === 'mouse') return false;
-        
-        // Touch: Prüfe Kontaktfläche
-        if (e.pointerType === 'touch') {
-          const contactWidth = e.width || 0;
-          const contactHeight = e.height || 0;
-          const contactSize = Math.max(contactWidth, contactHeight);
-          
-          // Debug: Zeige Touch-Größe in Konsole
-          // console.log('Touch size:', contactSize, 'px');
-          
-          // Große Kontaktfläche = Handballen oder Finger
-          if (contactSize > this.palmThreshold) {
-            return true;
-          }
-          
-          // Wenn bereits mit Pen gezeichnet wird, ignoriere Touch
-          if (this.isDrawing && this.activePointerType === 'pen') {
+
+        // Touch: Wenn Stift erkannt wurde, alle Touches blockieren
+        // Timeout 500ms nach letztem Pen-Event → Finger wieder erlauben
+        if (e.pointerType === 'touch' && this.penDetected) {
+          if (Date.now() - this.penLastSeen < 500) {
             return true;
           }
         }
-        
+
         return false;
       },
       
@@ -2689,6 +2676,9 @@
       
       draw(e) {
         e.preventDefault();
+
+        // Pen-Timestamp aktualisieren für Palm-Rejection
+        if (e.pointerType === 'pen') this.penLastSeen = Date.now();
 
         // Pinch-Zoom: laufend aktualisieren
         if (!this.zoomLocked && e.pointerType === 'touch' && e.pointerId in pinchState.touches) {
