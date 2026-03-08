@@ -1223,6 +1223,14 @@
         </button>
       </div>
 
+      <!-- Stifterkennung -->
+      <label class="toggle" @click="penDetected = !penDetected; _saveLocalSettings()">
+        <div class="toggle-track" :class="{ active: penDetected }">
+          <div class="toggle-thumb"></div>
+        </div>
+        <span class="toggle-label">Stiftmodus (Touch ignorieren)</span>
+      </label>
+
       <!-- Aktionen -->
       <div class="burger-actions">
         <button class="share-btn" @click="openShare(); showBurgerMenu = false">
@@ -1755,6 +1763,8 @@
         if (typeof savedPenSizeIndex === 'number') this.penSizeIndex = savedPenSizeIndex;
         const savedCustomColors = await idbGet(roomKey + ':customColors');
         if (Array.isArray(savedCustomColors)) this.customColors = savedCustomColors;
+        const savedPenDetected = await idbGet(roomKey + ':penDetected');
+        if (typeof savedPenDetected === 'boolean') this.penDetected = savedPenDetected;
         const savedSyncEnabled = await idbGet(roomKey + ':syncEnabled');
         if (typeof savedSyncEnabled === 'boolean') this.syncEnabled = savedSyncEnabled;
 
@@ -2008,6 +2018,7 @@
         await idbPut(roomKey + ':color', this.color);
         await idbPut(roomKey + ':penSizeIndex', this.penSizeIndex);
         await idbPut(roomKey + ':customColors', [...this.customColors]);
+        await idbPut(roomKey + ':penDetected', this.penDetected);
       },
 
       // Notizbuch-Inhalte via GenosDB (P2P-Sync) + lokale Settings in IndexedDB speichern
@@ -2586,9 +2597,12 @@
       },
       
       isPalmOrFinger(e) {
-        // Pen/Stylus: merken und akzeptieren
+        // Pen/Stylus: merken, persistieren und akzeptieren
         if (e.pointerType === 'pen') {
-          this.penDetected = true;
+          if (!this.penDetected) {
+            this.penDetected = true;
+            this._saveLocalSettings();
+          }
           this.penLastSeen = Date.now();
           return false;
         }
