@@ -1838,6 +1838,22 @@
           // 'settings' komplett ignorieren – wird nicht mehr via P2P geteilt
           if (id === 'settings') return;
 
+          // Tombstone-Check: gelöschte Notebooks erkennen
+          if (value && value._deleted) {
+            if (!dbInitialized) {
+              delete notebooksMap[id];
+            } else {
+              self.notebooks = self.notebooks.filter(nb => String(nb.id) !== String(id));
+              if (String(id) === String(self.currentNotebookId) && self.notebooks.length > 0) {
+                self.currentNotebookId = self.notebooks[0].id;
+                self.drawBackground();
+                self.redrawStrokes();
+                self.updateFitReference();
+              }
+            }
+            return;
+          }
+
           if (!dbInitialized) {
             // Init-Phase: lokale OPFS-Daten (initial) UND P2P-Daten (added/updated) mergen
             if (action === 'initial' || action === 'added' || action === 'updated') {
@@ -1851,6 +1867,7 @@
             }
           } else {
             // Nach der Init-Phase: reaktiv auf P2P-Updates reagieren (Stroke-Level Merge)
+            // 'removed' wird IGNORIERT – Löschungen nur über _deleted-Tombstone
             if (action === 'added' || action === 'updated') {
               const idx = self.notebooks.findIndex(nb => String(nb.id) === String(id));
               if (idx >= 0) {
@@ -1886,15 +1903,8 @@
               self.peerSync = true;
               clearTimeout(self._peerSyncTimer);
               self._peerSyncTimer = setTimeout(() => { self.peerSync = false; }, 1500);
-            } else if (action === 'removed') {
-              self.notebooks = self.notebooks.filter(nb => String(nb.id) !== String(id));
-              if (String(id) === String(self.currentNotebookId) && self.notebooks.length > 0) {
-                self.currentNotebookId = self.notebooks[0].id;
-                self.drawBackground();
-                self.redrawStrokes();
-                self.updateFitReference();
-              }
             }
+            // 'removed' action wird komplett ignoriert – verhindert versehentliches Löschen durch Sync
           }
         });
 
@@ -2355,7 +2365,8 @@
 
       deleteNotebook(id) {
         if (this.notebooks.length <= 1) return;
-        if (db) db.remove(String(id));
+        // Tombstone speichern statt db.remove – damit andere Peers wissen, dass es gelöscht wurde
+        if (db) db.put({ _deleted: true, id: String(id) }, String(id));
         this.notebooks = this.notebooks.filter(nb => nb.id !== id);
         delete this.currentPages[id];
         if (this.currentNotebookId === id) {
