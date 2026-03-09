@@ -211,14 +211,23 @@
     
     /* Secondary bar */
     .secondary-bar {
+      display: none;
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 200;
+      flex-direction: column;
+      align-items: stretch;
+      background: rgba(40,40,40,0.98);
+      border-radius: 12px;
+      border: 1px solid rgba(255,255,255,0.1);
+      padding: 16px;
+      gap: 14px;
+      min-width: 280px;
+    }
+    .secondary-bar.open {
       display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 8px 16px;
-      background: rgba(0,0,0,0.25);
-      border-bottom: 1px solid rgba(255,255,255,0.05);
-      flex-wrap: wrap;
-      gap: 12px;
     }
     
     .bg-btn {
@@ -412,10 +421,24 @@
     }
     .snapshot-confirm-btn:hover { background: #339af0; }
     .floating-page-nav {
-      display: none;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      position: absolute;
+      top: 8px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 10;
+      background: rgba(30,30,30,0.85);
+      backdrop-filter: blur(8px);
+      border-radius: 20px;
+      padding: 4px 12px;
+      border: 1px solid rgba(255,255,255,0.1);
     }
+    .secondary-bar .desktop-only { display: none !important; }
     .desktop-only { display: flex; }
-    .mobile-only { display: none; }
+    .mobile-only { display: flex !important; }
 
     .home-link {
       display: flex;
@@ -976,7 +999,7 @@
     }
     .color-group-swatches { display: flex; gap: 6px; align-items: center; }
 
-    .burger-btn { display: none; min-width: 36px; }
+    .burger-btn { display: flex; min-width: 36px; }
     .zen-group { margin-left: auto; }
     .share-btn {
       display: flex;
@@ -1037,48 +1060,10 @@
       .notebook-menu {
         min-width: 260px;
       }
-      .burger-btn { display: flex; }
       .zen-group { margin-left: 0; }
       .toolbar {
         flex-wrap: nowrap;
         overflow-x: auto;
-      }
-      .secondary-bar {
-        display: none;
-        position: fixed;
-        top: 50%;
-        left: 50%;
-        transform: translate(-50%, -50%);
-        z-index: 200;
-        flex-direction: column;
-        align-items: stretch;
-        background: rgba(40,40,40,0.98);
-        border-radius: 12px;
-        border: 1px solid rgba(255,255,255,0.1);
-        padding: 16px;
-        gap: 14px;
-        min-width: 280px;
-      }
-      .secondary-bar.open {
-        display: flex;
-      }
-      .desktop-only { display: none !important; }
-      .mobile-only { display: flex !important; }
-      .floating-page-nav {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 12px;
-        position: absolute;
-        top: 8px;
-        left: 50%;
-        transform: translateX(-50%);
-        z-index: 10;
-        background: rgba(30,30,30,0.85);
-        backdrop-filter: blur(8px);
-        border-radius: 20px;
-        padding: 4px 12px;
-        border: 1px solid rgba(255,255,255,0.1);
       }
       .floating-page-nav .page-info {
         min-width: auto;
@@ -1346,7 +1331,7 @@
           <p style="font-size: 12px; opacity: 0.7;">Alle aktuellen Notizbücher werden durch die Sicherung ersetzt.</p>
           <div style="display: flex; gap: 8px; justify-content: flex-end;">
             <button class="snapshot-cancel-btn" @click="showSnapshotConfirm = false; pendingRestore = null">Abbrechen</button>
-            <button class="snapshot-confirm-btn" @click="restoreSnapshot(pendingRestore); showBurgerMenu = false">Wiederherstellen</button>
+            <button class="snapshot-confirm-btn" @click="restoreSnapshot(pendingRestore)">Wiederherstellen</button>
           </div>
         </div>
       </div>
