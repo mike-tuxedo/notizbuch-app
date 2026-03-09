@@ -353,7 +353,6 @@
       margin: 12px;
       border-radius: 12px;
       box-shadow: 0 4px 24px rgba(0,0,0,0.4);
-      perspective: 2000px;
       background: #fafafa;
     }
     
@@ -363,40 +362,6 @@
       left: 0;
       width: 100%;
       height: 100%;
-      transform-style: preserve-3d;
-      transform-origin: left center;
-    }
-    
-    /* Vorblättern: Aktuelle Seite klappt weg */
-    .canvas-wrapper.flip-out-next {
-      animation: flipOutNext 0.4s ease-in forwards;
-    }
-    
-    /* Zurückblättern: Vorherige Seite klappt rein */
-    .canvas-wrapper.flip-in-prev {
-      animation: flipInPrev 0.4s ease-out forwards;
-    }
-    
-    @keyframes flipOutNext {
-      0% { 
-        transform: rotateY(0deg); 
-        box-shadow: 0 0 0 rgba(0,0,0,0);
-      }
-      100% { 
-        transform: rotateY(-100deg); 
-        box-shadow: 20px 0 40px rgba(0,0,0,0.5);
-      }
-    }
-    
-    @keyframes flipInPrev {
-      0% { 
-        transform: rotateY(-100deg); 
-        box-shadow: 20px 0 40px rgba(0,0,0,0.5);
-      }
-      100% { 
-        transform: rotateY(0deg); 
-        box-shadow: 0 0 0 rgba(0,0,0,0);
-      }
     }
     
     canvas {
@@ -1329,7 +1294,7 @@
         <button class="page-btn primary"  @click="nextPage()">→</button>
       </div>
       <div class="canvas-zoom-wrapper">
-        <div class="canvas-wrapper" :class="flipClass">
+        <div class="canvas-wrapper">
           <canvas id="bgCanvas" ref="bgCanvas"></canvas>
           <canvas id="staticCanvas" ref="staticCanvas"></canvas>
           <canvas id="activeCanvas" ref="activeCanvas"
@@ -1442,6 +1407,12 @@
       touches: {}, active: false,
       startViewX: 0, startViewY: 0, startScale: 1,
       startMidX: 0, startMidY: 0, startDist: 1
+    };
+
+    // Swipe-State für Seitenwechsel (Touch bei aktivem Stiftmodus)
+    const swipeState = {
+      active: false, pointerId: null,
+      startX: 0, startY: 0, startTime: 0, currentX: 0
     };
 
     // IndexedDB für gerätespezifische Settings (nach roomKey isoliert)
@@ -1665,8 +1636,6 @@
         { id: 'blank', name: 'Blank' }
       ],
       
-      flipClass: '',
-      flipTimer: null,
       isDrawing: false,
       currentPoints: [],
       lastPoint: null,
@@ -2312,10 +2281,6 @@
           this._saveLocalSettings();
         }
 
-        // Animation (nicht-blockierend)
-        this.flipClass = 'flip-out-next';
-        clearTimeout(this.flipTimer);
-        this.flipTimer = setTimeout(() => { this.flipClass = ''; }, 400);
       },
 
       prevPage() {
@@ -2327,11 +2292,6 @@
         this.redrawStrokes();
         this.fitToContent();
         this._saveLocalSettings();
-
-        // Animation (nicht-blockierend)
-        this.flipClass = 'flip-in-prev';
-        clearTimeout(this.flipTimer);
-        this.flipTimer = setTimeout(() => { this.flipClass = ''; }, 400);
       },
 
       // Notebook management
@@ -2690,8 +2650,15 @@
           return;
         }
 
-        // Palm Rejection
+        // Palm Rejection — blockierte Touches für Swipe-Navigation nutzen
         if (this.isPalmOrFinger(e)) {
+          if (e.pointerType === 'touch' && !swipeState.active) {
+            swipeState.active = true;
+            swipeState.pointerId = e.pointerId;
+            swipeState.startX = e.clientX;
+            swipeState.startY = e.clientY;
+            swipeState.startTime = Date.now();
+          }
           return;
         }
 
@@ -2714,6 +2681,12 @@
       
       draw(e) {
         e.preventDefault();
+
+        // Swipe-Tracking für Seitenwechsel
+        if (swipeState.active && e.pointerId === swipeState.pointerId) {
+          swipeState.currentX = e.clientX;
+          return;
+        }
 
         // Pen-Timestamp aktualisieren für Palm-Rejection
         if (e.pointerType === 'pen') this.penLastSeen = Date.now();
@@ -2850,6 +2823,24 @@
       },
       
       stopDrawing(e) {
+        // Swipe-Erkennung: horizontaler Touch-Swipe für Seitenwechsel
+        if (e && swipeState.active && e.pointerId === swipeState.pointerId) {
+          const dx = (swipeState.currentX || e.clientX) - swipeState.startX;
+          const dy = e.clientY - swipeState.startY;
+          const elapsed = Date.now() - swipeState.startTime;
+          swipeState.active = false;
+          swipeState.pointerId = null;
+          // Swipe: mindestens 80px horizontal, überwiegend horizontal, unter 800ms
+          if (Math.abs(dx) > 80 && Math.abs(dx) > Math.abs(dy) * 1.5 && elapsed < 800) {
+            if (dx < 0) {
+              this.nextPage(); // Links swipen → nächste Seite
+            } else if (this.canGoPrev) {
+              this.prevPage(); // Rechts swipen → vorherige Seite
+            }
+          }
+          return;
+        }
+
         // Pinch-Zoom: Pointer aus Tracking entfernen
         if (e && e.pointerType === 'touch') {
           delete pinchState.touches[e.pointerId];
