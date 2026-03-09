@@ -6,7 +6,7 @@
   "background_color": "#2d3436",
   "display": "fullscreen",
   "orientation": "any",
-  "start_url": "./",
+  "start_url": "./app.html",
   "scope": "./",
   "icons": [
     { "src": "img/favicon.ico",                  "sizes": "48x48",   "type": "image/x-icon" },

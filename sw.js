@@ -1,8 +1,9 @@
-const CACHE_NAME = 'notizbuch-v1';
+const CACHE_NAME = 'notizbuch-v2';
 
 const STATIC_ASSETS = [
   './',
   './index.html',
+  './app.html',
   './manifest.json',
   './libs/petite-vue.iife.js',
   './libs/genosdb.js',
@@ -72,7 +73,7 @@ async function cacheFirst(request) {
     return response;
   } catch {
     if (request.headers.get('accept')?.includes('text/html')) {
-      return caches.match('./index.html');
+      return caches.match('./app.html');
     }
     throw new Error('Offline und nicht gecacht: ' + request.url);
   }
