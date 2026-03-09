@@ -340,6 +340,77 @@
       color: rgba(255,255,255,0.5);
       font-size: 12px;
     }
+    .burger-snapshots {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .snapshot-entry {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 4px 0;
+    }
+    .snapshot-info {
+      font-size: 12px;
+      color: rgba(255,255,255,0.7);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .snapshot-restore-btn {
+      background: rgba(255,255,255,0.1);
+      border: 1px solid rgba(255,255,255,0.2);
+      color: #fff;
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 4px;
+      cursor: pointer;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .snapshot-restore-btn:hover {
+      background: rgba(255,255,255,0.2);
+    }
+    .snapshot-confirm-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.5);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 9999;
+    }
+    .snapshot-confirm-dialog {
+      background: #2a2a2a;
+      border-radius: 12px;
+      padding: 20px;
+      max-width: 340px;
+      color: #fff;
+      font-size: 14px;
+    }
+    .snapshot-confirm-dialog p { margin: 0 0 12px; }
+    .snapshot-cancel-btn {
+      background: rgba(255,255,255,0.1);
+      border: 1px solid rgba(255,255,255,0.2);
+      color: #fff;
+      padding: 6px 14px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    .snapshot-confirm-btn {
+      background: #4dabf7;
+      border: none;
+      color: #fff;
+      padding: 6px 14px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 500;
+    }
+    .snapshot-confirm-btn:hover { background: #339af0; }
     .floating-page-nav {
       display: none;
     }
@@ -1222,10 +1293,6 @@
 
       <!-- Aktionen -->
       <div class="burger-actions">
-        <a href="index.html" class="share-btn" style="text-decoration:none;">
-          <img src="img/apple-touch-icon-72x72.png" alt="" width="14" height="14" style="border-radius:3px;">
-          Startseite
-        </a>
         <button class="share-btn" @click="openShare(); showBurgerMenu = false">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
@@ -1249,6 +1316,39 @@
           </svg>
           Cache leeren
         </button>
+      </div>
+
+      <!-- Sicherungen -->
+      <div class="burger-snapshots">
+        <span style="color: rgba(255,255,255,0.5); font-size: 11px;">Sicherungen:</span>
+        <button class="share-btn" @click="createSnapshot('Manuell')">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+            <polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>
+          </svg>
+          Sicherung erstellen
+        </button>
+        <div v-if="snapshots.length === 0" style="color: rgba(255,255,255,0.35); font-size: 11px; padding: 2px 0;">
+          Keine Sicherungen vorhanden
+        </div>
+        <div v-for="snap in [...snapshots].reverse()" :key="snap.timestamp" class="snapshot-entry">
+          <span class="snapshot-info">{{ formatSnapshotDate(snap.timestamp) }} — {{ snap.count }} Notizbuch{{ snap.count !== 1 ? 'er' : '' }}<span v-if="snap.label" style="opacity:0.5"> ({{ snap.label }})</span></span>
+          <button class="snapshot-restore-btn" @click="pendingRestore = snap; showSnapshotConfirm = true">
+            Wiederherstellen
+          </button>
+        </div>
+      </div>
+
+      <!-- Snapshot-Bestätigung -->
+      <div class="snapshot-confirm-overlay" v-if="showSnapshotConfirm" @click.self="showSnapshotConfirm = false; pendingRestore = null">
+        <div class="snapshot-confirm-dialog">
+          <p>Sicherung vom <strong>{{ pendingRestore ? formatSnapshotDate(pendingRestore.timestamp) : '' }}</strong> wiederherstellen?</p>
+          <p style="font-size: 12px; opacity: 0.7;">Alle aktuellen Notizbücher werden durch die Sicherung ersetzt.</p>
+          <div style="display: flex; gap: 8px; justify-content: flex-end;">
+            <button class="snapshot-cancel-btn" @click="showSnapshotConfirm = false; pendingRestore = null">Abbrechen</button>
+            <button class="snapshot-confirm-btn" @click="restoreSnapshot(pendingRestore); showBurgerMenu = false">Wiederherstellen</button>
+          </div>
+        </div>
       </div>
 
       <!-- Peer-Info -->
@@ -1685,6 +1785,9 @@
       zenMode: false,
       webrtcWarning: false,
       hadPeers: false,
+      snapshots: [],
+      showSnapshotConfirm: false,
+      pendingRestore: null,
       connectedPeers: [],
       selfPeerId: null,
       viewScale: 1,
@@ -1936,6 +2039,12 @@
           await this._saveAll();
         }
 
+        // Auto-Snapshot vor Sync-Freigabe erstellen (Schutz vor Datenverlust)
+        if (this.notebooks.length > 0) {
+          await this.createSnapshot('Auto');
+        }
+        await this.loadSnapshots();
+
         dbInitialized = true;
 
         this.setupCanvases();
@@ -2045,6 +2154,49 @@
         await this._saveLocalSettings();
       },
       
+      async loadSnapshots() {
+        const stored = await idbGet(roomKey + ':snapshots');
+        this.snapshots = Array.isArray(stored) ? stored : [];
+      },
+
+      async createSnapshot(label) {
+        if (!this.notebooks.length) return;
+        const snapshot = {
+          timestamp: Date.now(),
+          label: label || '',
+          notebooks: JSON.parse(JSON.stringify(this.notebooks)),
+          count: this.notebooks.length
+        };
+        const stored = await idbGet(roomKey + ':snapshots');
+        const list = Array.isArray(stored) ? stored : [];
+        list.push(snapshot);
+        // Max 5 Snapshots behalten
+        while (list.length > 5) list.shift();
+        await idbPut(roomKey + ':snapshots', list);
+        this.snapshots = list;
+      },
+
+      async restoreSnapshot(snapshot) {
+        this.notebooks = JSON.parse(JSON.stringify(snapshot.notebooks));
+        if (this.notebooks.length > 0) {
+          this.currentNotebookId = this.notebooks[0].id;
+          for (const nb of this.notebooks) {
+            if (!(String(nb.id) in this.currentPages)) this.currentPages[String(nb.id)] = 0;
+          }
+        }
+        await this._saveAll();
+        this.setupCanvases();
+        this.fitToContent();
+        this.showSnapshotConfirm = false;
+        this.pendingRestore = null;
+      },
+
+      formatSnapshotDate(ts) {
+        const d = new Date(ts);
+        return d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: '2-digit' }) +
+          ' ' + d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+      },
+
       createDefaultNotebook() {
         const id = String(Date.now());
         this.notebooks = [{
