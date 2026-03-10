@@ -1673,13 +1673,19 @@
         const clearedAt = Math.max(localPage.clearedAt || 0, remotePage.clearedAt || 0);
         if (clearedAt) remotePage.clearedAt = clearedAt;
 
-        // Alle Strokes sammeln die neuer als clearedAt sind
+        // deletedStrokes beider Seiten vereinigen
+        const localDeleted = new Set(localPage.deletedStrokes || []);
+        const remoteDeleted = new Set(remotePage.deletedStrokes || []);
+        const allDeleted = new Set([...localDeleted, ...remoteDeleted]);
+        if (allDeleted.size > 0) remotePage.deletedStrokes = [...allDeleted];
+
+        // Alle Strokes sammeln die neuer als clearedAt sind und nicht gelöscht
         const strokeMap = {};
         for (const s of remotePage.strokes) {
-          if (Number(s.id) > clearedAt) strokeMap[String(s.id)] = s;
+          if (Number(s.id) > clearedAt && !allDeleted.has(Number(s.id))) strokeMap[String(s.id)] = s;
         }
         for (const s of localPage.strokes) {
-          if (Number(s.id) > clearedAt && !strokeMap[String(s.id)]) {
+          if (Number(s.id) > clearedAt && !allDeleted.has(Number(s.id)) && !strokeMap[String(s.id)]) {
             strokeMap[String(s.id)] = JSON.parse(JSON.stringify(s));
           }
         }
@@ -2719,7 +2725,11 @@
       
       undo() {
         if (!this.currentPage || this.currentPage.strokes.length === 0) return;
-        this.currentPage.strokes.pop();
+        const removed = this.currentPage.strokes.pop();
+        if (removed) {
+          if (!this.currentPage.deletedStrokes) this.currentPage.deletedStrokes = [];
+          this.currentPage.deletedStrokes.push(Number(removed.id));
+        }
         this.redrawStrokes();
         this.scheduleSave();
       },
@@ -2727,6 +2737,7 @@
       clearPage() {
         if (!this.currentPage) return;
         this.currentPage.strokes = [];
+        this.currentPage.deletedStrokes = []; // clearedAt deckt alles ab
         this.currentPage.clearedAt = Date.now(); // Tombstone: Merge ignoriert ältere Strokes
         this.redrawStrokes();
         this.scheduleSave();
