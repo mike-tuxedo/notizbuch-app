@@ -1255,7 +1255,7 @@
     <!-- Secondary bar -->
     <!-- Backdrop für Mobile Popups -->
     <div class="popup-backdrop" v-if="showNotebookMenu || showColorMenu || showSizeMenu || showBurgerMenu || showIroPicker"
-         @click="showNotebookMenu = false; showColorMenu = false; showSizeMenu = false; showBurgerMenu = false; showIroPicker = false"></div>
+         @click="if (!showSnapshotConfirm) { showNotebookMenu = false; showColorMenu = false; showSizeMenu = false; showBurgerMenu = false; showIroPicker = false; }"></div>
 
     <div class="secondary-bar" :class="{ open: showBurgerMenu }">
       <!-- Background -->
@@ -1324,18 +1324,6 @@
         </div>
       </div>
 
-      <!-- Snapshot-Bestätigung -->
-      <div class="snapshot-confirm-overlay" v-if="showSnapshotConfirm" @click.self="showSnapshotConfirm = false; pendingRestore = null">
-        <div class="snapshot-confirm-dialog">
-          <p>Sicherung vom <strong>{{ pendingRestore ? formatSnapshotDate(pendingRestore.timestamp) : '' }}</strong> wiederherstellen?</p>
-          <p style="font-size: 12px; opacity: 0.7;">Alle aktuellen Notizbücher werden durch die Sicherung ersetzt.</p>
-          <div style="display: flex; gap: 8px; justify-content: flex-end;">
-            <button class="snapshot-cancel-btn" @click="showSnapshotConfirm = false; pendingRestore = null">Abbrechen</button>
-            <button class="snapshot-confirm-btn" @click="restoreSnapshot(pendingRestore)">Wiederherstellen</button>
-          </div>
-        </div>
-      </div>
-
       <!-- Peer-Info -->
       <div class="burger-info" v-if="syncEnabled">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -1352,6 +1340,18 @@
         <button class="page-btn" :disabled="!canGoPrev" @click="prevPage()">← Zurück</button>
         <span class="page-info">Seite {{ currentPageIndex + 1 }} / {{ totalPages }}</span>
         <button class="page-btn primary"  @click="nextPage()">Weiter →</button>
+      </div>
+    </div>
+
+    <!-- Snapshot-Bestätigung (außerhalb secondary-bar, damit Burger-Menü offen bleibt) -->
+    <div class="snapshot-confirm-overlay" v-if="showSnapshotConfirm" @click.self="showSnapshotConfirm = false; pendingRestore = null">
+      <div class="snapshot-confirm-dialog">
+        <p>Sicherung vom <strong>{{ pendingRestore ? formatSnapshotDate(pendingRestore.timestamp) : '' }}</strong> wiederherstellen?</p>
+        <p style="font-size: 12px; opacity: 0.7;">Alle aktuellen Notizbücher werden durch die Sicherung ersetzt.</p>
+        <div style="display: flex; gap: 8px; justify-content: flex-end;">
+          <button class="snapshot-cancel-btn" @click="showSnapshotConfirm = false; pendingRestore = null">Abbrechen</button>
+          <button class="snapshot-confirm-btn" @click="restoreSnapshot(pendingRestore)">Wiederherstellen</button>
+        </div>
       </div>
     </div>
 
@@ -1569,6 +1569,26 @@
           resolve(false);
         }
       });
+    }
+
+    // Compact notebook for storage: round coordinates, remove redundant precision
+    function compactNotebook(nb) {
+      const clone = JSON.parse(JSON.stringify(nb));
+      if (clone.pages) {
+        for (const page of clone.pages) {
+          if (page.strokes) {
+            for (const stroke of page.strokes) {
+              if (stroke.points) {
+                stroke.points = stroke.points.map(p => ({
+                  x: Math.round(p.x * 10) / 10,
+                  y: Math.round(p.y * 10) / 10
+                }));
+              }
+            }
+          }
+        }
+      }
+      return clone;
     }
 
     // Stroke smoothing
@@ -1960,7 +1980,7 @@
                 if (localJson !== mergedJson) {
                   self.notebooks.splice(idx, 1, merged);
                   // Merge zurück in DB speichern damit beide Seiten konvergieren
-                  db.put(JSON.parse(mergedJson), String(id));
+                  db.put(compactNotebook(merged), String(id));
                 }
               } else {
                 self.notebooks.push(JSON.parse(JSON.stringify(value)));
@@ -2127,7 +2147,7 @@
       async _saveAll() {
         if (!db) return;
         for (const notebook of this.notebooks) {
-          await db.put(JSON.parse(JSON.stringify(notebook)), String(notebook.id));
+          await db.put(compactNotebook(notebook), String(notebook.id));
         }
         await this._saveLocalSettings();
       },
@@ -2135,7 +2155,7 @@
       // Nur das aktuelle Notebook speichern (schneller als _saveAll)
       async _saveCurrentNotebook() {
         if (!db || !this.currentNotebook) return;
-        await db.put(JSON.parse(JSON.stringify(this.currentNotebook)), String(this.currentNotebook.id));
+        await db.put(compactNotebook(this.currentNotebook), String(this.currentNotebook.id));
         await this._saveLocalSettings();
       },
       
@@ -2162,11 +2182,36 @@
       },
 
       async restoreSnapshot(snapshot) {
+        const oldIds = this.notebooks.map(nb => String(nb.id));
         this.notebooks = JSON.parse(JSON.stringify(snapshot.notebooks));
+        const newIds = new Set(this.notebooks.map(nb => String(nb.id)));
+
+        // clearedAt + neue Stroke-IDs: damit der Merge alte Remote-Strokes verwirft
+        const now = Date.now();
+        for (const nb of this.notebooks) {
+          if (!nb.pages) continue;
+          for (const page of nb.pages) {
+            page.clearedAt = now;
+            if (page.strokes) {
+              for (let i = 0; i < page.strokes.length; i++) {
+                page.strokes[i].id = now + 1 + i;
+              }
+            }
+          }
+        }
+
         if (this.notebooks.length > 0) {
           this.currentNotebookId = this.notebooks[0].id;
           for (const nb of this.notebooks) {
             if (!(String(nb.id) in this.currentPages)) this.currentPages[String(nb.id)] = 0;
+          }
+        }
+        // Tombstones für Notebooks die im Snapshot nicht mehr existieren (Sync an Peers)
+        if (db) {
+          for (const oldId of oldIds) {
+            if (!newIds.has(oldId)) {
+              await db.put({ _deleted: true, id: oldId }, oldId);
+            }
           }
         }
         await this._saveAll();
@@ -2738,8 +2783,8 @@
         const rect = container.getBoundingClientRect();
         // Screen → World: Offset abziehen, durch Scale teilen
         return {
-          x: (e.clientX - rect.left - this.viewX) / this.viewScale,
-          y: (e.clientY - rect.top - this.viewY) / this.viewScale
+          x: Math.round(((e.clientX - rect.left - this.viewX) / this.viewScale) * 10) / 10,
+          y: Math.round(((e.clientY - rect.top - this.viewY) / this.viewScale) * 10) / 10
         };
       },
       
