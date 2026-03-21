@@ -1,0 +1,12 @@
+{
+  "name": "notizbuch-relay",
+  "version": "1.0.0",
+  "description": "WebSocket relay server for Notizbuch P2P sync",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

@@ -1,6 +1,9 @@
 *.log
 *.pid
 node_modules/
+cert.pem
+key.pem
+rootCA.pem
 icons/
 iconified/
 iconified.zip

@@ -1510,6 +1510,46 @@
     let dbInitialized = false;
     let roomKey = '';
 
+    // WebSocket Relay – optionaler persistenter Sync-Kanal
+    // Setzt RELAY_URL auf die Adresse des Relay-Servers (z.B. ws://localhost:4444)
+    const RELAY_URL = localStorage.getItem('relayUrl') || 'wss://192.168.100.49:4444';
+    let relayWs = null;
+    let relayReconnectTimer = null;
+
+    function connectRelay(room, onSync, onPut, onDelete) {
+      if (!RELAY_URL || relayWs) return;
+      try {
+        relayWs = new WebSocket(RELAY_URL);
+      } catch { return; }
+
+      relayWs.onopen = () => {
+        relayWs.send(JSON.stringify({ type: 'join', room }));
+      };
+
+      relayWs.onmessage = (e) => {
+        let msg;
+        try { msg = JSON.parse(e.data); } catch { return; }
+        if (msg.type === 'sync' && msg.notebooks) onSync(msg.notebooks);
+        else if (msg.type === 'put' && msg.id && msg.data) onPut(msg.id, msg.data);
+        else if (msg.type === 'delete' && msg.id) onDelete(msg.id);
+      };
+
+      relayWs.onclose = () => {
+        relayWs = null;
+        // Auto-Reconnect nach 5s
+        clearTimeout(relayReconnectTimer);
+        relayReconnectTimer = setTimeout(() => connectRelay(room, onSync, onPut, onDelete), 5000);
+      };
+
+      relayWs.onerror = () => { relayWs?.close(); };
+    }
+
+    function relaySend(msg) {
+      if (relayWs && relayWs.readyState === 1) {
+        relayWs.send(JSON.stringify(msg));
+      }
+    }
+
     // Pinch-Zoom-State (außerhalb PetiteVue für high-frequency updates)
     const pinchState = {
       touches: {}, active: false,
@@ -1885,6 +1925,7 @@
         db = await gdb(roomKey, { rtc: this.syncEnabled });
 
         this.selfPeerId = db.selfId;
+        const isReconnect = !!sessionStorage.getItem('reconnect');
         if (this.syncEnabled && db.room) {
           const initialPeers = db.room.getPeers();
           if (initialPeers) {
@@ -1902,15 +1943,18 @@
             this.connectedPeers = this.connectedPeers.filter(id => id !== peerId);
           });
 
-          // Bei Reconnect: Sync-Overlay zeigen bis Peers verbunden
-          const isReconnect = sessionStorage.getItem('reconnect');
+          // Bei Reconnect: Sync-Overlay zeigen bis Peer verbunden UND Daten ausgetauscht
           if (isReconnect) {
             sessionStorage.removeItem('reconnect');
             this.syncing = true;
+            // Warte auf Peer-Join + zusätzlich 1.5s für Datenaustausch
             const waitForPeer = new Promise(resolve => {
-              db.room.on('peer:join', () => resolve());
+              db.room.on('peer:join', () => {
+                // Nach Peer-Join: kurz warten damit db.map-Events eintreffen
+                setTimeout(resolve, 1500);
+              });
             });
-            Promise.race([waitForPeer, new Promise(r => setTimeout(r, 5000))]).then(() => {
+            Promise.race([waitForPeer, new Promise(r => setTimeout(r, 8000))]).then(() => {
               this.syncing = false;
             });
           }
@@ -2058,11 +2102,89 @@
 
         dbInitialized = true;
 
+        // Bei Reconnect: lokale Daten erneut in GenosDB schreiben, damit Peers sie erhalten
+        if (isReconnect && this.syncEnabled) {
+          for (const nb of this.notebooks) {
+            db.put(compactNotebook(nb), String(nb.id));
+          }
+        }
+
+        // WebSocket Relay verbinden (optionaler persistenter Sync-Kanal)
+        if (this.syncEnabled && RELAY_URL) {
+          const self = this;
+          connectRelay(roomKey,
+            // onSync: initialer Stand vom Relay – mit lokalem State mergen
+            (notebooks) => {
+              for (const [id, data] of Object.entries(notebooks)) {
+                if (data && data._deleted) continue;
+                const idx = self.notebooks.findIndex(nb => String(nb.id) === String(id));
+                if (idx >= 0) {
+                  const merged = mergeNotebooks(self.notebooks[idx], data);
+                  if (JSON.stringify(self.notebooks[idx]) !== JSON.stringify(merged)) {
+                    self.notebooks.splice(idx, 1, merged);
+                    db.put(compactNotebook(merged), String(id));
+                  }
+                } else {
+                  self.notebooks.push(JSON.parse(JSON.stringify(data)));
+                  if (!(String(id) in self.currentPages)) self.currentPages[String(id)] = 0;
+                }
+              }
+              if (String(self.currentNotebookId) && self.currentNotebook) {
+                self.drawBackground();
+                self.redrawStrokes();
+              }
+            },
+            // onPut: einzelnes Notebook-Update vom Relay
+            (id, data) => {
+              const idx = self.notebooks.findIndex(nb => String(nb.id) === String(id));
+              if (idx >= 0) {
+                const merged = mergeNotebooks(self.notebooks[idx], data);
+                if (JSON.stringify(self.notebooks[idx]) !== JSON.stringify(merged)) {
+                  self.notebooks.splice(idx, 1, merged);
+                  db.put(compactNotebook(merged), String(id));
+                }
+              } else {
+                self.notebooks.push(JSON.parse(JSON.stringify(data)));
+                if (!(String(id) in self.currentPages)) self.currentPages[String(id)] = 0;
+              }
+              if (String(id) === String(self.currentNotebookId)) {
+                self.drawBackground();
+                self.redrawStrokes();
+              }
+              self.peerSync = true;
+              clearTimeout(self._peerSyncTimer);
+              self._peerSyncTimer = setTimeout(() => { self.peerSync = false; }, 1500);
+            },
+            // onDelete: Notebook-Löschung vom Relay
+            (id) => {
+              self.notebooks = self.notebooks.filter(nb => String(nb.id) !== String(id));
+              if (String(id) === String(self.currentNotebookId) && self.notebooks.length > 0) {
+                self.currentNotebookId = self.notebooks[0].id;
+                self.drawBackground();
+                self.redrawStrokes();
+              }
+            }
+          );
+
+          // Lokale Daten initial an Relay senden
+          for (const nb of this.notebooks) {
+            relaySend({ type: 'put', id: String(nb.id), data: compactNotebook(nb) });
+          }
+        }
+
         this.setupCanvases();
         this.fitToContent();
         window.addEventListener('resize', () => {
           this.setupCanvases();
           this.updateFitReference();
+        });
+
+        // Vor dem Schließen: alle Daten sofort speichern
+        window.addEventListener('beforeunload', () => {
+          if (this.saveTimeout) clearTimeout(this.saveTimeout);
+          if (db && this.currentNotebook) {
+            db.put(compactNotebook(this.currentNotebook), String(this.currentNotebook.id));
+          }
         });
 
         // Mausrad-Zoom im Hand-Modus
@@ -2105,12 +2227,15 @@
         });
 
         // Tab-Fokus: Canvases neu zeichnen und ggf. Reconnect
-        document.addEventListener('visibilitychange', () => {
+        document.addEventListener('visibilitychange', async () => {
           if (!document.hidden) {
             this.drawBackground();
             this.redrawStrokes();
-            // Nach Pause: wenn Peers verloren, automatisch neu laden
+            // Nach Pause: wenn Peers verloren, alle Daten speichern und neu laden
             if (this.syncEnabled && this.hadPeers && this.connectedPeers.length === 0) {
+              // Pending Save abbrechen und sofort alles speichern
+              if (this.saveTimeout) clearTimeout(this.saveTimeout);
+              await this._saveAll();
               sessionStorage.setItem('reconnect', '1');
               location.reload();
             }
@@ -2153,7 +2278,9 @@
       async _saveAll() {
         if (!db) return;
         for (const notebook of this.notebooks) {
-          await db.put(compactNotebook(notebook), String(notebook.id));
+          const compact = compactNotebook(notebook);
+          await db.put(compact, String(notebook.id));
+          relaySend({ type: 'put', id: String(notebook.id), data: compact });
         }
         await this._saveLocalSettings();
       },
@@ -2161,7 +2288,9 @@
       // Nur das aktuelle Notebook speichern (schneller als _saveAll)
       async _saveCurrentNotebook() {
         if (!db || !this.currentNotebook) return;
-        await db.put(compactNotebook(this.currentNotebook), String(this.currentNotebook.id));
+        const compact = compactNotebook(this.currentNotebook);
+        await db.put(compact, String(this.currentNotebook.id));
+        relaySend({ type: 'put', id: String(this.currentNotebook.id), data: compact });
         await this._saveLocalSettings();
       },
       
@@ -2538,6 +2667,7 @@
         if (this.notebooks.length <= 1) return;
         // Tombstone speichern statt db.remove – damit andere Peers wissen, dass es gelöscht wurde
         if (db) db.put({ _deleted: true, id: String(id) }, String(id));
+        relaySend({ type: 'delete', id: String(id) });
         this.notebooks = this.notebooks.filter(nb => nb.id !== id);
         delete this.currentPages[id];
         if (this.currentNotebookId === id) {
@@ -2764,14 +2894,14 @@
       },
 
       // Auto-save via GenosDB (debounced – nur aktuelles Notebook)
-      scheduleSave() {
+      scheduleSave(immediate) {
         if (this.saveTimeout) {
           clearTimeout(this.saveTimeout);
         }
 
         this.saveStatus = 'saving';
 
-        this.saveTimeout = setTimeout(async () => {
+        const doSave = async () => {
           try {
             await this._saveCurrentNotebook();
             this.saveStatus = 'saved';
@@ -2785,7 +2915,13 @@
             this.saveStatus = '';
             this.saveStatusText = 'Fehler!';
           }
-        }, 2000);
+        };
+
+        if (immediate) {
+          doSave();
+        } else {
+          this.saveTimeout = setTimeout(doSave, 2000);
+        }
       },
       
       // Drawing with Palm Rejection
@@ -3116,7 +3252,7 @@
             this.redrawStrokes();
           }
           
-          this.scheduleSave();
+          this.scheduleSave(true);
           this.updateFitReference();
         }
 
