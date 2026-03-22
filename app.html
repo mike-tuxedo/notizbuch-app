@@ -2091,40 +2091,17 @@
           }
         });
 
-        // Phase 1: Warte auf erste Daten ODER max 600ms
+        // ── Sync-Reihenfolge: 1. Relay (schnell), 2. P2P (Fallback), 3. Default ──
+
+        // Phase 1: Lokale Daten aus GenosDB (OPFS/IDB, instant)
         await Promise.race([earlyPromise, new Promise(r => setTimeout(r, 600))]);
+        let existingNotebooks = Object.values(notebooksMap);
 
-        // Phase 2: Bei geteilter URL ohne lokale Daten → auf P2P-Sync warten
-        if (isSharedUrl && Object.keys(notebooksMap).length === 0) {
-          this.syncing = true;
-          await Promise.race([
-            new Promise(resolve => {
-              p2pResolve = resolve;
-              if (p2pSettled) resolve();
-            }),
-            new Promise(resolve => setTimeout(resolve, 8000))
-          ]);
-          this.syncing = false;
-        }
-
-        // Notizbücher laden (aus GenosDB/P2P)
-        const existingNotebooks = Object.values(notebooksMap);
-
-        if (existingNotebooks.length > 0) {
-          this.notebooks = existingNotebooks.sort((a, b) => String(a.id) < String(b.id) ? -1 : 1);
-          const validId = this.notebooks.find(nb => nb.id === savedCurrentId);
-          this.currentNotebookId = validId ? savedCurrentId : this.notebooks[0].id;
-          const pagePositions = await idbGet(roomKey + ':pagePositions') || {};
-          for (const nb of this.notebooks) {
-            this.currentPages[String(nb.id)] = pagePositions[String(nb.id)] ?? 0;
-          }
-          console.log('Daten aus GenosDB geladen');
-        } else if (this.syncEnabled && RELAY_URL) {
-          // Lokal leer, kein P2P → Relay verbinden und auf Daten warten
-          console.log('[Relay] Lokal leer, verbinde Relay vor Default-Erstellung...');
+        // Phase 2: Relay-first (Antwort in <100ms wenn Server läuft)
+        if (existingNotebooks.length === 0 && this.syncEnabled && RELAY_URL) {
+          console.log('[Sync] Phase 2: Relay-Sync...');
           this.syncing = true;
           const self = this;
-          // Relay-Callbacks für diese frühe Phase (simpel: nur Notebooks sammeln)
           connectRelay(roomKey,
             (notebooks) => {
               for (const [id, data] of Object.entries(notebooks)) {
@@ -2134,7 +2111,7 @@
                   if (!(String(id) in self.currentPages)) self.currentPages[String(id)] = 0;
                 }
               }
-              console.log('[Relay] Sync erhalten:', Object.keys(notebooks).length, 'Notebooks');
+              console.log('[Relay] Sync:', Object.keys(notebooks).length, 'Notebooks');
             },
             (id, data) => {
               if (!self.notebooks.some(nb => String(nb.id) === String(id))) {
@@ -2144,27 +2121,47 @@
             },
             (id) => { self.notebooks = self.notebooks.filter(nb => String(nb.id) !== String(id)); }
           );
-          // Warten bis Notebooks ankommen oder Timeout (5s)
           await new Promise(resolve => {
             let done = false;
             const finish = () => { if (!done) { done = true; resolve(); } };
             const check = setInterval(() => {
               if (self.notebooks.length > 0) { clearInterval(check); finish(); }
             }, 200);
-            setTimeout(() => { clearInterval(check); finish(); }, 5000);
+            setTimeout(() => { clearInterval(check); finish(); }, 3000);
           });
-          this.syncing = false;
-
           if (this.notebooks.length > 0) {
-            this.currentNotebookId = this.notebooks[0].id;
-            console.log('[Relay] Notebooks via Relay erhalten:', this.notebooks.length);
-          } else {
-            console.log('[Relay] Timeout, erstelle Default-Notebook');
-            this.createDefaultNotebook();
-            await this._saveAll();
+            console.log('[Sync] Relay erfolgreich:', this.notebooks.length, 'Notebooks');
+          }
+        }
+
+        // Phase 3: P2P-Fallback (nur wenn Relay nichts geliefert hat)
+        if (existingNotebooks.length === 0 && this.notebooks.length === 0 && isSharedUrl) {
+          console.log('[Sync] Phase 3: P2P-Fallback...');
+          await Promise.race([
+            new Promise(resolve => {
+              p2pResolve = resolve;
+              if (p2pSettled) resolve();
+            }),
+            new Promise(resolve => setTimeout(resolve, 5000))
+          ]);
+          existingNotebooks = Object.values(notebooksMap);
+        }
+        this.syncing = false;
+
+        // Ergebnis anwenden
+        if (existingNotebooks.length > 0 && this.notebooks.length === 0) {
+          this.notebooks = existingNotebooks.sort((a, b) => String(a.id) < String(b.id) ? -1 : 1);
+          console.log('[Sync] Daten aus GenosDB/P2P geladen');
+        }
+        if (this.notebooks.length > 0) {
+          const validId = this.notebooks.find(nb => nb.id === savedCurrentId);
+          this.currentNotebookId = validId ? savedCurrentId : this.notebooks[0].id;
+          const pagePositions = await idbGet(roomKey + ':pagePositions') || {};
+          for (const nb of this.notebooks) {
+            this.currentPages[String(nb.id)] = pagePositions[String(nb.id)] ?? 0;
           }
         } else {
-          // Kein Sync → Standard anlegen
+          console.log('[Sync] Keine Daten, erstelle Default-Notebook');
           this.createDefaultNotebook();
           await this._saveAll();
         }
