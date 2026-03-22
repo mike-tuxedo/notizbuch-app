@@ -2752,7 +2752,12 @@
       },
 
       openShare() {
-        this.shareUrl = window.location.href;
+        // Bei localhost die LAN-IP verwenden, damit andere Geräte den Link öffnen können
+        let origin = location.origin;
+        if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
+          origin = `${location.protocol}//192.168.100.49:${location.port}`;
+        }
+        this.shareUrl = `${origin}${location.pathname}${location.hash}`;
         this.copySuccess = false;
         this.showShareModal = true;
         setTimeout(() => {
