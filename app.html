@@ -1950,12 +1950,16 @@
         if (typeof savedSyncEnabled === 'boolean') this.syncEnabled = savedSyncEnabled;
 
         // GenosDB laden und initialisieren (nur für Notizbuch-Inhalte, kein Settings-Sync)
-        const { gdb } = await import('./libs/genosdb.js');
-        db = await gdb(roomKey, { rtc: this.syncEnabled });
+        try {
+          const { gdb } = await import('./libs/genosdb.js');
+          db = await gdb(roomKey, { rtc: this.syncEnabled });
+        } catch (e) {
+          console.error('[GenosDB] Init fehlgeschlagen:', e);
+        }
 
-        this.selfPeerId = db.selfId;
+        this.selfPeerId = db?.selfId;
         const isReconnect = !!sessionStorage.getItem('reconnect');
-        if (this.syncEnabled && db.room) {
+        if (this.syncEnabled && db?.room) {
           const initialPeers = db.room.getPeers();
           if (initialPeers) {
             this.connectedPeers = initialPeers instanceof Map ? Array.from(initialPeers.keys()) : Object.keys(initialPeers);
@@ -2147,7 +2151,8 @@
           }
         }
 
-        // WebSocket Relay verbinden (optionaler persistenter Sync-Kanal)
+        // WebSocket Relay verbinden (persistenter Sync-Kanal)
+        console.log('[Relay] syncEnabled:', this.syncEnabled, 'RELAY_URL:', RELAY_URL);
         if (this.syncEnabled && RELAY_URL) {
           const self = this;
           connectRelay(roomKey,
@@ -2160,7 +2165,7 @@
                   const merged = mergeNotebooks(self.notebooks[idx], data);
                   if (JSON.stringify(self.notebooks[idx]) !== JSON.stringify(merged)) {
                     self.notebooks.splice(idx, 1, merged);
-                    db.put(compactNotebook(merged), String(id));
+                    if (db) db.put(compactNotebook(merged), String(id));
                   }
                 } else {
                   self.notebooks.push(JSON.parse(JSON.stringify(data)));
@@ -2204,10 +2209,25 @@
             }
           );
 
-          // Lokale Daten initial an Relay senden
-          for (const nb of this.notebooks) {
-            relaySend({ type: 'put', id: String(nb.id), data: compactNotebook(nb) });
-          }
+          // Lokale Daten an Relay senden (warten bis WebSocket verbunden ist)
+          const pushToRelay = () => {
+            for (const nb of this.notebooks) {
+              relaySend({ type: 'put', id: String(nb.id), data: compactNotebook(nb) });
+            }
+            console.log('[Relay] Pushed', this.notebooks.length, 'notebooks');
+          };
+          // Retry alle 500ms bis WebSocket offen ist (max 10s)
+          let pushAttempts = 0;
+          const pushInterval = setInterval(() => {
+            pushAttempts++;
+            if (relayWs && relayWs.readyState === 1) {
+              clearInterval(pushInterval);
+              pushToRelay();
+            } else if (pushAttempts > 20) {
+              clearInterval(pushInterval);
+              console.warn('[Relay] Push abgebrochen – keine Verbindung');
+            }
+          }, 500);
         }
 
         this.setupCanvases();
