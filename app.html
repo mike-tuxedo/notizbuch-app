@@ -1511,8 +1511,8 @@
     let roomKey = '';
 
     // WebSocket Relay – optionaler persistenter Sync-Kanal
-    // Setzt RELAY_URL auf die Adresse des Relay-Servers (z.B. ws://localhost:4444)
-    const RELAY_URL = localStorage.getItem('relayUrl') || 'wss://192.168.100.49:4444';
+    // Relay-URL: automatisch vom aktuellen Host ableiten (gleicher Server)
+    const RELAY_URL = localStorage.getItem('relayUrl') || `wss://${location.host}`;
     let relayWs = null;
     let relayReconnectTimer = null;
 
@@ -1523,7 +1523,19 @@
       } catch { return; }
 
       relayWs.onopen = () => {
-        relayWs.send(JSON.stringify({ type: 'join', room }));
+        // Browser/Gerät-Name für Debug-Dashboard
+        const ua = navigator.userAgent;
+        let browser = 'Browser';
+        if (ua.includes('Firefox')) browser = 'Firefox';
+        else if (ua.includes('Edg/')) browser = 'Edge';
+        else if (ua.includes('Chrome')) browser = 'Chrome';
+        else if (ua.includes('Safari')) browser = 'Safari';
+        let device = 'Desktop';
+        if (/Android/i.test(ua)) device = 'Android';
+        else if (/iPad/i.test(ua)) device = 'iPad';
+        else if (/iPhone/i.test(ua)) device = 'iPhone';
+        else if (/Mobile/i.test(ua)) device = 'Mobile';
+        relayWs.send(JSON.stringify({ type: 'join', room, name: `${browser} ${device}` }));
       };
 
       relayWs.onmessage = (e) => {
