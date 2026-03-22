@@ -2100,38 +2100,71 @@
           await Promise.race([
             new Promise(resolve => {
               p2pResolve = resolve;
-              if (p2pSettled) resolve(); // bereits aufgelöst bevor wir hier ankamen
+              if (p2pSettled) resolve();
             }),
             new Promise(resolve => setTimeout(resolve, 8000))
           ]);
           this.syncing = false;
         }
 
-        // Notizbücher laden
+        // Notizbücher laden (aus GenosDB/P2P)
         const existingNotebooks = Object.values(notebooksMap);
 
         if (existingNotebooks.length > 0) {
           this.notebooks = existingNotebooks.sort((a, b) => String(a.id) < String(b.id) ? -1 : 1);
-          // Gerätespezifische Settings wiederherstellen
           const validId = this.notebooks.find(nb => nb.id === savedCurrentId);
           this.currentNotebookId = validId ? savedCurrentId : this.notebooks[0].id;
-          // Seitenpositionen aus IndexedDB wiederherstellen (nie synchronisiert)
           const pagePositions = await idbGet(roomKey + ':pagePositions') || {};
           for (const nb of this.notebooks) {
             this.currentPages[String(nb.id)] = pagePositions[String(nb.id)] ?? 0;
           }
           console.log('Daten aus GenosDB geladen');
         } else if (this.syncEnabled && RELAY_URL) {
-          // Lokal leer aber Relay aktiv → auf Sync warten bevor Default erstellt wird
-          console.log('Lokal leer, warte auf Relay-Sync...');
-          await new Promise(r => setTimeout(r, 3000));
-          if (this.notebooks.length === 0) {
-            console.log('Kein Sync-Ergebnis, erstelle Default-Notebook');
+          // Lokal leer, kein P2P → Relay verbinden und auf Daten warten
+          console.log('[Relay] Lokal leer, verbinde Relay vor Default-Erstellung...');
+          this.syncing = true;
+          const self = this;
+          // Relay-Callbacks für diese frühe Phase (simpel: nur Notebooks sammeln)
+          connectRelay(roomKey,
+            (notebooks) => {
+              for (const [id, data] of Object.entries(notebooks)) {
+                if (data && data._deleted) continue;
+                if (!self.notebooks.some(nb => String(nb.id) === String(id))) {
+                  self.notebooks.push(JSON.parse(JSON.stringify(data)));
+                  if (!(String(id) in self.currentPages)) self.currentPages[String(id)] = 0;
+                }
+              }
+              console.log('[Relay] Sync erhalten:', Object.keys(notebooks).length, 'Notebooks');
+            },
+            (id, data) => {
+              if (!self.notebooks.some(nb => String(nb.id) === String(id))) {
+                self.notebooks.push(JSON.parse(JSON.stringify(data)));
+                if (!(String(id) in self.currentPages)) self.currentPages[String(id)] = 0;
+              }
+            },
+            (id) => { self.notebooks = self.notebooks.filter(nb => String(nb.id) !== String(id)); }
+          );
+          // Warten bis Notebooks ankommen oder Timeout (5s)
+          await new Promise(resolve => {
+            let done = false;
+            const finish = () => { if (!done) { done = true; resolve(); } };
+            const check = setInterval(() => {
+              if (self.notebooks.length > 0) { clearInterval(check); finish(); }
+            }, 200);
+            setTimeout(() => { clearInterval(check); finish(); }, 5000);
+          });
+          this.syncing = false;
+
+          if (this.notebooks.length > 0) {
+            this.currentNotebookId = this.notebooks[0].id;
+            console.log('[Relay] Notebooks via Relay erhalten:', this.notebooks.length);
+          } else {
+            console.log('[Relay] Timeout, erstelle Default-Notebook');
             this.createDefaultNotebook();
             await this._saveAll();
           }
         } else {
-          // Wirklich neue Session (oder P2P-Timeout) → Standard anlegen
+          // Kein Sync → Standard anlegen
           this.createDefaultNotebook();
           await this._saveAll();
         }
