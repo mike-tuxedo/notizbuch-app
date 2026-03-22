@@ -1575,6 +1575,11 @@
       };
     }
 
+    // Nav-State (aktuelles Notebook + Seitenpositionen) an Relay senden
+    function relayPushNav(currentNotebookId, currentPages) {
+      relaySend({ type: 'put', id: '_nav', data: { _nav: true, currentNotebookId, currentPages } });
+    }
+
     function relaySend(msg) {
       if (relayWs && relayWs.readyState === 1) {
         relayWs.send(JSON.stringify(msg));
@@ -2105,6 +2110,11 @@
           connectRelay(roomKey,
             (notebooks) => {
               for (const [id, data] of Object.entries(notebooks)) {
+                if (id === '_nav' && data && data._nav) {
+                  // Nav-State wiederherstellen
+                  if (data.currentNotebookId) self._relayNav = data;
+                  continue;
+                }
                 if (data && data._deleted) continue;
                 if (!self.notebooks.some(nb => String(nb.id) === String(id))) {
                   self.notebooks.push(JSON.parse(JSON.stringify(data)));
@@ -2154,11 +2164,31 @@
           console.log('[Sync] Daten aus GenosDB/P2P geladen');
         }
         if (this.notebooks.length > 0) {
-          const validId = this.notebooks.find(nb => nb.id === savedCurrentId);
-          this.currentNotebookId = validId ? savedCurrentId : this.notebooks[0].id;
+          // Nav-State: 1. Lokal (IDB), 2. Relay (_relayNav), 3. Fallback (erstes Notebook)
           const pagePositions = await idbGet(roomKey + ':pagePositions') || {};
+          if (savedCurrentId && this.notebooks.find(nb => nb.id === savedCurrentId)) {
+            // Lokaler State vorhanden (kein Cache-Clear)
+            this.currentNotebookId = savedCurrentId;
+            for (const nb of this.notebooks) {
+              this.currentPages[String(nb.id)] = pagePositions[String(nb.id)] ?? 0;
+            }
+          } else if (this._relayNav) {
+            // Nav vom Relay (nach Cache-Clear)
+            const nav = this._relayNav;
+            const navNb = this.notebooks.find(nb => String(nb.id) === String(nav.currentNotebookId));
+            this.currentNotebookId = navNb ? nav.currentNotebookId : this.notebooks[0].id;
+            if (nav.currentPages) {
+              for (const [nbId, pageIdx] of Object.entries(nav.currentPages)) {
+                this.currentPages[nbId] = pageIdx;
+              }
+            }
+            console.log('[Sync] Nav vom Relay wiederhergestellt');
+          } else {
+            this.currentNotebookId = this.notebooks[0].id;
+          }
+          // Sicherstellen dass alle Notebooks einen Page-Eintrag haben
           for (const nb of this.notebooks) {
-            this.currentPages[String(nb.id)] = pagePositions[String(nb.id)] ?? 0;
+            if (!(String(nb.id) in this.currentPages)) this.currentPages[String(nb.id)] = 0;
           }
         } else {
           console.log('[Sync] Keine Daten, erstelle Default-Notebook');
@@ -2189,6 +2219,7 @@
             // onSync: initialer Stand vom Relay – mit lokalem State mergen
             (notebooks) => {
               for (const [id, data] of Object.entries(notebooks)) {
+                if (id === '_nav' || (data && data._nav)) continue; // Nav-State ignorieren
                 if (data && data._deleted) continue;
                 const idx = self.notebooks.findIndex(nb => String(nb.id) === String(id));
                 if (idx >= 0) {
@@ -2360,6 +2391,8 @@
         await idbPut(roomKey + ':penSizeIndex', this.penSizeIndex);
         await idbPut(roomKey + ':customColors', [...this.customColors]);
         await idbPut(roomKey + ':penDetected', this.penDetected);
+        // Nav-State an Relay senden (überlebt Cache-Clear)
+        relayPushNav(this.currentNotebookId, { ...this.currentPages });
       },
 
       // Notizbuch-Inhalte via GenosDB (P2P-Sync) + lokale Settings in IndexedDB speichern
