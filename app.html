@@ -1516,44 +1516,63 @@
     let relayWs = null;
     let relayReconnectTimer = null;
 
+    // Browser/Gerät-Name ermitteln
+    function getClientName() {
+      const ua = navigator.userAgent;
+      let browser = 'Browser';
+      if (ua.includes('Firefox')) browser = 'Firefox';
+      else if (ua.includes('Edg/')) browser = 'Edge';
+      else if (ua.includes('Chrome')) browser = 'Chrome';
+      else if (ua.includes('Safari')) browser = 'Safari';
+      let device = 'Desktop';
+      if (/Android/i.test(ua)) device = 'Android';
+      else if (/iPad/i.test(ua)) device = 'iPad';
+      else if (/iPhone/i.test(ua)) device = 'iPhone';
+      else if (/Mobile/i.test(ua)) device = 'Mobile';
+      return `${browser} ${device}`;
+    }
+
     function connectRelay(room, onSync, onPut, onDelete) {
       if (!RELAY_URL || relayWs) return;
+      console.log('[Relay] Verbinde mit', RELAY_URL);
       try {
         relayWs = new WebSocket(RELAY_URL);
-      } catch { return; }
+      } catch (e) {
+        console.error('[Relay] WebSocket Fehler:', e);
+        return;
+      }
 
       relayWs.onopen = () => {
-        // Browser/Gerät-Name für Debug-Dashboard
-        const ua = navigator.userAgent;
-        let browser = 'Browser';
-        if (ua.includes('Firefox')) browser = 'Firefox';
-        else if (ua.includes('Edg/')) browser = 'Edge';
-        else if (ua.includes('Chrome')) browser = 'Chrome';
-        else if (ua.includes('Safari')) browser = 'Safari';
-        let device = 'Desktop';
-        if (/Android/i.test(ua)) device = 'Android';
-        else if (/iPad/i.test(ua)) device = 'iPad';
-        else if (/iPhone/i.test(ua)) device = 'iPhone';
-        else if (/Mobile/i.test(ua)) device = 'Mobile';
-        relayWs.send(JSON.stringify({ type: 'join', room, name: `${browser} ${device}` }));
+        console.log('[Relay] Verbunden, join Room:', room.slice(0, 8) + '…');
+        relayWs.send(JSON.stringify({ type: 'join', room, name: getClientName() }));
       };
 
       relayWs.onmessage = (e) => {
         let msg;
         try { msg = JSON.parse(e.data); } catch { return; }
-        if (msg.type === 'sync' && msg.notebooks) onSync(msg.notebooks);
-        else if (msg.type === 'put' && msg.id && msg.data) onPut(msg.id, msg.data);
+        if (msg.type === 'sync' && msg.notebooks) {
+          console.log('[Relay] Sync erhalten:', Object.keys(msg.notebooks).length, 'Notebooks');
+          onSync(msg.notebooks);
+        }
+        else if (msg.type === 'put' && msg.id && msg.data) {
+          console.log('[Relay] Put erhalten:', msg.id.slice(0, 8) + '…');
+          onPut(msg.id, msg.data);
+        }
         else if (msg.type === 'delete' && msg.id) onDelete(msg.id);
+        else if (msg.type === 'peers') console.log('[Relay] Peers im Room:', msg.count);
       };
 
-      relayWs.onclose = () => {
+      relayWs.onclose = (e) => {
+        console.log('[Relay] Getrennt, Code:', e.code, e.reason || '');
         relayWs = null;
-        // Auto-Reconnect nach 5s
         clearTimeout(relayReconnectTimer);
         relayReconnectTimer = setTimeout(() => connectRelay(room, onSync, onPut, onDelete), 5000);
       };
 
-      relayWs.onerror = () => { relayWs?.close(); };
+      relayWs.onerror = (e) => {
+        console.error('[Relay] Fehler:', e);
+        relayWs?.close();
+      };
     }
 
     function relaySend(msg) {
@@ -2383,22 +2402,9 @@
 
       createDefaultNotebook() {
         const id = String(Date.now());
-        // Browser/Gerät erkennen für den Notizbuch-Namen
-        const ua = navigator.userAgent;
-        let browser = 'Browser';
-        if (ua.includes('Firefox')) browser = 'Firefox';
-        else if (ua.includes('Edg/')) browser = 'Edge';
-        else if (ua.includes('Chrome')) browser = 'Chrome';
-        else if (ua.includes('Safari')) browser = 'Safari';
-        let device = 'Desktop';
-        if (/Android/i.test(ua)) device = 'Android';
-        else if (/iPad/i.test(ua)) device = 'iPad';
-        else if (/iPhone/i.test(ua)) device = 'iPhone';
-        else if (/Mobile/i.test(ua)) device = 'Mobile';
-
         this.notebooks = [{
           id,
-          name: `Notizen ${browser} ${device}`,
+          name: `Notizen ${getClientName()}`,
           pages: [{ id: 1, strokes: [], background: 'grid' }]
         }];
         this.currentNotebookId = id;

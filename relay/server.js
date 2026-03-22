@@ -167,12 +167,16 @@ wss.on('connection', (ws, req) => {
   let currentRoom = null;
   let currentRoomKey = null;
   const peerId = Math.random().toString(36).slice(2, 10);
+  const clientIp = req.socket.remoteAddress;
+
+  console.log(`[WS] Neue Verbindung: ${peerId} von ${clientIp} (${req.url})`);
 
   // Dashboard-Clients erkennen (via ?dashboard query param)
   if (req.url?.includes('dashboard=1')) {
+    console.log(`[WS] Dashboard-Client: ${peerId}`);
     dashboardClients.add(ws);
     ws.send(JSON.stringify({ type: 'init', status: getStatus(), log: eventLog.slice(-50) }));
-    ws.on('close', () => dashboardClients.delete(ws));
+    ws.on('close', () => { dashboardClients.delete(ws); console.log(`[WS] Dashboard getrennt: ${peerId}`); });
     return;
   }
 
