@@ -2244,7 +2244,13 @@
                   existing.order = value.order ?? existing.order;
                   const clearedAt = Math.max(value.clearedAt || 0, existing.clearedAt || 0);
                   existing.clearedAt = clearedAt;
-                  // Strokes mergen (Union by ID) statt ersetzen
+
+                  // Skip wenn Strokes bereits identisch (Live-Channel hat schon gesynct)
+                  const localIds = existing.strokes.map(s => String(s.id)).join(',');
+                  const remoteIds = remoteStrokes.map(s => String(s.id)).join(',');
+                  if (localIds === remoteIds) return; // Nichts zu tun
+
+                  // Strokes mergen (Union by ID)
                   const merged = new Map();
                   for (const s of existing.strokes) {
                     if (clearedAt && Number(s.id) <= clearedAt) continue;
