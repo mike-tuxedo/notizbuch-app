@@ -1507,6 +1507,7 @@
 
     // GenosDB instance (initialized in init())
     let db;
+    let strokeChannel = null;
     let localDB;
     let dbInitialized = false;
     let roomKey = '';
@@ -2031,7 +2032,6 @@
         this.selfPeerId = db?.selfId;
 
         // Live-Stroke-Channel: Peers sehen Strokes sofort (kein db.put() nötig)
-        let strokeChannel = null;
         if (db?.room) {
           strokeChannel = db.room.channel("stroke-live");
           strokeChannel.on("message", (data, peerId) => {
