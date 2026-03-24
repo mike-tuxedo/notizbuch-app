@@ -2,18 +2,28 @@
  * Notizbuch Dev-Server (HTTPS + WSS Relay + Debug Dashboard)
  *
  * Start:  node server.js
- *   App:       https://192.168.100.49:4444/app.html
- *   Dashboard: https://192.168.100.49:4444/debug.html
+ *   LAN-IP wird automatisch erkannt.
  */
 
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const { WebSocketServer } = require('ws');
 
 const PORT = process.env.PORT || 4444;
 const PROJECT_DIR = path.resolve(__dirname, '..');
 const MAX_ROOM_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+function getLanIp() {
+  const nets = os.networkInterfaces();
+  for (const iface of Object.values(nets)) {
+    for (const cfg of iface) {
+      if (cfg.family === 'IPv4' && !cfg.internal) return cfg.address;
+    }
+  }
+  return null;
+}
 
 // TLS
 const certPath = path.join(PROJECT_DIR, 'cert.pem');
@@ -21,7 +31,7 @@ const keyPath = path.join(PROJECT_DIR, 'key.pem');
 
 if (!fs.existsSync(certPath) || !fs.existsSync(keyPath)) {
   console.error('Zertifikat nicht gefunden!');
-  console.error('  mkcert -cert-file cert.pem -key-file key.pem localhost 192.168.100.49');
+  console.error('  mkcert -cert-file cert.pem -key-file key.pem localhost <LAN-IP>');
   process.exit(1);
 }
 
@@ -74,7 +84,7 @@ function getStatus() {
     }
     roomList.push({
       room: key.slice(0, 8) + '…',
-      notebooks: Object.keys(room.notebooks).length,
+      nodes: Object.keys(room.nodes).length,
       clients
     });
   }
@@ -104,6 +114,13 @@ const httpsServer = https.createServer(serverOptions, (req, res) => {
     return;
   }
 
+  // LAN-IP API (für Share-Links)
+  if (urlPath === '/api/lan-ip') {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' });
+    res.end(JSON.stringify({ ip: getLanIp() }));
+    return;
+  }
+
   const filePath = path.join(PROJECT_DIR, path.normalize(urlPath));
   if (!filePath.startsWith(PROJECT_DIR)) {
     res.writeHead(403);
@@ -126,21 +143,62 @@ const httpsServer = https.createServer(serverOptions, (req, res) => {
   });
 });
 
+// ─── Persistenz ───
+
+const DATA_FILE = path.join(__dirname, 'data.json');
+const SAVE_DELAY_MS = 2000;
+let saveTimer = null;
+
+function loadData() {
+  try {
+    if (fs.existsSync(DATA_FILE)) {
+      const raw = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+      const now = Date.now();
+      for (const [key, roomData] of Object.entries(raw)) {
+        if (now - roomData.lastAccess > MAX_ROOM_AGE_MS) continue;
+        rooms.set(key, { nodes: roomData.nodes || roomData.notebooks || {}, clients: new Set(), lastAccess: roomData.lastAccess });
+      }
+      console.log(`[Persistenz] ${rooms.size} Rooms geladen aus data.json`);
+    }
+  } catch (e) {
+    console.error('[Persistenz] Laden fehlgeschlagen:', e.message);
+  }
+}
+
+function scheduleSave() {
+  if (saveTimer) return;
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    const data = {};
+    for (const [key, room] of rooms) {
+      data[key] = { nodes: room.nodes, lastAccess: room.lastAccess };
+    }
+    try {
+      fs.writeFileSync(DATA_FILE, JSON.stringify(data), 'utf8');
+    } catch (e) {
+      console.error('[Persistenz] Speichern fehlgeschlagen:', e.message);
+    }
+  }, SAVE_DELAY_MS);
+}
+
 // ─── WebSocket Relay ───
 
 const rooms = new Map();
+loadData();
 
 setInterval(() => {
   const now = Date.now();
+  let changed = false;
   for (const [key, room] of rooms) {
-    if (now - room.lastAccess > MAX_ROOM_AGE_MS) rooms.delete(key);
+    if (now - room.lastAccess > MAX_ROOM_AGE_MS) { rooms.delete(key); changed = true; }
   }
+  if (changed) scheduleSave();
 }, 6 * 60 * 60 * 1000);
 
 function getRoom(roomKey) {
   let room = rooms.get(roomKey);
   if (!room) {
-    room = { notebooks: {}, clients: new Set(), lastAccess: Date.now() };
+    room = { nodes: {}, clients: new Set(), lastAccess: Date.now() };
     rooms.set(roomKey, room);
   }
   room.lastAccess = Date.now();
@@ -207,28 +265,45 @@ wss.on('connection', (ws, req) => {
         const p = peers.get(peerId);
         if (p) p.room = currentRoomKey;
 
-        const nbCount = Object.keys(currentRoom.notebooks).length;
-        ws.send(JSON.stringify({ type: 'sync', notebooks: currentRoom.notebooks }));
-        logEvent(currentRoomKey, peerId, 'join', `${nbCount} notebooks im Room`);
+        const nodeCount = Object.keys(currentRoom.nodes).length;
+        ws.send(JSON.stringify({ type: 'sync', notebooks: currentRoom.nodes }));
+        logEvent(currentRoomKey, peerId, 'join', `${nodeCount} nodes im Room`);
         broadcastPeerCount(currentRoom);
         broadcastDashboard({ type: 'status', status: getStatus() });
         break;
       }
 
+      // Legacy: altes Blob-Format (Abwärtskompatibilität)
       case 'put': {
         if (!currentRoom || !msg.id || !msg.data) return;
-        currentRoom.notebooks[String(msg.id)] = msg.data;
-        const size = JSON.stringify(msg.data).length;
-        logEvent(currentRoomKey, peerId, 'put', `notebook ${String(msg.id).slice(0,8)}… (${(size/1024).toFixed(1)} KB)`);
+        currentRoom.nodes[String(msg.id)] = msg.data;
+        logEvent(currentRoomKey, peerId, 'put', `node ${String(msg.id).slice(0,8)}…`);
         broadcast(currentRoom, { type: 'put', id: String(msg.id), data: msg.data, from: peerId }, ws);
+        scheduleSave();
+        break;
+      }
+
+      // Graph-Node Snapshot-Store: nur speichern, kein Broadcast (P2P macht Live-Sync)
+      case 'node-put': {
+        if (!currentRoom || !msg.id || !msg.data) return;
+        currentRoom.nodes[String(msg.id)] = msg.data;
+        scheduleSave();
+        break;
+      }
+
+      case 'node-remove': {
+        if (!currentRoom || !msg.id) return;
+        delete currentRoom.nodes[String(msg.id)];
+        scheduleSave();
         break;
       }
 
       case 'delete': {
         if (!currentRoom || !msg.id) return;
-        delete currentRoom.notebooks[String(msg.id)];
-        logEvent(currentRoomKey, peerId, 'delete', `notebook ${String(msg.id).slice(0,8)}…`);
+        delete currentRoom.nodes[String(msg.id)];
+        logEvent(currentRoomKey, peerId, 'delete', `${String(msg.id).slice(0,8)}…`);
         broadcast(currentRoom, { type: 'delete', id: String(msg.id), from: peerId }, ws);
+        scheduleSave();
         break;
       }
     }
@@ -251,9 +326,28 @@ wss.on('connection', (ws, req) => {
 });
 
 httpsServer.listen(PORT, '0.0.0.0', () => {
+  const lanIp = getLanIp();
   console.log(`\n  Notizbuch Dev-Server läuft:`);
   console.log(`    App:       https://localhost:${PORT}/app.html`);
   console.log(`    Dashboard: https://localhost:${PORT}/debug.html`);
-  console.log(`    WLAN:      https://192.168.100.49:${PORT}/app.html`);
+  if (lanIp) console.log(`    WLAN:      https://${lanIp}:${PORT}/app.html`);
+  console.log(`    Daten:     ${DATA_FILE}`);
   console.log();
 });
+
+// Graceful Shutdown — Daten sofort speichern
+function saveSync() {
+  const data = {};
+  for (const [key, room] of rooms) {
+    data[key] = { nodes: room.nodes, lastAccess: room.lastAccess };
+  }
+  try {
+    fs.writeFileSync(DATA_FILE, JSON.stringify(data), 'utf8');
+    console.log('[Persistenz] Daten gespeichert.');
+  } catch (e) {
+    console.error('[Persistenz] Speichern fehlgeschlagen:', e.message);
+  }
+}
+
+process.on('SIGINT', () => { saveSync(); process.exit(0); });
+process.on('SIGTERM', () => { saveSync(); process.exit(0); });

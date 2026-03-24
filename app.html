@@ -1112,6 +1112,7 @@
             </div>
             <div class="notebook-menu-footer">
               <button class="new-notebook-btn" @click="createNotebook()">+ Neues Notizbuch</button>
+              <button class="new-notebook-btn" @click="createTestNotebook()" style="opacity:0.5;font-size:0.85em">🧪 Testbuch (1000 Strokes)</button>
               <button class="new-notebook-btn rename-menu-btn" @click="showNotebookMenu = false; startRename()">✎ Umbenennen</button>
             </div>
           </div>
@@ -1667,6 +1668,71 @@
       return clone;
     }
 
+    // Koordinaten auf 0.1 Präzision runden (für Speicherung)
+    function roundPoints(points) {
+      return points.map(p => ({
+        x: Math.round(p.x * 10) / 10,
+        y: Math.round(p.y * 10) / 10
+      }));
+    }
+
+    // Blob-Notebook in Graph-Nodes migrieren (altes Format → neues Format)
+    async function migrateBlob(id, value, db) {
+      if (!value || !Array.isArray(value.pages) || value.type) return false;
+      console.log('[Migration] Konvertiere Blob-Notebook', id);
+
+      await db.put({ type: 'notebook', name: value.name || 'Notizbuch' }, String(id));
+
+      for (let i = 0; i < value.pages.length; i++) {
+        const page = value.pages[i];
+        const pageId = String(page.id || (Number(id) + i + 1));
+        const clearedAt = page.clearedAt || 0;
+        const deleted = new Set((page.deletedStrokes || []).map(Number));
+
+        // Überlebende Strokes filtern + runden
+        const strokes = (page.strokes || []).filter(s => {
+          if (Number(s.id) <= clearedAt) return false;
+          if (deleted.has(Number(s.id))) return false;
+          return true;
+        }).map(s => ({ id: String(s.id), points: roundPoints(s.points || []), color: s.color, size: s.size, tool: s.tool || 'pen' }));
+
+        // Page-Node mit eingebetteten Strokes
+        await db.put({
+          type: 'page', notebookId: String(id), background: page.background || 'grid',
+          order: i, clearedAt, strokes
+        }, pageId);
+        await db.link(String(id), pageId);
+      }
+
+      console.log('[Migration] Fertig für Notebook', id);
+      return true;
+    }
+
+    // Page-Node in GenosDB + Relay speichern (debounced, pausiert während Zeichnen)
+    let _savePageTimer = null;
+    let _savePagePending = null;
+    function savePageNode(page, notebookId) {
+      _savePagePending = { page, notebookId };
+      if (_savePageTimer) clearTimeout(_savePageTimer);
+      _savePageTimer = setTimeout(_flushPageSave, 2000);
+    }
+    function _flushPageSave() {
+      if (!_savePagePending) return;
+      const { page, notebookId } = _savePagePending;
+      _savePagePending = null;
+      _savePageTimer = null;
+      const strokes = (page.strokes || []).map(s => ({
+        id: String(s.id), points: (s.points || []).map(p => ({ x: p.x, y: p.y })),
+        color: s.color, size: s.size, tool: s.tool || 'pen'
+      }));
+      const data = {
+        type: 'page', notebookId: String(notebookId), background: page.background || 'grid',
+        order: page.order ?? 0, clearedAt: page.clearedAt || 0, strokes
+      };
+      if (db) db.put(data, String(page.id));
+      relaySend({ type: 'node-put', id: String(page.id), data });
+    }
+
     // Stroke smoothing
     function smoothPoints(points) {
       if (points.length < 3) return points;
@@ -1895,7 +1961,7 @@
 
       get currentPage() {
         const idx = this.currentPages[this.currentNotebookId] ?? 0;
-        return this.currentNotebook?.pages[idx];
+        return this.currentNotebook?.pages?.[idx];
       },
 
       get strokes() {
@@ -1957,7 +2023,7 @@
         // GenosDB laden und initialisieren (nur für Notizbuch-Inhalte, kein Settings-Sync)
         try {
           const { gdb } = await import('./libs/genosdb.js');
-          db = await gdb(roomKey, { rtc: this.syncEnabled });
+          db = await gdb(roomKey, { rtc: this.syncEnabled, password: roomKey });
         } catch (e) {
           console.error('[GenosDB] Init fehlgeschlagen:', e);
         }
@@ -2001,13 +2067,13 @@
           checkWebRTCCapability().then(ok => {
             if (!ok) this.webrtcWarning = true;
           });
-        } else if (db.room) {
+        } else if (db?.room) {
           // Sync deaktiviert: Room explizit verlassen
           db.room.leave();
         }
 
-        // Gesammelte Notebooks während der Init-Phase
-        const notebooksMap = {};
+        // Gesammelte Graph-Nodes während der Init-Phase
+        const initNodes = {}; // { id: value }
         const self = this;
 
         // Debounce-Resolver: feuert 400ms nach dem letzten P2P-Event
@@ -2022,125 +2088,185 @@
         let earlyResolve = null;
         const earlyPromise = new Promise(r => earlyResolve = r);
 
-        const { unsubscribe } = db.map(function({ id, value, action }) {
-          // 'settings' komplett ignorieren – wird nicht mehr via P2P geteilt
+        // In-Memory-Modell aus Graph-Nodes aufbauen
+        function buildNotebooksFromNodes(nodes, label) {
+          const types = {};
+          for (const [id, value] of Object.entries(nodes)) {
+            const t = value?.type || 'unknown';
+            types[t] = (types[t] || 0) + 1;
+          }
+          console.log(`[buildNotebooks${label ? ' ' + label : ''}] Nodes:`, Object.keys(nodes).length, 'Types:', types);
+          const notebooks = [];
+          const pageMap = {}; // pageId → page object
+          const nbPages = {}; // notebookId → [pages]
+
+          // Notebooks sammeln
+          for (const [id, value] of Object.entries(nodes)) {
+            if (!value || !value.type) {
+              if (value && Array.isArray(value.pages)) migrateBlob(id, value, db);
+              continue;
+            }
+            if (value.type === 'notebook') {
+              nbPages[id] = [];
+              notebooks.push({ id, name: value.name || 'Notizbuch', pages: [] });
+            }
+          }
+          // Pages sammeln (Strokes sind im Page-Node eingebettet)
+          for (const [id, value] of Object.entries(nodes)) {
+            if (value?.type === 'page') {
+              const nbId = value.notebookId;
+              const strokes = (value.strokes || []).map(s => ({
+                id: String(s.id), points: s.points || [], color: s.color, size: s.size, tool: s.tool || 'pen'
+              })).sort((a, b) => Number(a.id) - Number(b.id));
+              const page = {
+                id, strokes, background: value.background || 'grid',
+                order: value.order ?? 0, clearedAt: value.clearedAt || 0
+              };
+              if (nbPages[nbId]) nbPages[nbId].push(page);
+            }
+          }
+          for (const nb of notebooks) {
+            nb.pages = (nbPages[nb.id] || []).sort((a, b) => a.order - b.order);
+          }
+          return notebooks;
+        }
+
+        // Sync-Indikator + Redraw für aktuelle Seite
+        function flashSyncAndRedraw() {
+          self.peerSync = true;
+          clearTimeout(self._peerSyncTimer);
+          self._peerSyncTimer = setTimeout(() => { self.peerSync = false; }, 1500);
+          if (self.currentPage) {
+            self.redrawStrokes();
+          }
+        }
+
+        const { unsubscribe } = db ? db.map(function({ id, value, action }) {
           if (id === 'settings') return;
 
-          // Tombstone-Check: gelöschte Notebooks erkennen
-          if (value && value._deleted) {
-            if (!dbInitialized) {
-              delete notebooksMap[id];
-            } else {
-              self.notebooks = self.notebooks.filter(nb => String(nb.id) !== String(id));
-              if (String(id) === String(self.currentNotebookId) && self.notebooks.length > 0) {
-                self.currentNotebookId = self.notebooks[0].id;
-                self.drawBackground();
-                self.redrawStrokes();
-                self.updateFitReference();
-              }
-            }
-            return;
-          }
-
           if (!dbInitialized) {
-            // Init-Phase: lokale OPFS-Daten (initial) UND P2P-Daten (added/updated) mergen
+            // Init-Phase: alle Nodes sammeln
             if (action === 'initial' || action === 'added' || action === 'updated') {
-              notebooksMap[id] = notebooksMap[id] ? mergeNotebooks(notebooksMap[id], value) : value;
+              initNodes[id] = value;
               if (earlyResolve) { earlyResolve(); earlyResolve = null; }
             }
-            // Nach P2P-Events: Debounce-Timer zurücksetzen
             if (action === 'added' || action === 'updated') {
               clearTimeout(p2pDebounceTimer);
               p2pDebounceTimer = setTimeout(triggerP2PDone, 400);
             }
           } else {
-            // Nach der Init-Phase: reaktiv auf P2P-Updates reagieren (Stroke-Level Merge)
-            // 'removed' wird IGNORIERT – Löschungen nur über _deleted-Tombstone
-            if (action === 'added' || action === 'updated') {
-              const idx = self.notebooks.findIndex(nb => String(nb.id) === String(id));
-              if (idx >= 0) {
-                // Merge: lokale Strokes behalten, Remote-Strokes dazuführen
-                const local = self.notebooks[idx];
-                const merged = mergeNotebooks(local, value);
-                // Nur updaten wenn Merge tatsächlich etwas geändert hat (verhindert Endlosschleife)
-                const localJson = JSON.stringify(local);
-                const mergedJson = JSON.stringify(merged);
-                if (localJson !== mergedJson) {
-                  self.notebooks.splice(idx, 1, merged);
-                  // Merge zurück in DB speichern damit beide Seiten konvergieren
-                  db.put(compactNotebook(merged), String(id));
+            // Live-Phase: Granulare Updates auf In-Memory-Modell anwenden
+            if (!value || !value.type) {
+              // Altes Blob-Format ignorieren (Migration nur während Init)
+              return;
+            }
+
+            if (value.type === 'notebook') {
+              if (action === 'removed') {
+                self.notebooks = self.notebooks.filter(nb => String(nb.id) !== String(id));
+                if (String(id) === String(self.currentNotebookId) && self.notebooks.length > 0) {
+                  self.currentNotebookId = self.notebooks[0].id;
+                  self.drawBackground();
+                  self.redrawStrokes();
                 }
+                return;
+              }
+              const existing = self.notebooks.find(nb => String(nb.id) === String(id));
+              if (existing) {
+                existing.name = value.name || existing.name;
               } else {
-                self.notebooks.push(JSON.parse(JSON.stringify(value)));
-                // Neue Notebooks starten auf Seite 0 (lokal)
+                self.notebooks.push({ id: String(id), name: value.name || 'Notizbuch', pages: [] });
                 if (!(String(id) in self.currentPages)) self.currentPages[String(id)] = 0;
               }
-              // Seitenindex auf gültigen Bereich begrenzen
-              const updatedNb = self.notebooks.find(nb => String(nb.id) === String(id));
-              if (updatedNb && updatedNb.pages) {
-                const maxPage = updatedNb.pages.length - 1;
-                const curPage = self.currentPages[String(id)] ?? 0;
-                if (curPage > maxPage) self.currentPages[String(id)] = maxPage;
-              }
-              if (String(id) === String(self.currentNotebookId)) {
-                self.drawBackground();
-                self.redrawStrokes();
-                self.updateFitReference();
-              }
-              // Sync-Indikator kurz aufleuchten lassen
-              self.peerSync = true;
-              clearTimeout(self._peerSyncTimer);
-              self._peerSyncTimer = setTimeout(() => { self.peerSync = false; }, 1500);
             }
-            // 'removed' action wird komplett ignoriert – verhindert versehentliches Löschen durch Sync
+
+            else if (value.type === 'page') {
+              if (action === 'removed') {
+                for (const nb of self.notebooks) {
+                  if (!nb.pages) continue;
+                  const idx = nb.pages.findIndex(p => String(p.id) === String(id));
+                  if (idx >= 0) { nb.pages.splice(idx, 1); break; }
+                }
+                flashSyncAndRedraw();
+                return;
+              }
+              const nb = self.notebooks.find(n => String(n.id) === String(value.notebookId));
+              if (nb) {
+                if (!nb.pages) nb.pages = [];
+                const existing = nb.pages.find(p => String(p.id) === String(id));
+                const strokes = (value.strokes || []).map(s => ({
+                  id: String(s.id), points: s.points || [], color: s.color, size: s.size, tool: s.tool || 'pen'
+                }));
+                if (existing) {
+                  existing.background = value.background || existing.background;
+                  existing.order = value.order ?? existing.order;
+                  existing.clearedAt = value.clearedAt || existing.clearedAt;
+                  existing.strokes = strokes;
+                } else {
+                  nb.pages.push({
+                    id: String(id), strokes, background: value.background || 'grid',
+                    order: value.order ?? nb.pages.length, clearedAt: value.clearedAt || 0
+                  });
+                  nb.pages.sort((a, b) => a.order - b.order);
+                }
+                flashSyncAndRedraw();
+              }
+              flashSyncAndRedraw();
+            }
           }
-        });
+        }) : { unsubscribe: () => {} };
 
         // ── Sync-Reihenfolge: 1. Relay (schnell), 2. P2P (Fallback), 3. Default ──
 
         // Phase 1: Lokale Daten aus GenosDB (OPFS/IDB, instant)
         await Promise.race([earlyPromise, new Promise(r => setTimeout(r, 600))]);
-        let existingNotebooks = Object.values(notebooksMap);
+        let existingNotebooks = buildNotebooksFromNodes(initNodes, 'Phase1-GenosDB');
 
         // Phase 2: Relay-first (Antwort in <100ms wenn Server läuft)
+        const relayNodes = {};
         if (existingNotebooks.length === 0 && this.syncEnabled && RELAY_URL) {
           console.log('[Sync] Phase 2: Relay-Sync...');
           this.syncing = true;
           const self = this;
+          let relayGotData = false;
           connectRelay(roomKey,
-            (notebooks) => {
-              for (const [id, data] of Object.entries(notebooks)) {
+            (nodes) => {
+              for (const [id, data] of Object.entries(nodes)) {
                 if (id === '_nav' && data && data._nav) {
-                  // Nav-State wiederherstellen
                   if (data.currentNotebookId) self._relayNav = data;
                   continue;
                 }
-                if (data && data._deleted) continue;
-                if (!self.notebooks.some(nb => String(nb.id) === String(id))) {
-                  self.notebooks.push(JSON.parse(JSON.stringify(data)));
-                  if (!(String(id) in self.currentPages)) self.currentPages[String(id)] = 0;
+                if (data && data.type) {
+                  relayNodes[id] = data;
+                  relayGotData = true;
                 }
               }
-              console.log('[Relay] Sync:', Object.keys(notebooks).length, 'Notebooks');
+              console.log('[Relay] Sync:', Object.keys(nodes).length, 'Nodes');
             },
             (id, data) => {
-              if (!self.notebooks.some(nb => String(nb.id) === String(id))) {
-                self.notebooks.push(JSON.parse(JSON.stringify(data)));
-                if (!(String(id) in self.currentPages)) self.currentPages[String(id)] = 0;
+              if (data && data.type) {
+                relayNodes[id] = data;
+                relayGotData = true;
               }
             },
-            (id) => { self.notebooks = self.notebooks.filter(nb => String(nb.id) !== String(id)); }
+            (id) => { delete relayNodes[id]; }
           );
           await new Promise(resolve => {
             let done = false;
             const finish = () => { if (!done) { done = true; resolve(); } };
             const check = setInterval(() => {
-              if (self.notebooks.length > 0) { clearInterval(check); finish(); }
+              if (relayGotData) { clearInterval(check); finish(); }
             }, 200);
             setTimeout(() => { clearInterval(check); finish(); }, 3000);
           });
-          if (this.notebooks.length > 0) {
-            console.log('[Sync] Relay erfolgreich:', this.notebooks.length, 'Notebooks');
+          // Relay-Nodes in Notebooks umwandeln
+          if (Object.keys(relayNodes).length > 0) {
+            existingNotebooks = buildNotebooksFromNodes(relayNodes, 'Phase2-Relay');
+            // Auch in GenosDB speichern damit Delta-Sync funktioniert
+            for (const [id, data] of Object.entries(relayNodes)) {
+              if (db) db.put(data, id);
+            }
+            console.log('[Sync] Relay erfolgreich:', existingNotebooks.length, 'Notebooks');
           }
         }
 
@@ -2154,14 +2280,15 @@
             }),
             new Promise(resolve => setTimeout(resolve, 5000))
           ]);
-          existingNotebooks = Object.values(notebooksMap);
+          existingNotebooks = buildNotebooksFromNodes(initNodes, 'Phase3-P2P');
         }
         this.syncing = false;
 
         // Ergebnis anwenden
+        console.log('[Sync] existingNotebooks:', existingNotebooks.length, 'this.notebooks:', this.notebooks.length);
         if (existingNotebooks.length > 0 && this.notebooks.length === 0) {
           this.notebooks = existingNotebooks.sort((a, b) => String(a.id) < String(b.id) ? -1 : 1);
-          console.log('[Sync] Daten aus GenosDB/P2P geladen');
+          console.log('[Sync] Geladen:', this.notebooks.map(nb => ({ id: nb.id.slice(0,8), name: nb.name, pages: nb.pages?.length, strokes: nb.pages?.reduce((s,p) => s + (p.strokes?.length||0), 0) })));
         }
         if (this.notebooks.length > 0) {
           // Nav-State: 1. Lokal (IDB), 2. Relay (_relayNav), 3. Fallback (erstes Notebook)
@@ -2193,7 +2320,6 @@
         } else {
           console.log('[Sync] Keine Daten, erstelle Default-Notebook');
           this.createDefaultNotebook();
-          await this._saveAll();
         }
 
         // Auto-Snapshot vor Sync-Freigabe erstellen (Schutz vor Datenverlust)
@@ -2204,89 +2330,47 @@
 
         dbInitialized = true;
 
-        // Bei Reconnect: lokale Daten erneut in GenosDB schreiben, damit Peers sie erhalten
-        if (isReconnect && this.syncEnabled) {
-          for (const nb of this.notebooks) {
-            db.put(compactNotebook(nb), String(nb.id));
-          }
-        }
+        // Bei Reconnect: GenosDB Delta-Sync übernimmt automatisch (Graph-Nodes bereits gespeichert)
 
-        // WebSocket Relay verbinden (persistenter Sync-Kanal)
+        // WebSocket Relay als Snapshot-Store (Backup für Peers die später online kommen)
+        // GenosDB P2P übernimmt den Live-Sync zwischen aktiven Peers
         console.log('[Relay] syncEnabled:', this.syncEnabled, 'RELAY_URL:', RELAY_URL);
         if (this.syncEnabled && RELAY_URL) {
-          const self = this;
           connectRelay(roomKey,
-            // onSync: initialer Stand vom Relay – mit lokalem State mergen
-            (notebooks) => {
-              for (const [id, data] of Object.entries(notebooks)) {
-                if (id === '_nav' || (data && data._nav)) continue; // Nav-State ignorieren
-                if (data && data._deleted) continue;
-                const idx = self.notebooks.findIndex(nb => String(nb.id) === String(id));
-                if (idx >= 0) {
-                  const merged = mergeNotebooks(self.notebooks[idx], data);
-                  if (JSON.stringify(self.notebooks[idx]) !== JSON.stringify(merged)) {
-                    self.notebooks.splice(idx, 1, merged);
-                    if (db) db.put(compactNotebook(merged), String(id));
-                  }
-                } else {
-                  self.notebooks.push(JSON.parse(JSON.stringify(data)));
-                  if (!(String(id) in self.currentPages)) self.currentPages[String(id)] = 0;
-                }
-              }
-              if (String(self.currentNotebookId) && self.currentNotebook) {
-                self.drawBackground();
-                self.redrawStrokes();
-              }
-            },
-            // onPut: einzelnes Notebook-Update vom Relay
-            (id, data) => {
-              const idx = self.notebooks.findIndex(nb => String(nb.id) === String(id));
-              if (idx >= 0) {
-                const merged = mergeNotebooks(self.notebooks[idx], data);
-                if (JSON.stringify(self.notebooks[idx]) !== JSON.stringify(merged)) {
-                  self.notebooks.splice(idx, 1, merged);
-                  db.put(compactNotebook(merged), String(id));
-                }
-              } else {
-                self.notebooks.push(JSON.parse(JSON.stringify(data)));
-                if (!(String(id) in self.currentPages)) self.currentPages[String(id)] = 0;
-              }
-              if (String(id) === String(self.currentNotebookId)) {
-                self.drawBackground();
-                self.redrawStrokes();
-              }
-              self.peerSync = true;
-              clearTimeout(self._peerSyncTimer);
-              self._peerSyncTimer = setTimeout(() => { self.peerSync = false; }, 1500);
-            },
-            // onDelete: Notebook-Löschung vom Relay
-            (id) => {
-              self.notebooks = self.notebooks.filter(nb => String(nb.id) !== String(id));
-              if (String(id) === String(self.currentNotebookId) && self.notebooks.length > 0) {
-                self.currentNotebookId = self.notebooks[0].id;
-                self.drawBackground();
-                self.redrawStrokes();
-              }
-            }
+            // onSync: ignorieren — Relay-Daten wurden in Phase 2 geladen
+            () => {},
+            // onPut: ignorieren — Live-Sync nur über GenosDB P2P
+            () => {},
+            // onDelete: ignorieren
+            () => {}
           );
 
-          // Lokale Daten an Relay senden (warten bis WebSocket verbunden ist)
-          const pushToRelay = () => {
+          // Kompletten Snapshot an Relay pushen (einmalig nach Init)
+          const pushSnapshotToRelay = () => {
             for (const nb of this.notebooks) {
-              relaySend({ type: 'put', id: String(nb.id), data: compactNotebook(nb) });
+              relaySend({ type: 'node-put', id: String(nb.id), data: { type: 'notebook', name: nb.name } });
+              for (const page of (nb.pages || [])) {
+                const strokes = (page.strokes || []).map(s => ({
+                  id: String(s.id), points: s.points, color: s.color, size: s.size, tool: s.tool
+                }));
+                relaySend({ type: 'node-put', id: String(page.id), data: {
+                  type: 'page', notebookId: String(nb.id), background: page.background,
+                  order: page.order ?? 0, clearedAt: page.clearedAt || 0, strokes
+                }});
+              }
             }
-            console.log('[Relay] Pushed', this.notebooks.length, 'notebooks');
+            relayPushNav(this.currentNotebookId, { ...this.currentPages });
+            console.log('[Relay] Snapshot gepusht');
           };
-          // Retry alle 500ms bis WebSocket offen ist (max 10s)
+          // Warten bis WebSocket offen, dann einmalig pushen
           let pushAttempts = 0;
           const pushInterval = setInterval(() => {
             pushAttempts++;
             if (relayWs && relayWs.readyState === 1) {
               clearInterval(pushInterval);
-              pushToRelay();
+              pushSnapshotToRelay();
             } else if (pushAttempts > 20) {
               clearInterval(pushInterval);
-              console.warn('[Relay] Push abgebrochen – keine Verbindung');
             }
           }, 500);
         }
@@ -2300,10 +2384,8 @@
 
         // Vor dem Schließen: alle Daten sofort speichern
         window.addEventListener('beforeunload', () => {
-          if (this.saveTimeout) clearTimeout(this.saveTimeout);
-          if (db && this.currentNotebook) {
-            db.put(compactNotebook(this.currentNotebook), String(this.currentNotebook.id));
-          }
+          _flushPageSave(); // Ausstehende Strokes sofort speichern
+          this._saveLocalSettings();
         });
 
         // Mausrad-Zoom im Hand-Modus
@@ -2396,24 +2478,9 @@
       },
 
       // Notizbuch-Inhalte via GenosDB (P2P-Sync) + lokale Settings in IndexedDB speichern
-      async _saveAll() {
-        if (!db) return;
-        for (const notebook of this.notebooks) {
-          const compact = compactNotebook(notebook);
-          await db.put(compact, String(notebook.id));
-          relaySend({ type: 'put', id: String(notebook.id), data: compact });
-        }
-        await this._saveLocalSettings();
-      },
-
-      // Nur das aktuelle Notebook speichern (schneller als _saveAll)
-      async _saveCurrentNotebook() {
-        if (!db || !this.currentNotebook) return;
-        const compact = compactNotebook(this.currentNotebook);
-        await db.put(compact, String(this.currentNotebook.id));
-        relaySend({ type: 'put', id: String(this.currentNotebook.id), data: compact });
-        await this._saveLocalSettings();
-      },
+      // Graph-Nodes werden direkt gespeichert — kein Batch-Save nötig
+      async _saveAll() { await this._saveLocalSettings(); },
+      async _saveCurrentNotebook() { await this._saveLocalSettings(); },
       
       async loadSnapshots() {
         const stored = await idbGet(roomKey + ':snapshots');
@@ -2484,14 +2551,23 @@
       },
 
       createDefaultNotebook() {
-        const id = String(Date.now());
+        const nbId = String(Date.now());
+        const pageId = String(Date.now() + 1);
+        const name = `Notizen ${getClientName()}`;
         this.notebooks = [{
-          id,
-          name: `Notizen ${getClientName()}`,
-          pages: [{ id: 1, strokes: [], background: 'grid' }]
+          id: nbId,
+          name,
+          pages: [{ id: pageId, strokes: [], background: 'grid', order: 0 }]
         }];
-        this.currentNotebookId = id;
-        this.currentPages[id] = 0;
+        this.currentNotebookId = nbId;
+        this.currentPages[nbId] = 0;
+
+        // Graph-Nodes erstellen
+        if (db) {
+          db.put({ type: 'notebook', name }, nbId);
+          db.put({ type: 'page', notebookId: nbId, background: 'grid', order: 0, strokes: [] }, pageId);
+          db.link(nbId, pageId);
+        }
       },
       
       setupCanvases() {
@@ -2595,19 +2671,75 @@
         }
       },
       
+      // Bitmap-Cache: Strokes einmal rendern, bei Pan/Zoom nur verschieben
+      _strokeCacheCanvas: null,
+      _cacheViewX: 0,
+      _cacheViewY: 0,
+      _cacheViewScale: 1,
+
       redrawStrokes() {
         const canvas = this.$refs.staticCanvas;
         if (!canvas) return;
 
         const ctx = canvas.getContext('2d');
         const dpr = Math.min(window.devicePixelRatio || 1, 2);
-        ctx.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr);
+        const w = canvas.width;
+        const h = canvas.height;
 
-        ctx.save();
-        ctx.translate(this.viewX, this.viewY);
-        ctx.scale(this.viewScale, this.viewScale);
-        this.strokes.forEach(stroke => drawStrokeToCanvas(ctx, stroke));
-        ctx.restore();
+        // Cache-Canvas erstellen/aktualisieren
+        if (!this._strokeCacheCanvas || this._strokeCacheCanvas.width !== w || this._strokeCacheCanvas.height !== h) {
+          this._strokeCacheCanvas = document.createElement('canvas');
+          this._strokeCacheCanvas.width = w;
+          this._strokeCacheCanvas.height = h;
+        }
+
+        // Strokes in Cache rendern (mit aktuellem Transform)
+        const cacheCtx = this._strokeCacheCanvas.getContext('2d');
+        cacheCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        cacheCtx.clearRect(0, 0, w / dpr, h / dpr);
+        cacheCtx.save();
+        cacheCtx.translate(this.viewX, this.viewY);
+        cacheCtx.scale(this.viewScale, this.viewScale);
+        this.strokes.forEach(stroke => drawStrokeToCanvas(cacheCtx, stroke));
+        cacheCtx.restore();
+
+        // Transform merken für spätere Pan/Zoom-Deltas
+        this._cacheViewX = this.viewX;
+        this._cacheViewY = this.viewY;
+        this._cacheViewScale = this.viewScale;
+
+        // Auf sichtbares Canvas kopieren
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.clearRect(0, 0, w, h);
+        ctx.drawImage(this._strokeCacheCanvas, 0, 0);
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      },
+
+      // Pan/Zoom: gecachtes Bild verschieben statt Strokes neu rendern
+      compositeStrokes() {
+        const canvas = this.$refs.staticCanvas;
+        if (!canvas || !this._strokeCacheCanvas) {
+          this.redrawStrokes();
+          return;
+        }
+
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        const w = canvas.width;
+        const h = canvas.height;
+        const ctx = canvas.getContext('2d');
+
+        // Delta zwischen Cache-Transform und aktuellem Transform berechnen
+        const scaleRatio = this.viewScale / this._cacheViewScale;
+        const tx = (this.viewX - this._cacheViewX * scaleRatio) * dpr;
+        const ty = (this.viewY - this._cacheViewY * scaleRatio) * dpr;
+
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.clearRect(0, 0, w, h);
+        ctx.translate(tx, ty);
+        ctx.scale(scaleRatio, scaleRatio);
+        ctx.drawImage(this._strokeCacheCanvas, 0, 0);
+
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       },
       
       computeStrokeBounds() {
@@ -2712,36 +2844,40 @@
         if (!this.currentPage) return;
         this.currentPage.background = bg;
         this.drawBackground();
-        this.scheduleSave();
+        savePageNode(this.currentPage, this.currentNotebookId);
       },
       
       // Page navigation
       nextPage() {
         if (!this.currentNotebook) return;
 
-        const nbId = this.currentNotebookId;
+        const nbId = String(this.currentNotebookId);
         const curIdx = this.currentPages[nbId] ?? 0;
         const nextIndex = curIdx + 1;
         const isNewPage = nextIndex >= this.currentNotebook.pages.length;
 
         if (isNewPage) {
-          this.currentNotebook.pages.push({
-            id: Date.now(),
+          const pageId = String(Date.now());
+          const newPage = {
+            id: pageId,
             strokes: [],
-            background: this.currentBackground
-          });
+            background: this.currentBackground,
+            order: nextIndex
+          };
+          this.currentNotebook.pages.push(newPage);
+
+          // Graph-Node erstellen + verlinken
+          if (db) {
+            db.put({ type: 'page', notebookId: nbId, background: newPage.background, order: nextIndex, strokes: [] }, pageId);
+            db.link(nbId, pageId);
+          }
+          relaySend({ type: 'node-put', id: pageId, data: { type: 'page', notebookId: nbId, background: newPage.background, order: nextIndex, strokes: [] } });
         }
         this.currentPages[nbId] = nextIndex;
         this.drawBackground();
         this.redrawStrokes();
         this.fitToContent();
-
-        if (isNewPage) {
-          this.scheduleSave();
-        } else {
-          this._saveLocalSettings();
-        }
-
+        this._saveLocalSettings();
       },
 
       prevPage() {
@@ -2768,27 +2904,75 @@
       },
       
       createNotebook() {
+        const nbId = String(Date.now());
+        const pageId = String(Date.now() + 1);
         const newNb = {
-          id: String(Date.now()),
+          id: nbId,
           name: 'Neues Notizbuch',
-          pages: [{ id: 1, strokes: [], background: 'grid' }]
+          pages: [{ id: pageId, strokes: [], background: 'grid', order: 0 }]
         };
         this.notebooks.push(newNb);
-        this.currentNotebookId = newNb.id;
-        this.currentPages[newNb.id] = 0;
+        this.currentNotebookId = nbId;
+        this.currentPages[nbId] = 0;
         this.showNotebookMenu = false;
+
+        // Graph-Nodes erstellen
+        if (db) {
+          db.put({ type: 'notebook', name: newNb.name }, nbId);
+          db.put({ type: 'page', notebookId: nbId, background: 'grid', order: 0, strokes: [] }, pageId);
+          db.link(nbId, pageId);
+        }
+        relaySend({ type: 'node-put', id: nbId, data: { type: 'notebook', name: newNb.name } });
+        relaySend({ type: 'node-put', id: pageId, data: { type: 'page', notebookId: nbId, background: 'grid', order: 0, strokes: [] } });
+
         setTimeout(() => {
           this.drawBackground();
           this.redrawStrokes();
         }, 0);
-        this.scheduleSave();
+        this._saveLocalSettings();
+      },
+
+      createTestNotebook() {
+        const nbId = String(Date.now());
+        const pageId = String(Date.now() + 1);
+        const strokes = [];
+        for (let i = 0; i < 1000; i++) {
+          const y = 20 + (i % 50) * 30;
+          const x = 20 + Math.floor(i / 50) * 40;
+          const points = [];
+          for (let j = 0; j < 8; j++) {
+            points.push({ x: x + j * 4 + Math.random() * 2, y: y + Math.sin(j) * 10 + Math.random() * 2 });
+          }
+          strokes.push({ id: String(Date.now() + i + 2), points: roundPoints(points), color: '#000000', size: 2, tool: 'pen' });
+        }
+        const page = { id: pageId, strokes, background: 'grid', order: 0 };
+        const newNb = { id: nbId, name: `Testbuch (${strokes.length} Strokes)`, pages: [page] };
+        this.notebooks.push(newNb);
+        this.currentNotebookId = nbId;
+        this.currentPages[nbId] = 0;
+        this.showNotebookMenu = false;
+        if (db) {
+          db.put({ type: 'notebook', name: newNb.name }, nbId);
+          db.put({ type: 'page', notebookId: nbId, background: 'grid', order: 0, strokes }, pageId);
+          db.link(nbId, pageId);
+        }
+        setTimeout(() => { this.drawBackground(); this.redrawStrokes(); this.fitToContent(); }, 0);
+        this._saveLocalSettings();
       },
 
       deleteNotebook(id) {
         if (this.notebooks.length <= 1) return;
-        // Tombstone speichern statt db.remove – damit andere Peers wissen, dass es gelöscht wurde
-        if (db) db.put({ _deleted: true, id: String(id) }, String(id));
-        relaySend({ type: 'delete', id: String(id) });
+        const nb = this.notebooks.find(n => String(n.id) === String(id));
+
+        // Pages + Notebook entfernen
+        if (nb) {
+          for (const page of (nb.pages || [])) {
+            if (db) db.remove(String(page.id));
+          }
+        }
+        if (db) db.remove(String(id));
+        relaySend({ type: 'node-remove', id: String(id) });
+
         this.notebooks = this.notebooks.filter(nb => nb.id !== id);
         delete this.currentPages[id];
         if (this.currentNotebookId === id) {
@@ -2801,7 +2985,7 @@
             this.redrawStrokes();
           }, 0);
         }
-        this.scheduleSave();
+        this._saveLocalSettings();
       },
       
       toggleIroPicker() {
@@ -2852,11 +3036,15 @@
         this._saveLocalSettings();
       },
 
-      openShare() {
-        // Bei localhost die LAN-IP verwenden, damit andere Geräte den Link öffnen können
+      async openShare() {
+        // Bei localhost die LAN-IP vom Server abfragen, damit andere Geräte den Link öffnen können
         let origin = location.origin;
         if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
-          origin = `${location.protocol}//192.168.100.49:${location.port}`;
+          try {
+            const resp = await fetch('/api/lan-ip');
+            const { ip } = await resp.json();
+            if (ip) origin = `${location.protocol}//${ip}:${location.port}`;
+          } catch (e) { /* Fallback: localhost */ }
         }
         this.shareUrl = `${origin}${location.pathname}${location.hash}`;
         this.copySuccess = false;
@@ -2974,29 +3162,27 @@
       
       renameNotebook() {
         if (!this.newName.trim() || !this.currentNotebook) return;
-        this.currentNotebook.name = this.newName.trim();
+        const name = this.newName.trim();
+        const nbId = String(this.currentNotebookId);
+        this.currentNotebook.name = name;
         this.editingName = false;
-        this.scheduleSave();
+        if (db) db.put({ type: 'notebook', name }, nbId);
+        relaySend({ type: 'node-put', id: nbId, data: { type: 'notebook', name } });
       },
       
       undo() {
         if (!this.currentPage || this.currentPage.strokes.length === 0) return;
-        const removed = this.currentPage.strokes.pop();
-        if (removed) {
-          if (!this.currentPage.deletedStrokes) this.currentPage.deletedStrokes = [];
-          this.currentPage.deletedStrokes.push(Number(removed.id));
-        }
+        this.currentPage.strokes.pop();
+        savePageNode(this.currentPage, this.currentNotebookId);
         this.redrawStrokes();
-        this.scheduleSave();
       },
 
       clearPage() {
         if (!this.currentPage) return;
         this.currentPage.strokes = [];
-        this.currentPage.deletedStrokes = []; // clearedAt deckt alles ab
-        this.currentPage.clearedAt = Date.now(); // Tombstone: Merge ignoriert ältere Strokes
+        this.currentPage.clearedAt = Date.now();
+        savePageNode(this.currentPage, this.currentNotebookId);
         this.redrawStrokes();
-        this.scheduleSave();
       },
       
       async clearCache() {
@@ -3020,34 +3206,9 @@
       },
 
       // Auto-save via GenosDB (debounced – nur aktuelles Notebook)
+      // Graph-Nodes werden sofort via db.put() gespeichert — kein Debounce nötig
       scheduleSave(immediate) {
-        if (this.saveTimeout) {
-          clearTimeout(this.saveTimeout);
-        }
-
-        this.saveStatus = 'saving';
-
-        const doSave = async () => {
-          try {
-            await this._saveCurrentNotebook();
-            this.saveStatus = 'saved';
-
-            setTimeout(() => {
-              this.saveStatus = '';
-              this.saveStatusText = '';
-            }, 2000);
-          } catch (e) {
-            console.error('Speichern fehlgeschlagen:', e);
-            this.saveStatus = '';
-            this.saveStatusText = 'Fehler!';
-          }
-        };
-
-        if (immediate) {
-          doSave();
-        } else {
-          this.saveTimeout = setTimeout(doSave, 2000);
-        }
+        this._saveLocalSettings();
       },
       
       // Drawing with Palm Rejection
@@ -3205,7 +3366,7 @@
               this.viewY = midY0 - canvasY * newScale + panDY;
               this.viewScale = newScale;
               this.drawBackground();
-              this.redrawStrokes();
+              this.compositeStrokes();
             }
             return;
           }
@@ -3216,7 +3377,7 @@
           this.viewX = this.panStartViewX + (e.clientX - this.panStartX);
           this.viewY = this.panStartViewY + (e.clientY - this.panStartY);
           this.drawBackground();
-          this.redrawStrokes();
+          this.compositeStrokes();
           return;
         }
 
@@ -3333,6 +3494,7 @@
         if (e && e.pointerType === 'touch') {
           delete pinchState.touches[e.pointerId];
           if (Object.keys(pinchState.touches).length < 2) {
+            if (pinchState.active) this.redrawStrokes(); // Cache nach Zoom aktualisieren
             pinchState.active = false;
           }
           if (pinchState.active) return; // noch zwei Finger aktiv
@@ -3342,6 +3504,7 @@
         if (this.isPanning) {
           this.isPanning = false;
           this.activePointerId = null;
+          this.redrawStrokes(); // Cache nach Pan aktualisieren
           return;
         }
 
@@ -3355,31 +3518,46 @@
         this.activePointerType = null;
         
         if (this.currentPoints.length > 0 && this.currentPage) {
-          if (this.tool === 'eraser') {
-            // Radierer: Stroke als Eraser-Stroke speichern
-            const newStroke = {
-              id: Date.now(),
-              points: [...this.currentPoints],
-              color: '#000000',
-              size: this.penSizes[this.penSizeIndex].size,
-              tool: 'eraser'
-            };
-            this.currentPage.strokes.push(newStroke);
-          } else {
-            // Stift: normaler Stroke
-            const newStroke = {
-              id: Date.now(),
-              points: [...this.currentPoints],
-              color: this.color,
-              size: this.penSizes[this.penSizeIndex].size,
-              tool: 'pen'
-            };
-            this.currentPage.strokes.push(newStroke);
-            this.redrawStrokes();
+          const strokeId = String(Date.now());
+          const pageId = String(this.currentPage.id);
+          const isEraser = this.tool === 'eraser';
+          const newStroke = {
+            id: strokeId,
+            points: roundPoints(this.currentPoints),
+            color: isEraser ? '#000000' : this.color,
+            size: this.penSizes[this.penSizeIndex].size,
+            tool: isEraser ? 'eraser' : 'pen'
+          };
+
+          // In-Memory + inkrementell zeichnen (nur neuen Stroke, nicht alles)
+          this.currentPage.strokes.push(newStroke);
+          const sCanvas = this.$refs.staticCanvas;
+          if (sCanvas) {
+            const dpr = Math.min(window.devicePixelRatio || 1, 2);
+            // Auf sichtbares Canvas zeichnen
+            const ctx = sCanvas.getContext('2d');
+            ctx.save();
+            ctx.translate(this.viewX, this.viewY);
+            ctx.scale(this.viewScale, this.viewScale);
+            drawStrokeToCanvas(ctx, newStroke);
+            ctx.restore();
+            // Auch auf Bitmap-Cache zeichnen (für Pan/Zoom)
+            if (this._strokeCacheCanvas) {
+              const cCtx = this._strokeCacheCanvas.getContext('2d');
+              cCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+              cCtx.save();
+              cCtx.translate(this._cacheViewX, this._cacheViewY);
+              cCtx.scale(this._cacheViewScale, this._cacheViewScale);
+              drawStrokeToCanvas(cCtx, newStroke);
+              cCtx.restore();
+            }
           }
-          
-          this.scheduleSave(true);
+
+          // Page-Node mit Strokes speichern (Delta-Sync sendet nur diese Seite)
+          savePageNode(this.currentPage, this.currentNotebookId);
+
           this.updateFitReference();
+          this._saveLocalSettings();
         }
 
         // Clear active canvas

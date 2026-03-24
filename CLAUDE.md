@@ -34,35 +34,43 @@ The app runs at `./app.html`, the landing page at `./index.html`.
 - `sw.js` — Service Worker with cache-first + stale-while-revalidate strategy.
 - `libs/` — Vendored third-party libraries (all minified except `genosdb.js`).
 
-### Data Model
+### Data Model (Graph-Nodes)
+
+Each entity is a separate GenosDB graph node with edges for relationships:
 
 ```
-Notebook { id, name, pages[] }
-  Page { id, strokes[], deletedStrokes[], clearedAt, background }
-    Stroke { id, points[{x,y}], color, size, tool }
+Notebook Node  { type:'notebook', name }
+  ↓ db.link(notebookId, pageId)
+Page Node      { type:'page', notebookId, background, order, clearedAt }
+  ↓ db.link(pageId, strokeId)
+Stroke Node    { type:'stroke', pageId, points[{x,y}], color, size, tool }
 ```
 
-IDs are `String(Date.now())` timestamps. Strokes are never truly removed — deletions use `deletedStrokes[]` array and `clearedAt` timestamps (tombstone pattern for CRDT convergence).
+IDs are `String(Date.now())` timestamps. Deletions use `db.remove(id)` — propagated via GenosDB's OpLog delta sync. `clearedAt` on page nodes as safety-net for concurrent edits. In-memory model (`this.notebooks[]`) is rebuilt from graph nodes on init and updated incrementally via `db.map()` subscription.
 
 ### Storage Layers
 
-1. **GenosDB** — Notebooks, synced via WebRTC P2P. Key = notebook ID, value = full notebook object. Tombstones (`_deleted: true`) for deleted notebooks.
+1. **GenosDB** — Graph nodes (notebooks, pages, strokes), synced via WebRTC P2P with delta sync. Each entity is a separate node. E2E encrypted via `password` option.
 2. **IndexedDB** — Device-local settings (color, pen size, page positions, snapshots). Keyed by `{roomKey}:settingName`. Never synced.
 3. **Service Worker Cache** — Static assets for offline support.
+4. **WebSocket Relay** — Stores individual graph nodes for persistence across cache clears.
 
 ### Sync System
 
 - **Room Key** = URL hash (`#abc123`). Different hash = different sync group.
-- `mergeNotebooks()` performs union-based merge per page: strokes after `clearedAt` and not in `deletedStrokes` survive.
-- `'removed'` actions from peers are intentionally ignored (prevents accidental cascade deletes).
+- **Delta Sync:** GenosDB automatically sends only changed nodes via OpLog + HLC timestamps. No custom merge needed.
+- **Write path:** Each stroke/page/notebook change is a `db.put()` or `db.remove()` call — immediately synced.
+- **Read path:** `db.map()` subscription dispatches by `value.type` (notebook/page/stroke) and updates in-memory model.
 - Init has two phases: quick local load (600ms), then optional peer wait (up to 8s on shared URLs).
 
 ### Canvas Rendering
 
 Three stacked canvases:
 1. **bgCanvas** — Grid/lined paper background
-2. **staticCanvas** — All committed strokes
+2. **staticCanvas** — All committed strokes (mit Bitmap-Cache für Pan/Zoom)
 3. **activeCanvas** — Live stroke preview during drawing
+
+**Bitmap-Cache:** `_strokeCacheCanvas` speichert das gerenderte Ergebnis von `redrawStrokes()`. Bei Pan/Zoom wird nur das gecachte Bild transformiert (`compositeStrokes()`), ohne alle Strokes neu zu zeichnen. Bei Pointer-Up und Stroke-Änderungen wird der Cache aktualisiert.
 
 Drawing pipeline: raw points → Catmull-Rom smoothing → polygon with perpendicular offsets for width → fill on canvas. Eraser uses `globalCompositeOperation = 'destination-out'`.
 
