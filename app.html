@@ -2024,7 +2024,7 @@
         // GenosDB laden und initialisieren (nur für Notizbuch-Inhalte, kein Settings-Sync)
         try {
           const { gdb } = await import('./libs/genosdb.js');
-          db = await gdb(roomKey, { rtc: this.syncEnabled, password: roomKey, saveDelay: 5000 });
+          db = await gdb(roomKey, { rtc: this.syncEnabled, password: roomKey, saveDelay: 1000 });
         } catch (e) {
           console.error('[GenosDB] Init fehlgeschlagen:', e);
         }
