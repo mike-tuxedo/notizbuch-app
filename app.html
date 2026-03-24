@@ -3580,17 +3580,35 @@
         this.isDrawing = false;
         this.activePointerId = null;
 
-        // Aufgeschobene Page-Updates abarbeiten
+        // Aufgeschobene Page-Updates: nur anwenden wenn Strokes divergiert sind
         if (this._deferredPageUpdates?.length) {
           const updates = this._deferredPageUpdates;
           this._deferredPageUpdates = [];
-          // Im nächsten Frame, damit Canvas-Update zuerst kommt
-          setTimeout(() => {
-            for (const u of updates) {
-              // db.map handler nochmal triggern — diesmal nicht deferred
-              if (db) db.put(u.value, u.id);
+          for (const u of updates) {
+            if (u.action === 'removed') continue;
+            // Prüfen ob Merge nötig ist
+            for (const nb of this.notebooks) {
+              const page = (nb.pages || []).find(p => String(p.id) === String(u.id));
+              if (page && u.value?.strokes) {
+                const localIds = page.strokes.map(s => String(s.id)).join(',');
+                const remoteIds = u.value.strokes.map(s => String(s.id)).join(',');
+                if (localIds !== remoteIds) {
+                  // Tatsächlich divergiert — merge
+                  const clearedAt = Math.max(u.value.clearedAt || 0, page.clearedAt || 0);
+                  const merged = new Map();
+                  for (const s of page.strokes) { if (!clearedAt || Number(s.id) > clearedAt) merged.set(String(s.id), s); }
+                  for (const s of u.value.strokes) {
+                    const sid = String(s.id);
+                    if (!clearedAt || Number(sid) > clearedAt) merged.set(sid, { id: sid, points: s.points || [], color: s.color, size: s.size, tool: s.tool || 'pen' });
+                  }
+                  page.strokes = [...merged.values()].sort((a, b) => Number(a.id) - Number(b.id));
+                  page.clearedAt = clearedAt;
+                  if (page === this.currentPage) this.redrawStrokes();
+                }
+                break;
+              }
             }
-          }, 100);
+          }
         }
         this.activePointerType = null;
         
