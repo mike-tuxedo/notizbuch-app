@@ -1510,6 +1510,7 @@
     let pageDb;       // GenosDB für aktuelle Seite (Strokes), wechselt bei Navigation
     let strokeChannel = null;
     let gdbFactory;   // gecachte gdb-Import-Funktion
+    let app;          // petite-vue App-Referenz (gesetzt in init)
     let localDB;
     let dbInitialized = false;
     let roomKey = '';
@@ -1742,6 +1743,69 @@
         order: page.order ?? 0, clearedAt: page.clearedAt || 0, strokes
       };
       relaySend({ type: 'node-put', id: String(page.id), data: relayData });
+    }
+
+    // GenosDB-Instanz für eine Seite öffnen (eigener Room pro Seite)
+    async function openPageDb(pageId) {
+      if (!gdbFactory || !pageId) return;
+      _flushPageSave();
+      if (pageDb?.room) { try { pageDb.room.leave(); } catch(e) {} }
+      strokeChannel = null;
+      pageDb = null;
+
+      try {
+        pageDb = await gdbFactory(roomKey + '_p_' + pageId, { rtc: syncEnabled, password: roomKey, saveDelay: 1000 });
+      } catch(e) {
+        console.error('[PageDb] Init fehlgeschlagen:', e);
+        return;
+      }
+
+      // Strokes aus pageDb laden
+      let loaded = false;
+      const loadPromise = new Promise(resolve => {
+        if (!pageDb) { resolve(); return; }
+        pageDb.map(function({ id, value, action }) {
+          if (action === 'initial' || action === 'added' || action === 'updated') {
+            if (value?.type === 'pagedata' && app?.currentPage) {
+              app.currentPage.strokes = (value.strokes || []).map(s => ({
+                id: String(s.id), points: s.points || [], color: s.color, size: s.size, tool: s.tool || 'pen'
+              })).sort((a, b) => Number(a.id) - Number(b.id));
+              if (!loaded) { loaded = true; resolve(); }
+              app.redrawStrokes();
+            }
+          }
+          if (action === 'removed' && value?.type === 'pagedata' && app?.currentPage) {
+            app.currentPage.strokes = [];
+            app.redrawStrokes();
+          }
+        });
+        setTimeout(resolve, 500);
+      });
+      await loadPromise;
+
+      // Live-Stroke-Channel auf pageDb Room
+      if (pageDb?.room) {
+        strokeChannel = pageDb.room.channel("stroke-live");
+        strokeChannel.on("message", (data) => {
+          if (!app?.currentPage) return;
+          if (data.action === 'add') {
+            const stroke = data.stroke;
+            if (!stroke || app.currentPage.strokes.find(s => String(s.id) === String(stroke.id))) return;
+            app.currentPage.strokes.push(stroke);
+            app.currentPage.strokes.sort((a, b) => Number(a.id) - Number(b.id));
+          } else if (data.action === 'undo') {
+            app.currentPage.strokes.pop();
+          } else if (data.action === 'clear') {
+            app.currentPage.strokes = [];
+            app.currentPage.clearedAt = data.clearedAt || Date.now();
+          }
+          app.redrawStrokes();
+          app.peerSync = true;
+          clearTimeout(app._peerSyncTimer);
+          app._peerSyncTimer = setTimeout(() => { app.peerSync = false; }, 1500);
+        });
+      }
+      console.log('[PageDb] Seite', pageId, 'geladen,', app?.currentPage?.strokes?.length || 0, 'Strokes');
     }
 
     // Stroke smoothing
@@ -2042,74 +2106,7 @@
         }
 
         this.selfPeerId = metaDb?.selfId;
-
-        // openPageDb: GenosDB-Instanz für eine Seite öffnen (eigener Room pro Seite)
-        const self = this;
-        async function openPageDb(pageId) {
-          if (!gdbFactory || !pageId) return;
-          // Ausstehende Saves der alten Seite flushen
-          _flushPageSave();
-          // Altes pageDb verlassen
-          if (pageDb?.room) { try { pageDb.room.leave(); } catch(e) {} }
-          strokeChannel = null;
-          pageDb = null;
-
-          try {
-            const pageRoom = roomKey + '_p_' + pageId;
-            pageDb = await gdbFactory(pageRoom, { rtc: syncEnabled, password: roomKey, saveDelay: 1000 });
-          } catch(e) {
-            console.error('[PageDb] Init fehlgeschlagen:', e);
-            return;
-          }
-
-          // Strokes aus pageDb laden
-          let loaded = false;
-          const loadPromise = new Promise(resolve => {
-            if (!pageDb) { resolve(); return; }
-            pageDb.map(function({ id, value, action }) {
-              if (action === 'initial' || action === 'added' || action === 'updated') {
-                if (value?.type === 'pagedata' && self.currentPage) {
-                  self.currentPage.strokes = (value.strokes || []).map(s => ({
-                    id: String(s.id), points: s.points || [], color: s.color, size: s.size, tool: s.tool || 'pen'
-                  })).sort((a, b) => Number(a.id) - Number(b.id));
-                  if (!loaded) { loaded = true; resolve(); }
-                  self.redrawStrokes();
-                }
-              }
-              if (action === 'removed' && value?.type === 'pagedata' && self.currentPage) {
-                self.currentPage.strokes = [];
-                self.redrawStrokes();
-              }
-            });
-            // Timeout falls keine Daten
-            setTimeout(resolve, 500);
-          });
-          await loadPromise;
-
-          // Live-Stroke-Channel auf pageDb Room
-          if (pageDb?.room) {
-            strokeChannel = pageDb.room.channel("stroke-live");
-            strokeChannel.on("message", (data) => {
-              if (!self.currentPage) return;
-              if (data.action === 'add') {
-                const stroke = data.stroke;
-                if (!stroke || self.currentPage.strokes.find(s => String(s.id) === String(stroke.id))) return;
-                self.currentPage.strokes.push(stroke);
-                self.currentPage.strokes.sort((a, b) => Number(a.id) - Number(b.id));
-              } else if (data.action === 'undo') {
-                self.currentPage.strokes.pop();
-              } else if (data.action === 'clear') {
-                self.currentPage.strokes = [];
-                self.currentPage.clearedAt = data.clearedAt || Date.now();
-              }
-              self.redrawStrokes();
-              self.peerSync = true;
-              clearTimeout(self._peerSyncTimer);
-              self._peerSyncTimer = setTimeout(() => { self.peerSync = false; }, 1500);
-            });
-          }
-          console.log('[PageDb] Seite', pageId, 'geladen,', self.currentPage?.strokes?.length || 0, 'Strokes');
-        }
+        app = this; // Module-Level Referenz für openPageDb
 
         const isReconnect = !!sessionStorage.getItem('reconnect');
         if (this.syncEnabled && metaDb?.room) {
@@ -2214,11 +2211,12 @@
 
         // Sync-Indikator + Redraw für aktuelle Seite
         function flashSyncAndRedraw() {
-          self.peerSync = true;
-          clearTimeout(self._peerSyncTimer);
-          self._peerSyncTimer = setTimeout(() => { self.peerSync = false; }, 1500);
-          if (self.currentPage) {
-            self.redrawStrokes();
+          if (!app) return;
+          app.peerSync = true;
+          clearTimeout(app._peerSyncTimer);
+          app._peerSyncTimer = setTimeout(() => { app.peerSync = false; }, 1500);
+          if (app.currentPage) {
+            app.redrawStrokes();
           }
         }
 
@@ -2226,7 +2224,6 @@
           if (id === 'settings') return;
 
           if (!dbInitialized) {
-            // Init-Phase: alle Nodes sammeln
             if (action === 'initial' || action === 'added' || action === 'updated') {
               initNodes[id] = value;
               if (earlyResolve) { earlyResolve(); earlyResolve = null; }
@@ -2236,42 +2233,37 @@
               p2pDebounceTimer = setTimeout(triggerP2PDone, 400);
             }
           } else {
-            // Live-Phase: Granulare Updates auf In-Memory-Modell anwenden
-            if (!value || !value.type) {
-              // Altes Blob-Format ignorieren (Migration nur während Init)
-              return;
-            }
+            if (!value || !value.type) return;
 
             if (value.type === 'notebook') {
               if (action === 'removed') {
-                self.notebooks = self.notebooks.filter(nb => String(nb.id) !== String(id));
-                if (String(id) === String(self.currentNotebookId) && self.notebooks.length > 0) {
-                  self.currentNotebookId = self.notebooks[0].id;
-                  self.drawBackground();
-                  self.redrawStrokes();
+                app.notebooks = app.notebooks.filter(nb => String(nb.id) !== String(id));
+                if (String(id) === String(app.currentNotebookId) && app.notebooks.length > 0) {
+                  app.currentNotebookId = app.notebooks[0].id;
+                  app.drawBackground();
+                  app.redrawStrokes();
                 }
                 return;
               }
-              const existing = self.notebooks.find(nb => String(nb.id) === String(id));
+              const existing = app.notebooks.find(nb => String(nb.id) === String(id));
               if (existing) {
                 existing.name = value.name || existing.name;
               } else {
-                self.notebooks.push({ id: String(id), name: value.name || 'Notizbuch', pages: [] });
-                if (!(String(id) in self.currentPages)) self.currentPages[String(id)] = 0;
+                app.notebooks.push({ id: String(id), name: value.name || 'Notizbuch', pages: [] });
+                if (!(String(id) in app.currentPages)) app.currentPages[String(id)] = 0;
               }
             }
 
             else if (value.type === 'page') {
               if (action === 'removed') {
-                for (const nb of self.notebooks) {
+                for (const nb of app.notebooks) {
                   if (!nb.pages) continue;
                   const idx = nb.pages.findIndex(p => String(p.id) === String(id));
                   if (idx >= 0) { nb.pages.splice(idx, 1); break; }
                 }
                 return;
               }
-              // Nur Metadaten updaten (Strokes kommen von pageDb)
-              const nb = self.notebooks.find(n => String(n.id) === String(value.notebookId));
+              const nb = app.notebooks.find(n => String(n.id) === String(value.notebookId));
               if (nb) {
                 if (!nb.pages) nb.pages = [];
                 const existing = nb.pages.find(p => String(p.id) === String(id));
@@ -2287,7 +2279,6 @@
                   nb.pages.sort((a, b) => a.order - b.order);
                 }
               }
-              flashSyncAndRedraw();
             }
           }
         }) : { unsubscribe: () => {} };
