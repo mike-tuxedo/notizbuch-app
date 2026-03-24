@@ -1,24 +1,25 @@
 # PLAN.md — Notizbuch App
 
-## Status: GenosDB Node-per-Page + Live-Channel (Stand 2026-03-24)
+## Status: metaDb + pageDb Split (Stand 2026-03-24)
 
 ### Sync-Architektur
 
-**GenosDB Node-per-Page + Live-Channel + Relay-Snapshot**
-
-Strokes sind im Page-Node eingebettet. Live-Sync über Room-Channel, Persistenz über db.put().
+**Zwei GenosDB-Instanzen + Live-Channel + Relay-Snapshot**
 
 ```
-Notebook Node  { type:'notebook', name }
-  ↓ db.link(notebookId, pageId)
-Page Node      { type:'page', notebookId, background, order, clearedAt, strokes:[...] }
+metaDb (Room: roomKey):
+  Notebook Node  { type:'notebook', name }
+  Page Meta      { type:'page', notebookId, background, order, clearedAt }
+
+pageDb (Room: roomKey + '_p_' + pageId, wechselt bei Navigation):
+  Page Data      { type:'pagedata', strokes:[...] }
 ```
 
 Drei Sync-Kanäle:
 | Kanal | Zweck | Latenz |
 |---|---|---|
 | `strokeChannel.send()` | Peer sieht Stroke sofort | ~30ms |
-| `savePageNode()` → `db.put()` | OPFS-Persistenz | 2s debounce |
+| `pageDb.put()` | OPFS-Persistenz (nur aktuelle Seite) | 2s debounce |
 | Relay `node-put` | Backup für Offline-Peers | 2s debounce |
 
 ### Erledigt (Session 2026-03-22)
@@ -40,22 +41,26 @@ Drei Sync-Kanäle:
 - [x] Relay-Persistenz: JSON-File (`relay/data.json`, debounced + graceful shutdown)
 - [x] Canvas-Performance: Bitmap-Cache für Pan/Zoom (`compositeStrokes()`)
 - [x] LAN-IP automatisch erkennen (nicht mehr hardcoded)
-- [x] **Graph-Migration:** Blob → Node-per-Stroke → Node-per-Page
+- [x] **Graph-Migration:** Blob → Node-per-Stroke → Node-per-Page → metaDb+pageDb
   - Node-per-Stroke verworfen (WebRTC Chunk-Limit, Relay-Broadcast-Sturm)
   - Node-per-Page: Strokes eingebettet im Page-Node
+  - metaDb+pageDb Split: eigene GenosDB-Instanz pro Seite
   - `mergeNotebooks()`, `compactNotebook()` entfernt
   - Migration: `migrateBlob()` konvertiert altes Blob-Format automatisch
-- [x] **Live-Stroke-Channel:** `db.room.channel("stroke-live")` für instant Peer-Sync
+- [x] **Live-Stroke-Channel:** `pageDb.room.channel("stroke-live")` für instant Peer-Sync
 - [x] **Inkrementelles Zeichnen:** Neuer Stroke direkt auf Canvas, kein `redrawStrokes()`
-- [x] **Stroke-Merge:** Union-by-ID bei divergierten Pages, Skip wenn IDs identisch
-- [x] **Deferred Updates:** `db.map()` Page-Updates während Zeichnen aufgeschoben
+- [x] **Stroke-Merge:** Union-by-ID in pageDb.map() Handler, Skip wenn IDs identisch
 - [x] **Relay als Snapshot-Store:** Kein Broadcast, nur Speicherung + Init-Load
+- [x] **GenosDB-Instanz pro Seite:** metaDb (Metadaten) + pageDb (Strokes, pro Seite)
+  - OPFS-Serialisierung nur für aktuelle Seite
+  - Full-State-Sync nur für eine Seite (löst WebRTC Chunk-Limit)
+  - `openPageDb()` wechselt bei Seitennavigation
 - [x] Testbuch-Generator (1000 Strokes) für Performance-Tests
 
 ### Nächste Schritte
 
-- [ ] **GenosDB-Instanz pro Seite:** Eigener Room pro Page (`roomKey_page_pageId`) → löst OPFS-Serialisierungsproblem (nur aktuelle Seite wird serialisiert) + WebRTC Chunk-Limit (kleinere Full-State-Payloads)
-- [ ] **Performance testen:** Bitmap-Cache + Node-per-Page auf Mobilgeräten
 - [ ] **Mobile-Testing:** Brave Android, Safari iOS, Firefox Android
 - [ ] **Firefox Stable:** OPFS `GetDirectory` SecurityError — Fallback-Strategie klären
+- [ ] **Relay-Snapshot für pageDb:** Aktuell enthält Relay nur metaDb-Nodes. Strokes nur über GenosDB P2P verfügbar — wenn kein Peer online, fehlen Strokes nach Cache-Clear.
 - [ ] **experiment/evolu-sync archivieren:** Branch als abgeschlossen markieren
+- [ ] **Edge-Case:** Bei extremer gleichzeitiger Zeichenaktivität (2 Peers zeichnen schnell gleichzeitig) können vereinzelt Strokes durch Merge-Timing verloren gehen. Kein realer Usecase, aber für Game-artige Szenarien relevant.
