@@ -2229,14 +2229,25 @@
               if (nb) {
                 if (!nb.pages) nb.pages = [];
                 const existing = nb.pages.find(p => String(p.id) === String(id));
-                const strokes = (value.strokes || []).map(s => ({
+                const remoteStrokes = (value.strokes || []).map(s => ({
                   id: String(s.id), points: s.points || [], color: s.color, size: s.size, tool: s.tool || 'pen'
                 }));
                 if (existing) {
                   existing.background = value.background || existing.background;
                   existing.order = value.order ?? existing.order;
-                  existing.clearedAt = value.clearedAt || existing.clearedAt;
-                  existing.strokes = strokes;
+                  const clearedAt = Math.max(value.clearedAt || 0, existing.clearedAt || 0);
+                  existing.clearedAt = clearedAt;
+                  // Strokes mergen (Union by ID) statt ersetzen
+                  const merged = new Map();
+                  for (const s of existing.strokes) {
+                    if (clearedAt && Number(s.id) <= clearedAt) continue;
+                    merged.set(String(s.id), s);
+                  }
+                  for (const s of remoteStrokes) {
+                    if (clearedAt && Number(s.id) <= clearedAt) continue;
+                    merged.set(String(s.id), s);
+                  }
+                  existing.strokes = [...merged.values()].sort((a, b) => Number(a.id) - Number(b.id));
                 } else {
                   nb.pages.push({
                     id: String(id), strokes, background: value.background || 'grid',
