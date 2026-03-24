@@ -1579,7 +1579,7 @@
 
     // Nav-State (aktuelles Notebook + Seitenpositionen) an Relay senden
     function relayPushNav(currentNotebookId, currentPages) {
-      relaySend({ type: 'put', id: '_nav', data: { _nav: true, currentNotebookId, currentPages } });
+      relaySend({ type: 'node-put', id: '_nav', data: { _nav: true, currentNotebookId, currentPages } });
     }
 
     function relaySend(msg) {
