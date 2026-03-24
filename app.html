@@ -1767,10 +1767,25 @@
         pageDb.map(function({ id, value, action }) {
           if (action === 'initial' || action === 'added' || action === 'updated') {
             if (value?.type === 'pagedata' && app?.currentPage) {
-              app.currentPage.strokes = (value.strokes || []).map(s => ({
+              const remoteStrokes = (value.strokes || []).map(s => ({
                 id: String(s.id), points: s.points || [], color: s.color, size: s.size, tool: s.tool || 'pen'
-              })).sort((a, b) => Number(a.id) - Number(b.id));
-              if (!loaded) { loaded = true; resolve(); }
+              }));
+
+              if (!loaded) {
+                // Erster Load: einfach übernehmen
+                app.currentPage.strokes = remoteStrokes.sort((a, b) => Number(a.id) - Number(b.id));
+                loaded = true; resolve();
+              } else {
+                // Live-Update: Union-by-ID Merge (Skip wenn IDs identisch)
+                const localIds = app.currentPage.strokes.map(s => String(s.id)).join(',');
+                const remoteIds = remoteStrokes.map(s => String(s.id)).join(',');
+                if (localIds === remoteIds) return;
+
+                const merged = new Map();
+                for (const s of app.currentPage.strokes) merged.set(String(s.id), s);
+                for (const s of remoteStrokes) merged.set(String(s.id), s);
+                app.currentPage.strokes = [...merged.values()].sort((a, b) => Number(a.id) - Number(b.id));
+              }
               app.redrawStrokes();
             }
           }
