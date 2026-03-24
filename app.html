@@ -2216,6 +2216,13 @@
             }
 
             else if (value.type === 'page') {
+              // Während des Zeichnens: Page-Updates aufschieben (verhindert UI-Block)
+              if (self.isDrawing) {
+                if (!self._deferredPageUpdates) self._deferredPageUpdates = [];
+                self._deferredPageUpdates.push({ id, value, action });
+                return;
+              }
+
               if (action === 'removed') {
                 for (const nb of self.notebooks) {
                   if (!nb.pages) continue;
@@ -3566,6 +3573,19 @@
 
         this.isDrawing = false;
         this.activePointerId = null;
+
+        // Aufgeschobene Page-Updates abarbeiten
+        if (this._deferredPageUpdates?.length) {
+          const updates = this._deferredPageUpdates;
+          this._deferredPageUpdates = [];
+          // Im nächsten Frame, damit Canvas-Update zuerst kommt
+          setTimeout(() => {
+            for (const u of updates) {
+              // db.map handler nochmal triggern — diesmal nicht deferred
+              if (db) db.put(u.value, u.id);
+            }
+          }, 100);
+        }
         this.activePointerType = null;
         
         if (this.currentPoints.length > 0 && this.currentPage) {
