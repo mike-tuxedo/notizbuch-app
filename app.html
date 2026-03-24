@@ -2029,6 +2029,41 @@
         }
 
         this.selfPeerId = db?.selfId;
+
+        // Live-Stroke-Channel: Peers sehen Strokes sofort (kein db.put() nötig)
+        let strokeChannel = null;
+        if (db?.room) {
+          strokeChannel = db.room.channel("stroke-live");
+          strokeChannel.on("message", (data, peerId) => {
+            if (!data || !data.pageId) return;
+            // Stroke auf der richtigen Seite einfügen
+            for (const nb of this.notebooks) {
+              const page = (nb.pages || []).find(p => String(p.id) === String(data.pageId));
+              if (page) {
+                if (data.action === 'add') {
+                  const stroke = data.stroke;
+                  if (!stroke || page.strokes.find(s => String(s.id) === String(stroke.id))) return;
+                  page.strokes.push(stroke);
+                  page.strokes.sort((a, b) => Number(a.id) - Number(b.id));
+                } else if (data.action === 'undo') {
+                  page.strokes.pop();
+                } else if (data.action === 'clear') {
+                  page.strokes = [];
+                  page.clearedAt = data.clearedAt || Date.now();
+                }
+                // Nur neuzeichnen wenn aktuelle Seite betroffen
+                if (page === this.currentPage) {
+                  this.redrawStrokes();
+                }
+                this.peerSync = true;
+                clearTimeout(this._peerSyncTimer);
+                this._peerSyncTimer = setTimeout(() => { this.peerSync = false; }, 1500);
+                return;
+              }
+            }
+          });
+        }
+
         const isReconnect = !!sessionStorage.getItem('reconnect');
         if (this.syncEnabled && db?.room) {
           const initialPeers = db.room.getPeers();
@@ -3172,15 +3207,20 @@
       
       undo() {
         if (!this.currentPage || this.currentPage.strokes.length === 0) return;
+        const pageId = String(this.currentPage.id);
         this.currentPage.strokes.pop();
+        if (strokeChannel) strokeChannel.send({ action: 'undo', pageId });
         savePageNode(this.currentPage, this.currentNotebookId);
         this.redrawStrokes();
       },
 
       clearPage() {
         if (!this.currentPage) return;
+        const pageId = String(this.currentPage.id);
+        const now = Date.now();
         this.currentPage.strokes = [];
-        this.currentPage.clearedAt = Date.now();
+        this.currentPage.clearedAt = now;
+        if (strokeChannel) strokeChannel.send({ action: 'clear', pageId, clearedAt: now });
         savePageNode(this.currentPage, this.currentNotebookId);
         this.redrawStrokes();
       },
@@ -3553,7 +3593,10 @@
             }
           }
 
-          // Page-Node mit Strokes speichern (Delta-Sync sendet nur diese Seite)
+          // Live an Peers senden (sofort, kein db.put)
+          if (strokeChannel) strokeChannel.send({ action: 'add', pageId, stroke: newStroke });
+
+          // Persistenz (debounced)
           savePageNode(this.currentPage, this.currentNotebookId);
 
           this.updateFitReference();
