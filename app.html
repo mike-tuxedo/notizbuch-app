@@ -2263,7 +2263,7 @@
                   existing.strokes = [...merged.values()].sort((a, b) => Number(a.id) - Number(b.id));
                 } else {
                   nb.pages.push({
-                    id: String(id), strokes, background: value.background || 'grid',
+                    id: String(id), strokes: remoteStrokes, background: value.background || 'grid',
                     order: value.order ?? nb.pages.length, clearedAt: value.clearedAt || 0
                   });
                   nb.pages.sort((a, b) => a.order - b.order);
