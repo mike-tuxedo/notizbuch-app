@@ -1775,17 +1775,21 @@
         type: 'page', notebookId: String(notebookId), background: page.background || 'grid',
         order: page.order ?? 0, clearedAt: page.clearedAt || 0, pageRoom
       }, pageId);
-      // Strokes an pageDb (eigener Room pro Seite)
-      if (pageDb) pageDb.put({ type: 'pagedata', strokes }, 'strokes');
+      // Strokes an pageDb (eigener Room pro Seite) — deletedStrokes entproxien (petite-vue Proxy → structuredClone DOMException)
+      const deletedStrokes = (page.deletedStrokes || []).map(Number);
+      if (pageDb) pageDb.put({ type: 'pagedata', strokes, deletedStrokes, clearedAt: page.clearedAt || 0 }, 'strokes');
       // Relay-Snapshot: alles zusammen
       const relayData = {
         type: 'page', notebookId: String(notebookId), background: page.background || 'grid',
-        order: page.order ?? 0, clearedAt: page.clearedAt || 0, pageRoom, strokes
+        order: page.order ?? 0, clearedAt: page.clearedAt || 0, pageRoom, strokes,
+        deletedStrokes: deletedStrokes.slice() // plain Array für JSON-Serialisierung
       };
       relaySend({ type: 'node-put', id: pageId, data: relayData });
     }
 
     // GenosDB-Instanz für eine Seite öffnen (eigener Room pro Seite)
+    let _openPageDbTimer = null;
+    let _openPageDbSeq = 0;
     async function openPageDb(pageId, expectPeerData) {
       if (!gdbFactory || !pageId) return;
       _flushPageSave();
@@ -1794,6 +1798,12 @@
       if (pageDb?.room) { try { pageDb.room.leave(); } catch(e) {} }
       strokeChannel = null;
       pageDb = null;
+
+      // Debounce: Bei schnellem Blättern nur die letzte Seite öffnen
+      const seq = ++_openPageDbSeq;
+      clearTimeout(_openPageDbTimer);
+      await new Promise(r => { _openPageDbTimer = setTimeout(r, 200); });
+      if (seq !== _openPageDbSeq) return; // Neuere Navigation hat übernommen
 
       try {
         pageDb = await gdbFactory(roomKey + '_p_' + pageId, { rtc: syncEnabled, password: roomKey, saveDelay: 0 });
@@ -1811,29 +1821,38 @@
       const loadPromise = new Promise(resolve => {
         if (!pageDb) { resolve(); return; }
         pageDb.map(function({ id, value, action }) {
+          console.log('[PageDb] map event:', action, 'id:', id, 'type:', value?.type, 'strokes:', value?.strokes?.length, 'target:', targetPage, 'current:', app?.currentPage?.id, 'db-match:', pageDb === thisDb);
           // Stale-Guard: ignoriere Events nach Navigation zu anderer Seite
-          if (pageDb !== thisDb || String(app?.currentPage?.id) !== targetPage) return;
+          if (pageDb !== thisDb || String(app?.currentPage?.id) !== targetPage) {
+            console.log('[PageDb] Stale-Guard: ignoriere', action, 'für', targetPage);
+            return;
+          }
           if (action === 'initial' || action === 'added' || action === 'updated') {
             if (value?.type === 'pagedata' && app?.currentPage) {
               const remoteStrokes = (value.strokes || []).map(s => ({
                 id: String(s.id), points: s.points || [], color: s.color, size: s.size, tool: s.tool || 'pen'
               }));
 
-              if (!loaded) {
-                // Erster Load: einfach übernehmen
-                app.currentPage.strokes = remoteStrokes.sort((a, b) => Number(a.id) - Number(b.id));
-                loaded = true; resolve();
-              } else {
-                // Live-Update: Union-by-ID Merge (Skip wenn IDs identisch)
-                const localIds = app.currentPage.strokes.map(s => String(s.id)).join(',');
-                const remoteIds = remoteStrokes.map(s => String(s.id)).join(',');
-                if (localIds === remoteIds) return;
+              // deletedStrokes + clearedAt aus beiden Quellen vereinigen
+              const remoteDeleted = new Set((value.deletedStrokes || []).map(Number));
+              const localDeleted = new Set((app.currentPage.deletedStrokes || []).map(Number));
+              const allDeleted = new Set([...remoteDeleted, ...localDeleted]);
+              const clearedAt = Math.max(value.clearedAt || 0, app.currentPage.clearedAt || 0);
 
-                const merged = new Map();
-                for (const s of app.currentPage.strokes) merged.set(String(s.id), s);
-                for (const s of remoteStrokes) merged.set(String(s.id), s);
-                app.currentPage.strokes = [...merged.values()].sort((a, b) => Number(a.id) - Number(b.id));
-              }
+              // Immer Union-by-ID Merge (auch beim ersten Load)
+              const merged = new Map();
+              for (const s of app.currentPage.strokes) merged.set(String(s.id), s);
+              for (const s of remoteStrokes) merged.set(String(s.id), s);
+
+              // Gelöschte und vor clearedAt liegende Strokes filtern
+              app.currentPage.strokes = [...merged.values()]
+                .filter(s => Number(s.id) > clearedAt && !allDeleted.has(Number(s.id)))
+                .sort((a, b) => Number(a.id) - Number(b.id));
+              app.currentPage.deletedStrokes = [...allDeleted];
+              if (clearedAt) app.currentPage.clearedAt = clearedAt;
+
+              console.log('[PageDb] Merge für', targetPage, ':', action, '→', app.currentPage.strokes.length, 'Strokes (remote:', remoteStrokes.length, ', deleted:', allDeleted.size, ')');
+              if (!loaded) { loaded = true; resolve(); }
               if (app) app.pageLoading = false;
               clearTimeout(pendingPeerSync);
               app.redrawStrokes();
@@ -1862,14 +1881,26 @@
 
         if (relayData?.strokes?.length > 0 &&
             pageDb === thisDb && String(app?.currentPage?.id) === targetPage) {
-          // Relay hatte Strokes → laden + speichern
-          const strokes = relayData.strokes.map(s => ({
+          // Relay hatte Strokes → Union-Merge mit lokalen
+          const remoteStrokes = relayData.strokes.map(s => ({
             id: String(s.id), points: s.points || [], color: s.color, size: s.size, tool: s.tool || 'pen'
-          })).sort((a, b) => Number(a.id) - Number(b.id));
+          }));
+          const remoteDeleted = new Set((relayData.deletedStrokes || []).map(Number));
+          const localDeleted = new Set((app.currentPage.deletedStrokes || []).map(Number));
+          const allDeleted = new Set([...remoteDeleted, ...localDeleted]);
+          const clearedAt = Math.max(relayData.clearedAt || 0, app.currentPage.clearedAt || 0);
+          const merged = new Map();
+          for (const s of app.currentPage.strokes) merged.set(String(s.id), s);
+          for (const s of remoteStrokes) merged.set(String(s.id), s);
+          const strokes = [...merged.values()]
+            .filter(s => Number(s.id) > clearedAt && !allDeleted.has(Number(s.id)))
+            .sort((a, b) => Number(a.id) - Number(b.id));
           app.currentPage.strokes = strokes;
+          app.currentPage.deletedStrokes = [...allDeleted];
+          if (clearedAt) app.currentPage.clearedAt = clearedAt;
           if (pageDb) pageDb.put({ type: 'pagedata', strokes: strokes.map(s => ({
             id: s.id, points: s.points.map(p => ({ x: p.x, y: p.y })), color: s.color, size: s.size, tool: s.tool
-          })) }, 'strokes');
+          })), deletedStrokes: [...allDeleted], clearedAt }, 'strokes');
           loaded = true;
           if (app) app.pageLoading = false;
           app.redrawStrokes();
@@ -1895,9 +1926,17 @@
             app.currentPage.strokes.push(stroke);
             app.currentPage.strokes.sort((a, b) => Number(a.id) - Number(b.id));
           } else if (data.action === 'undo') {
-            app.currentPage.strokes.pop();
+            if (data.strokeId) {
+              // Stroke per ID entfernen + in Tombstones aufnehmen
+              app.currentPage.strokes = app.currentPage.strokes.filter(s => String(s.id) !== String(data.strokeId));
+              if (!app.currentPage.deletedStrokes) app.currentPage.deletedStrokes = [];
+              app.currentPage.deletedStrokes.push(Number(data.strokeId));
+            } else {
+              app.currentPage.strokes.pop();
+            }
           } else if (data.action === 'clear') {
             app.currentPage.strokes = [];
+            app.currentPage.deletedStrokes = [];
             app.currentPage.clearedAt = data.clearedAt || Date.now();
           }
           app.redrawStrokes();
@@ -1909,6 +1948,43 @@
       // pageLoading nur ausschalten wenn Daten geladen wurden — sonst läuft P2P-Sync noch
       if (loaded && app) app.pageLoading = false;
       console.log('[PageDb] Seite', pageId, 'geladen,', app?.currentPage?.strokes?.length || 0, 'Strokes', loaded ? '' : '(warte auf P2P)');
+
+      // Workaround: GenosDB map() feuert nach FULL SYNC nicht zuverlässig.
+      // Poll pageDb.get() bis Strokes ankommen oder Timeout (8s).
+      if (!loaded && pageDb === thisDb) {
+        let pollCount = 0;
+        const pollInterval = setInterval(async () => {
+          if (pageDb !== thisDb || String(app?.currentPage?.id) !== targetPage) {
+            clearInterval(pollInterval); return;
+          }
+          try {
+            const result = await pageDb.get('strokes');
+            const value = result?.result?.value;
+            if (value?.type === 'pagedata' && value.strokes?.length > 0) {
+              clearInterval(pollInterval);
+              const remoteStrokes = value.strokes.map(s => ({
+                id: String(s.id), points: s.points || [], color: s.color, size: s.size, tool: s.tool || 'pen'
+              }));
+              const remoteDeleted = new Set((value.deletedStrokes || []).map(Number));
+              const localDeleted = new Set((app.currentPage.deletedStrokes || []).map(Number));
+              const allDeleted = new Set([...remoteDeleted, ...localDeleted]);
+              const clearedAt = Math.max(value.clearedAt || 0, app.currentPage.clearedAt || 0);
+              const merged = new Map();
+              for (const s of app.currentPage.strokes) merged.set(String(s.id), s);
+              for (const s of remoteStrokes) merged.set(String(s.id), s);
+              app.currentPage.strokes = [...merged.values()]
+                .filter(s => Number(s.id) > clearedAt && !allDeleted.has(Number(s.id)))
+                .sort((a, b) => Number(a.id) - Number(b.id));
+              app.currentPage.deletedStrokes = [...allDeleted];
+              if (clearedAt) app.currentPage.clearedAt = clearedAt;
+              if (app) app.pageLoading = false;
+              app.redrawStrokes();
+              console.log('[PageDb] Strokes via Poll geladen:', app.currentPage.strokes.length);
+            }
+          } catch(e) {}
+          if (++pollCount >= 16) { clearInterval(pollInterval); if (app) app.pageLoading = false; }
+        }, 500);
+      }
     }
 
     // Stroke smoothing
@@ -3193,7 +3269,10 @@
           rootDb.put({ type: 'notebook', name: newNb.name }, nbId);
           rootDb.put({ type: 'page', notebookId: nbId, background: 'grid', order: 0, pageRoom }, pageId);
         }
-        openPageDb(pageId).then(() => { this.drawBackground(); this.redrawStrokes(); this.fitToContent(); });
+        openPageDb(pageId).then(() => {
+          this.drawBackground(); this.redrawStrokes(); this.fitToContent();
+          savePageNode(page, nbId); // Strokes in pageDb + Relay persistieren
+        });
         this._saveLocalSettings();
       },
 
@@ -3411,8 +3490,12 @@
       undo() {
         if (!this.currentPage || this.currentPage.strokes.length === 0) return;
         const pageId = String(this.currentPage.id);
-        this.currentPage.strokes.pop();
-        if (strokeChannel) strokeChannel.send({ action: 'undo', pageId });
+        const removed = this.currentPage.strokes.pop();
+        if (removed) {
+          if (!this.currentPage.deletedStrokes) this.currentPage.deletedStrokes = [];
+          this.currentPage.deletedStrokes.push(Number(removed.id));
+          if (strokeChannel) strokeChannel.send({ action: 'undo', pageId, strokeId: removed.id });
+        }
         savePageNode(this.currentPage, this.currentNotebookId);
         this.redrawStrokes();
       },
@@ -3422,6 +3505,7 @@
         const pageId = String(this.currentPage.id);
         const now = Date.now();
         this.currentPage.strokes = [];
+        this.currentPage.deletedStrokes = []; // clearedAt macht Tombstones überflüssig
         this.currentPage.clearedAt = now;
         if (strokeChannel) strokeChannel.send({ action: 'clear', pageId, clearedAt: now });
         savePageNode(this.currentPage, this.currentNotebookId);
