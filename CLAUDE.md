@@ -34,25 +34,26 @@ The app runs at `./app.html`, the landing page at `./index.html`.
 - `sw.js` — Service Worker with cache-first + stale-while-revalidate strategy.
 - `libs/` — Vendored third-party libraries (all minified except `genosdb.js`).
 
-### Data Model (Graph-Nodes)
+### Data Model (2-Ebenen GenosDB)
 
-Zwei GenosDB-Instanzen: `metaDb` für Metadaten, `pageDb` pro Seite für Strokes.
+Zwei GenosDB-Ebenen: `rootDb` für die Notebook/Page-Struktur, `pageDb` pro Seite für Strokes.
 
 ```
-metaDb (Room: roomKey):
+rootDb (Room: roomKey) — immer offen:
   Notebook Node  { type:'notebook', name }
-    ↓ metaDb.link(notebookId, pageId)
-  Page Meta      { type:'page', notebookId, background, order, clearedAt }
+  Page Node      { type:'page', notebookId, background, order, clearedAt, pageRoom }
 
-pageDb (Room: roomKey + '_p_' + pageId, wechselt bei Seitennavigation):
+pageDb (Room: pageRoom = roomKey + '_p_' + pageId, wechselt bei Seitennavigation):
   Page Data      { type:'pagedata', strokes:[{id,points,color,size,tool}] }
 ```
 
-IDs are `String(Date.now())` timestamps. `clearedAt` on page nodes as safety-net for concurrent edits. In-memory model (`this.notebooks[]`) is rebuilt from metaDb graph nodes on init. Strokes der aktuellen Seite werden aus pageDb geladen. Strokes werden per Union-by-ID gemerged wenn Pages von verschiedenen Peers divergieren.
+Jeder Page-Node enthält `pageRoom` als explizite Referenz auf den Room seiner pageDb-Instanz. Notebook→Page Beziehung über `notebookId` (kein `link()`).
+
+IDs are `String(Date.now())` timestamps. `clearedAt` on page nodes as safety-net for concurrent edits. In-memory model (`this.notebooks[]`) is rebuilt from rootDb graph nodes on init. Strokes der aktuellen Seite werden aus pageDb geladen. Strokes werden per Union-by-ID gemerged wenn Pages von verschiedenen Peers divergieren.
 
 ### Storage Layers
 
-1. **GenosDB (2 Instanzen)** — `metaDb`: Notebook/Page-Metadaten (leichtgewichtig). `pageDb`: Strokes der aktuellen Seite (eigener Room pro Seite, wechselt bei Navigation). Beide E2E encrypted via `password`.
+1. **GenosDB (2 Ebenen)** — `rootDb`: Notebook/Page-Struktur (leichtgewichtig, immer offen). `pageDb`: Strokes der aktuellen Seite (eigener Room pro Seite, wechselt bei Navigation). Beide E2E encrypted via `password`.
 2. **IndexedDB** — Device-local settings (color, pen size, page positions, snapshots). Keyed by `{roomKey}:settingName`. Never synced.
 3. **Service Worker Cache** — Static assets for offline support.
 4. **WebSocket Relay** — Snapshot-Store für Graph-Nodes (kein Broadcast, nur Speicherung). Backup für Peers die später online kommen.
@@ -61,10 +62,13 @@ IDs are `String(Date.now())` timestamps. `clearedAt` on page nodes as safety-net
 
 - **Room Key** = URL hash (`#abc123`). Different hash = different sync group.
 - **Live-Channel:** `pageDb.room.channel("stroke-live")` sendet Strokes/Undo/Clear instant an Peers (~30ms). Kein `db.put()`, kein structuredClone.
-- **Persistenz:** `savePageNode()` debounced (2s) → Metadaten an `metaDb.put()`, Strokes an `pageDb.put()`, Relay-Update. Getrennte OPFS-Files pro Seite.
-- **Read path:** `metaDb.map()` für Notebook/Page-Metadaten, `pageDb.map()` für Strokes der aktuellen Seite. Strokes werden per Union-by-ID gemerged.
-- **Seitenwechsel:** `openPageDb(pageId)` schließt altes pageDb, öffnet neues mit eigenem Room + strokeChannel.
-- Init has two phases: quick local load (600ms), then optional peer wait (up to 8s on shared URLs).
+- **Persistenz:** `savePageNode()` debounced (2s) → Metadaten an `rootDb.put()`, Strokes an `pageDb.put()`, Relay-Update. Getrennte OPFS-Files pro Seite.
+- **Read path:** `rootDb.map()` für Notebook/Page-Struktur, `pageDb.map()` für Strokes der aktuellen Seite. Strokes werden per Union-by-ID gemerged.
+- **Seitenwechsel:** `openPageDb(pageId)` schließt altes pageDb, öffnet neues mit eigenem Room + strokeChannel. Canvas wird sofort geleert (redrawStrokes vor async Load).
+- **Relay-Fallback bei Navigation:** Wenn eine Seite keine lokalen Strokes hat, werden diese vom Relay via `node-get` Request geholt (löst: Peer A zeichnet + blättert weg, Peer B öffnet Seite ohne P2P-Room).
+- **Stale-Guard:** pageDb.map + strokeChannel Callbacks prüfen `pageDb !== thisDb` um Events von alten pageDb-Instanzen zu ignorieren (verhindert Seiten-Verwechslung bei schnellem Blättern).
+- **pageLoading-State:** Blockiert Zeichnen während Sync läuft (verhindert Merge-Konflikte). Zeigt Wait-Cursor + pulsierenden blauen Punkt.
+- Init has three phases: quick local load (600ms), Relay merge (immer, max 3s), P2P fallback (max 5s).
 
 ### Canvas Rendering
 
@@ -110,7 +114,8 @@ cd relay && npm install && node server.js
 - **Daten in `relay/data.json`** — persistiert via debounced JSON-Write + Graceful Shutdown
 - LAN-IP wird automatisch erkannt (nicht hardcoded)
 - Clients pushen einmalig nach Init einen Snapshot an den Relay
-- Message-Typen: `node-put` (speichern), `node-remove` (löschen) — kein Broadcast an andere Peers
+- Message-Typen: `node-put` (speichern/mergen), `node-get` (einzelnen Node abrufen), `node-remove` (löschen) — kein Broadcast an andere Peers
+- **Relay-Server Merge:** `node-put` merged statt überschreibt (`{ ...existing, ...msg.data }`). Verhindert, dass Metadata-Updates bestehende Strokes löschen.
 
 ### mkcert Setup (einmalig)
 
@@ -125,10 +130,10 @@ Für mobile Tests: `rootCA.pem` auf dem Gerät installieren (aus `mkcert -CAROOT
 
 - **`password`-Option:** AES-256-GCM E2E-Verschlüsselung. Aktiviert via `gdb(roomKey, { rtc: true, password: roomKey })`.
 - **Delta-Sync:** Eingebauter `deltaSync` mit OpLog + Hybrid Logical Clock. Automatischer Delta-Sync pro Instanz.
-- **Graph-Datenbank:** Notebooks und Pages als Graph-Nodes mit `metaDb.link()`.
-- **Mehrere Instanzen:** `metaDb` + `pageDb` — jede Seite hat eigenen Room und eigenes OPFS-File. Löst OPFS-Serialisierungsproblem und WebRTC Chunk-Limit.
+- **Graph-Datenbank:** Notebooks und Pages als Nodes in `rootDb`. Notebook→Page Beziehung über `notebookId` (kein `link()`).
+- **Zwei Ebenen:** `rootDb` + `pageDb` — jede Seite hat eigenen Room und eigenes OPFS-File. Löst OPFS-Serialisierungsproblem und WebRTC Chunk-Limit.
 - **Room-Channels:** `pageDb.room.channel("stroke-live")` für ephemere Live-Updates (kein `db.put()` nötig). Pattern aus GenosDB Whiteboard/Collab-Beispielen.
-- **`saveDelay`-Option:** Auf 1s gesetzt (default 200ms) um OPFS-Serialisierung seltener auszulösen.
+- **`saveDelay`-Option:** Auf 0 gesetzt (sofortiger OPFS-Write). War vorher 1000ms, was bei schnellem Seitenwechsel zu Datenverlust führte (pageDb wurde geschlossen bevor der Write fertig war).
 
 ## Sync-Architektur — Entscheidungen
 
@@ -164,6 +169,12 @@ Für mobile Tests: `rootCA.pem` auf dem Gerät installieren (aus `mkcert -CAROOT
 - Leere Seiten mit Custom-Background gingen beim Merge verloren (Filter `strokes.length > 0` entfernt)
 - Relay-Push vor WebSocket-Connect: Daten wurden gesendet bevor Verbindung stand → Fix: Wait-Loop
 - `_updatedAt`-Metadaten verursachten Endlos-Sync-Loop → Fix: `stripSyncMeta()` für Vergleiche
+- **Init-Lücke (Session 2026-03-25):** P2P-Nodes die nach Phase 1 aber vor `dbInitialized=true` ankamen gingen verloren → Fix: Final-Merge von initNodes vor dbInitialized
+- **Cross-Notebook Stroke-Leak:** `createNotebook()` und `createTestNotebook()` riefen kein `openPageDb()` auf → strokeChannel/pageDb zeigten noch auf alte Seite → Fix: openPageDb bei jeder Notebook-Erstellung
+- **Relay überschrieb neuere Daten:** Phase 2 Relay-Merge schrieb ALLE Nodes (inkl. stale Strokes) blind in rootDb → Fix: nur neue Nodes (die lokal fehlen) in rootDb, Strokes aus Relay-Daten strippen
+- **Seiten-Verwechslung bei schnellem Blättern:** Späte Events vom alten pageDb schrieben Strokes der vorherigen Seite in die neue → Fix: Stale-Guard (`pageDb !== thisDb`) in pageDb.map und strokeChannel Callbacks
+- **OPFS-Write bei Seitenwechsel nicht fertig:** `saveDelay:1000` + sofortiges `room.leave()` → OPFS-Write nie fertig → Fix: saveDelay auf 0
+- **Notebook-Löschung nicht synchronisiert:** Pages wurden nicht vom Relay gelöscht, rootDb.map Handler löschte keine Pages bei Notebook-Removal → Fix: beides ergänzt
 
 ### Was nicht funktioniert hat
 - **Evolu (echtes Paket):** Braucht Build-Step (WASM + Web Workers). Kein CDN-Import möglich wegen `new URL("file", import.meta.url)` Pattern.
@@ -172,8 +183,11 @@ Für mobile Tests: `rootCA.pem` auf dem Gerät installieren (aus `mkcert -CAROOT
 - **Zwei Tabs mit verschiedenen Room-Keys:** GenosDB/OPFS teilt sich Ressourcen pro Origin → Konflikte.
 - **Node-per-Stroke Modell:** Jeder Stroke als eigener GenosDB-Node. Full-State-Sync bei >500 Nodes überschreitet WebRTC Chunk-Limit. Relay-Broadcast-Sturm bei vielen Nodes. Umgestellt auf Node-per-Page.
 - **Firefox Stable + OPFS:** `GetDirectory` wirft `SecurityError`. GenosDB kann nicht initialisiert werden. App fällt auf Relay-only zurück.
-- **Einzelne GenosDB-Instanz für alles:** OPFS-Serialisierung des gesamten Graphs blockiert Main Thread bei vielen Strokes. Gelöst durch metaDb + pageDb Split.
+- **Einzelne GenosDB-Instanz für alles:** OPFS-Serialisierung des gesamten Graphs blockiert Main Thread bei vielen Strokes. Gelöst durch rootDb + pageDb Split.
 - **Relay als Live-Sync-Kanal:** Broadcast jedes Stroke-Events an alle Peers verursachte Event-Sturm. Relay ist jetzt nur Snapshot-Store (kein Broadcast).
+- **saveDelay > 0 bei pageDb:** Mit `saveDelay: 1000` wurde `pageDb.room.leave()` aufgerufen bevor der OPFS-Write fertig war → Strokes gingen bei schnellem Seitenwechsel verloren. Fix: `saveDelay: 0`.
+- **Relay-Daten blind in metaDb/rootDb schreiben:** Relay hat oft ältere Snapshots als lokale OPFS-Daten. Blindes `rootDb.put()` für alle Relay-Nodes überschrieb neuere lokale Daten und propagierte alten Stand an Peers. Fix: Nur neue Nodes (die lokal fehlen) in rootDb, Strokes nie in rootDb.
+- **Snapshot-Push mit leeren Strokes:** Beim Init-Snapshot-Push hatten nur die aktuelle Seite Strokes im Memory, alle anderen `strokes: []`. Das überschrieb gültige Relay-Daten. Fix: Strokes nur für aktuelle Seite pushen, Relay-Server merged statt überschreibt.
 
 ### Service Worker
 - `sw.js` nutzt **Network-first für HTML** (Änderungen sofort sichtbar) und Stale-while-revalidate für Libs

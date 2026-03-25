@@ -284,10 +284,25 @@ wss.on('connection', (ws, req) => {
       }
 
       // Graph-Node Snapshot-Store: nur speichern, kein Broadcast (P2P macht Live-Sync)
+      // Merge statt Replace: bestehende Felder (z.B. strokes) bleiben erhalten wenn nicht mitgesendet
       case 'node-put': {
         if (!currentRoom || !msg.id || !msg.data) return;
-        currentRoom.nodes[String(msg.id)] = msg.data;
+        const key = String(msg.id);
+        const existing = currentRoom.nodes[key];
+        if (existing && typeof existing === 'object' && typeof msg.data === 'object') {
+          currentRoom.nodes[key] = { ...existing, ...msg.data };
+        } else {
+          currentRoom.nodes[key] = msg.data;
+        }
         scheduleSave();
+        break;
+      }
+
+      // Einzelnen Node abrufen (für Seiten-Strokes bei Navigation)
+      case 'node-get': {
+        if (!currentRoom || !msg.id) return;
+        const nodeData = currentRoom.nodes[String(msg.id)] || null;
+        ws.send(JSON.stringify({ type: 'node-data', id: msg.id, data: nodeData }));
         break;
       }
 

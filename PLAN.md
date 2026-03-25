@@ -1,17 +1,17 @@
 # PLAN.md — Notizbuch App
 
-## Status: metaDb + pageDb Split (Stand 2026-03-24)
+## Status: rootDb + pageDb Architektur (Stand 2026-03-25)
 
 ### Sync-Architektur
 
-**Zwei GenosDB-Instanzen + Live-Channel + Relay-Snapshot**
+**Zwei GenosDB-Ebenen + Live-Channel + Relay-Snapshot**
 
 ```
-metaDb (Room: roomKey):
+rootDb (Room: roomKey) — immer offen:
   Notebook Node  { type:'notebook', name }
-  Page Meta      { type:'page', notebookId, background, order, clearedAt }
+  Page Node      { type:'page', notebookId, background, order, clearedAt, pageRoom }
 
-pageDb (Room: roomKey + '_p_' + pageId, wechselt bei Navigation):
+pageDb (Room: pageRoom = roomKey + '_p_' + pageId, wechselt bei Navigation):
   Page Data      { type:'pagedata', strokes:[...] }
 ```
 
@@ -19,8 +19,10 @@ Drei Sync-Kanäle:
 | Kanal | Zweck | Latenz |
 |---|---|---|
 | `strokeChannel.send()` | Peer sieht Stroke sofort | ~30ms |
-| `pageDb.put()` | OPFS-Persistenz (nur aktuelle Seite) | 2s debounce |
+| `pageDb.put()` | OPFS-Persistenz (nur aktuelle Seite) | sofort (saveDelay: 0) |
 | Relay `node-put` | Backup für Offline-Peers | 2s debounce |
+
+Relay-Fallback bei Navigation: `node-get` Request holt Strokes wenn lokal keine vorhanden.
 
 ### Erledigt (Session 2026-03-22)
 
@@ -57,10 +59,28 @@ Drei Sync-Kanäle:
   - `openPageDb()` wechselt bei Seitennavigation
 - [x] Testbuch-Generator (1000 Strokes) für Performance-Tests
 
+### Erledigt (Session 2026-03-25)
+
+- [x] **Rename metaDb → rootDb:** Klarere Benennung der Haupt-GenosDB
+- [x] **pageRoom-Referenz:** Explizite Referenz auf pageDb-Room in jedem Page-Node
+- [x] **metaDb.link() entfernt:** Notebook→Page Beziehung nur über `notebookId`
+- [x] **Init-Lücke gefixt:** Final-Merge von initNodes vor dbInitialized (P2P-Nodes die nach Phase 1 ankamen gingen verloren)
+- [x] **Cross-Notebook Stroke-Leak gefixt:** openPageDb bei createNotebook/createTestNotebook/selectNotebook
+- [x] **Relay-Merge robust:** Phase 2 immer ausführen, nur neue Nodes in rootDb, Strokes rausfiltern
+- [x] **Relay-Server Merge:** `node-put` merged statt überschreibt (bestehende Felder bleiben)
+- [x] **Relay-Server `node-get`:** Einzelnen Node abrufen für Fallback bei Seitennavigation
+- [x] **Snapshot-Push:** Strokes nur für aktuelle Seite (verhindert Überschreiben mit leeren Strokes)
+- [x] **Stale-Guard:** pageDb.map + strokeChannel Callbacks ignorieren Events nach Navigation
+- [x] **saveDelay: 0:** Sofortiger OPFS-Write (saveDelay:1000 verursachte Datenverlust bei schnellem Seitenwechsel)
+- [x] **Canvas sofort leeren:** redrawStrokes() am Anfang von openPageDb (keine Ghost-Zeichnung der vorherigen Seite)
+- [x] **pageLoading-State:** Blockiert Zeichnen während Sync, Wait-Cursor, pulsierender blauer Punkt
+- [x] **Notebook-Löschung synchronisiert:** Pages aus rootDb + Relay löschen, rootDb.map Handler räumt auf
+- [x] **Relay-Fallback bei Navigation:** node-get Request holt Strokes wenn kein P2P-Peer im Room
+- [x] **Zoom-Reset-Button:** Immer sichtbar (v-if entfernt)
+
 ### Nächste Schritte
 
 - [ ] **Mobile-Testing:** Brave Android, Safari iOS, Firefox Android
 - [ ] **Firefox Stable:** OPFS `GetDirectory` SecurityError — Fallback-Strategie klären
-- [ ] **Relay-Snapshot für pageDb:** Aktuell enthält Relay nur metaDb-Nodes. Strokes nur über GenosDB P2P verfügbar — wenn kein Peer online, fehlen Strokes nach Cache-Clear.
 - [ ] **experiment/evolu-sync archivieren:** Branch als abgeschlossen markieren
 - [ ] **Edge-Case:** Bei extremer gleichzeitiger Zeichenaktivität (2 Peers zeichnen schnell gleichzeitig) können vereinzelt Strokes durch Merge-Timing verloren gehen. Kein realer Usecase, aber für Game-artige Szenarien relevant.

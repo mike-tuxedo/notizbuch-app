@@ -332,6 +332,19 @@
       min-width: 80px;
       text-align: center;
     }
+    .page-loading-dot {
+      display: inline-block;
+      width: 6px; height: 6px;
+      margin-left: 5px;
+      border-radius: 50%;
+      background: #4dabf7;
+      animation: page-dot-pulse 1s ease-in-out infinite;
+      vertical-align: middle;
+    }
+    @keyframes page-dot-pulse {
+      0%, 100% { opacity: 0.3; transform: scale(0.8); }
+      50% { opacity: 1; transform: scale(1.2); }
+    }
     
     .burger-actions {
       display: flex;
@@ -494,6 +507,10 @@
 
     #activeCanvas.hand.grabbing {
       cursor: grabbing;
+    }
+
+    #activeCanvas.loading {
+      cursor: wait;
     }
     
     /* Notebook menu */
@@ -1339,7 +1356,7 @@
       <!-- Page navigation (Desktop) -->
       <div class="page-nav desktop-only">
         <button class="page-btn" :disabled="!canGoPrev" @click="prevPage()">← Zurück</button>
-        <span class="page-info">Seite {{ currentPageIndex + 1 }} / {{ totalPages }}</span>
+        <span class="page-info">Seite {{ currentPageIndex + 1 }} / {{ totalPages }}<span v-if="pageLoading" class="page-loading-dot"></span></span>
         <button class="page-btn primary"  @click="nextPage()">Weiter →</button>
       </div>
     </div>
@@ -1399,7 +1416,7 @@
       <!-- Floating page nav (Mobil) -->
       <div class="floating-page-nav">
         <button class="page-btn" :disabled="!canGoPrev" @click="prevPage()">←</button>
-        <span class="page-info">{{ currentPageIndex + 1 }} / {{ totalPages }}</span>
+        <span class="page-info">{{ currentPageIndex + 1 }} / {{ totalPages }}<span v-if="pageLoading" class="page-loading-dot"></span></span>
         <button class="page-btn primary"  @click="nextPage()">→</button>
       </div>
       <div class="canvas-zoom-wrapper">
@@ -1407,7 +1424,7 @@
           <canvas id="bgCanvas" ref="bgCanvas"></canvas>
           <canvas id="staticCanvas" ref="staticCanvas"></canvas>
           <canvas id="activeCanvas" ref="activeCanvas"
-                  :class="{ eraser: tool === 'eraser', hand: tool === 'hand' || (hasTouchscreen && !zoomLocked), grabbing: isPanning }"
+                  :class="{ eraser: tool === 'eraser', hand: tool === 'hand' || (hasTouchscreen && !zoomLocked), grabbing: isPanning, loading: pageLoading }"
                   @pointerdown="startDrawing"
                   @pointermove="draw"
                   @pointerup="stopDrawing"
@@ -1416,7 +1433,7 @@
           </canvas>
         </div>
       </div>
-      <button v-if="Math.abs(viewScale - fitScale) > 0.01 || Math.abs(viewX - fitX) > 1 || Math.abs(viewY - fitY) > 1" class="zoom-reset-btn"
+      <button class="zoom-reset-btn"
               @click="fitToContent()">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
       </button>
@@ -1433,6 +1450,7 @@
         <span>Synchronisiere…</span>
       </div>
     </div>
+
 
     <!-- Clear Confirm -->
     <div class="confirm-overlay" v-if="showClearConfirm" @click.self="showClearConfirm = false">
@@ -1506,7 +1524,7 @@
     const { createApp } = PetiteVue;
 
     // GenosDB instance (initialized in init())
-    let metaDb;       // GenosDB für Notebook/Page-Metadaten (ohne Strokes)
+    let rootDb;       // Haupt-GenosDB: Notebook/Page-Struktur (ohne Strokes)
     let pageDb;       // GenosDB für aktuelle Seite (Strokes), wechselt bei Navigation
     let strokeChannel = null;
     let gdbFactory;   // gecachte gdb-Import-Funktion
@@ -1579,6 +1597,26 @@
         console.error('[Relay] Fehler:', e);
         relayWs?.close();
       };
+    }
+
+    // Einzelnen Node vom Relay abrufen (z.B. Seiten-Strokes bei Navigation)
+    function relayGetNode(nodeId, timeoutMs = 2000) {
+      return new Promise(resolve => {
+        if (!relayWs || relayWs.readyState !== 1) { resolve(null); return; }
+        const handler = (e) => {
+          try {
+            const msg = JSON.parse(e.data);
+            if (msg.type === 'node-data' && String(msg.id) === String(nodeId)) {
+              relayWs.removeEventListener('message', handler);
+              clearTimeout(timer);
+              resolve(msg.data);
+            }
+          } catch {}
+        };
+        relayWs.addEventListener('message', handler);
+        relaySend({ type: 'node-get', id: nodeId });
+        const timer = setTimeout(() => { relayWs?.removeEventListener('message', handler); resolve(null); }, timeoutMs);
+      });
     }
 
     // Nav-State (aktuelles Notebook + Seitenpositionen) an Relay senden
@@ -1730,41 +1768,51 @@
         id: String(s.id), points: (s.points || []).map(p => ({ x: p.x, y: p.y })),
         color: s.color, size: s.size, tool: s.tool || 'pen'
       }));
-      // Metadaten an metaDb (leichtgewichtig, kein Strokes)
-      if (metaDb) metaDb.put({
+      // Metadaten an rootDb (leichtgewichtig, keine Strokes)
+      const pageId = String(page.id);
+      const pageRoom = roomKey + '_p_' + pageId;
+      if (rootDb) rootDb.put({
         type: 'page', notebookId: String(notebookId), background: page.background || 'grid',
-        order: page.order ?? 0, clearedAt: page.clearedAt || 0
-      }, String(page.id));
+        order: page.order ?? 0, clearedAt: page.clearedAt || 0, pageRoom
+      }, pageId);
       // Strokes an pageDb (eigener Room pro Seite)
       if (pageDb) pageDb.put({ type: 'pagedata', strokes }, 'strokes');
       // Relay-Snapshot: alles zusammen
       const relayData = {
         type: 'page', notebookId: String(notebookId), background: page.background || 'grid',
-        order: page.order ?? 0, clearedAt: page.clearedAt || 0, strokes
+        order: page.order ?? 0, clearedAt: page.clearedAt || 0, pageRoom, strokes
       };
-      relaySend({ type: 'node-put', id: String(page.id), data: relayData });
+      relaySend({ type: 'node-put', id: pageId, data: relayData });
     }
 
     // GenosDB-Instanz für eine Seite öffnen (eigener Room pro Seite)
-    async function openPageDb(pageId) {
+    async function openPageDb(pageId, expectPeerData) {
       if (!gdbFactory || !pageId) return;
       _flushPageSave();
+      // Canvas sofort leeren damit keine Zeichnung der vorherigen Seite sichtbar bleibt
+      if (app) app.redrawStrokes();
       if (pageDb?.room) { try { pageDb.room.leave(); } catch(e) {} }
       strokeChannel = null;
       pageDb = null;
 
       try {
-        pageDb = await gdbFactory(roomKey + '_p_' + pageId, { rtc: syncEnabled, password: roomKey, saveDelay: 1000 });
+        pageDb = await gdbFactory(roomKey + '_p_' + pageId, { rtc: syncEnabled, password: roomKey, saveDelay: 0 });
       } catch(e) {
         console.error('[PageDb] Init fehlgeschlagen:', e);
         return;
       }
 
-      // Strokes aus pageDb laden
+      // Strokes aus pageDb laden (nicht-blockierend)
+      // Guard: thisDb wird bei Navigation ungültig → späte Events ignoriert
+      const thisDb = pageDb;
+      const targetPage = pageId;
       let loaded = false;
+      let pendingPeerSync = null;
       const loadPromise = new Promise(resolve => {
         if (!pageDb) { resolve(); return; }
         pageDb.map(function({ id, value, action }) {
+          // Stale-Guard: ignoriere Events nach Navigation zu anderer Seite
+          if (pageDb !== thisDb || String(app?.currentPage?.id) !== targetPage) return;
           if (action === 'initial' || action === 'added' || action === 'updated') {
             if (value?.type === 'pagedata' && app?.currentPage) {
               const remoteStrokes = (value.strokes || []).map(s => ({
@@ -1786,11 +1834,15 @@
                 for (const s of remoteStrokes) merged.set(String(s.id), s);
                 app.currentPage.strokes = [...merged.values()].sort((a, b) => Number(a.id) - Number(b.id));
               }
+              if (app) app.pageLoading = false;
+              clearTimeout(pendingPeerSync);
               app.redrawStrokes();
             }
           }
           if (action === 'removed' && value?.type === 'pagedata' && app?.currentPage) {
             app.currentPage.strokes = [];
+            if (app) app.pageLoading = false;
+            clearTimeout(pendingPeerSync);
             app.redrawStrokes();
           }
         });
@@ -1798,11 +1850,45 @@
       });
       await loadPromise;
 
+      // Wenn nach OPFS-Load keine Strokes: Relay fragen, dann ggf. auf P2P warten
+      if (!loaded && app?.currentPage?.strokes?.length === 0 &&
+          pageDb === thisDb && String(app?.currentPage?.id) === targetPage) {
+
+        // Lade-Indikator sofort zeigen
+        if (app && expectPeerData) app.pageLoading = true;
+
+        // Relay-Fallback (schnell, ~100ms wenn Server läuft)
+        const relayData = await relayGetNode(pageId, 1000);
+
+        if (relayData?.strokes?.length > 0 &&
+            pageDb === thisDb && String(app?.currentPage?.id) === targetPage) {
+          // Relay hatte Strokes → laden + speichern
+          const strokes = relayData.strokes.map(s => ({
+            id: String(s.id), points: s.points || [], color: s.color, size: s.size, tool: s.tool || 'pen'
+          })).sort((a, b) => Number(a.id) - Number(b.id));
+          app.currentPage.strokes = strokes;
+          if (pageDb) pageDb.put({ type: 'pagedata', strokes: strokes.map(s => ({
+            id: s.id, points: s.points.map(p => ({ x: p.x, y: p.y })), color: s.color, size: s.size, tool: s.tool
+          })) }, 'strokes');
+          loaded = true;
+          if (app) app.pageLoading = false;
+          app.redrawStrokes();
+          console.log('[PageDb] Strokes vom Relay geladen:', strokes.length);
+        } else if (relayData && !relayData.strokes?.length) {
+          // Relay kennt die Seite aber hat keine Strokes → Seite ist wirklich leer
+          if (app) app.pageLoading = false;
+        } else {
+          // Relay nicht erreichbar → auf P2P warten (max 5s)
+          pendingPeerSync = setTimeout(() => { if (app) app.pageLoading = false; }, 5000);
+        }
+      }
+
       // Live-Stroke-Channel auf pageDb Room
       if (pageDb?.room) {
         strokeChannel = pageDb.room.channel("stroke-live");
         strokeChannel.on("message", (data) => {
-          if (!app?.currentPage) return;
+          // Stale-Guard: ignoriere Events nach Navigation zu anderer Seite
+          if (pageDb !== thisDb || String(app?.currentPage?.id) !== targetPage) return;
           if (data.action === 'add') {
             const stroke = data.stroke;
             if (!stroke || app.currentPage.strokes.find(s => String(s.id) === String(stroke.id))) return;
@@ -1820,7 +1906,9 @@
           app._peerSyncTimer = setTimeout(() => { app.peerSync = false; }, 1500);
         });
       }
-      console.log('[PageDb] Seite', pageId, 'geladen,', app?.currentPage?.strokes?.length || 0, 'Strokes');
+      // pageLoading nur ausschalten wenn Daten geladen wurden — sonst läuft P2P-Sync noch
+      if (loaded && app) app.pageLoading = false;
+      console.log('[PageDb] Seite', pageId, 'geladen,', app?.currentPage?.strokes?.length || 0, 'Strokes', loaded ? '' : '(warte auf P2P)');
     }
 
     // Stroke smoothing
@@ -2021,6 +2109,7 @@
       scannerActive: false,
       syncEnabled: true,
       syncing: false,
+      pageLoading: false,
       peerSync: false,
       _peerSyncTimer: null,
       zenMode: false,
@@ -2110,34 +2199,34 @@
         const savedSyncEnabled = await idbGet(roomKey + ':syncEnabled');
         if (typeof savedSyncEnabled === 'boolean') this.syncEnabled = savedSyncEnabled;
 
-        // GenosDB laden: metaDb für Notebook/Page-Metadaten (ohne Strokes)
+        // GenosDB laden: rootDb für Notebook/Page-Struktur
         syncEnabled = this.syncEnabled;
         try {
           const mod = await import('./libs/genosdb.js');
           gdbFactory = mod.gdb;
-          metaDb = await gdbFactory(roomKey, { rtc: syncEnabled, password: roomKey, saveDelay: 1000 });
+          rootDb = await gdbFactory(roomKey, { rtc: syncEnabled, password: roomKey, saveDelay: 0 });
         } catch (e) {
           console.error('[GenosDB] Init fehlgeschlagen:', e);
         }
 
-        this.selfPeerId = metaDb?.selfId;
+        this.selfPeerId = rootDb?.selfId;
         app = this; // Module-Level Referenz für openPageDb
 
         const isReconnect = !!sessionStorage.getItem('reconnect');
-        if (this.syncEnabled && metaDb?.room) {
-          const initialPeers = metaDb.room.getPeers();
+        if (this.syncEnabled && rootDb?.room) {
+          const initialPeers = rootDb.room.getPeers();
           if (initialPeers) {
             this.connectedPeers = initialPeers instanceof Map ? Array.from(initialPeers.keys()) : Object.keys(initialPeers);
             if (this.connectedPeers.length > 0) this.hadPeers = true;
           }
 
-          metaDb.room.on('peer:join', (peerId) => {
+          rootDb.room.on('peer:join', (peerId) => {
             if (!this.connectedPeers.includes(peerId)) {
               this.connectedPeers.push(peerId);
             }
             this.hadPeers = true;
           });
-          metaDb.room.on('peer:leave', (peerId) => {
+          rootDb.room.on('peer:leave', (peerId) => {
             this.connectedPeers = this.connectedPeers.filter(id => id !== peerId);
           });
 
@@ -2147,7 +2236,7 @@
             this.syncing = true;
             // Warte auf Peer-Join + zusätzlich 1.5s für Datenaustausch
             const waitForPeer = new Promise(resolve => {
-              metaDb.room.on('peer:join', () => {
+              rootDb.room.on('peer:join', () => {
                 // Nach Peer-Join: kurz warten damit db.map-Events eintreffen
                 setTimeout(resolve, 1500);
               });
@@ -2161,9 +2250,9 @@
           checkWebRTCCapability().then(ok => {
             if (!ok) this.webrtcWarning = true;
           });
-        } else if (metaDb?.room) {
+        } else if (rootDb?.room) {
           // Sync deaktiviert: Room explizit verlassen
-          metaDb.room.leave();
+          rootDb.room.leave();
         }
 
         // Gesammelte Graph-Nodes während der Init-Phase
@@ -2196,7 +2285,7 @@
           // Notebooks sammeln
           for (const [id, value] of Object.entries(nodes)) {
             if (!value || !value.type) {
-              if (value && Array.isArray(value.pages)) migrateBlob(id, value, metaDb);
+              if (value && Array.isArray(value.pages)) migrateBlob(id, value, rootDb);
               continue;
             }
             if (value.type === 'notebook') {
@@ -2204,7 +2293,7 @@
               notebooks.push({ id, name: value.name || 'Notizbuch', pages: [] });
             }
           }
-          // Pages sammeln (Strokes optional — metaDb hat keine, Relay hat welche)
+          // Pages sammeln (Strokes optional — rootDb hat keine, Relay hat welche)
           for (const [id, value] of Object.entries(nodes)) {
             if (value?.type === 'page') {
               const nbId = value.notebookId;
@@ -2213,7 +2302,8 @@
               })).sort((a, b) => Number(a.id) - Number(b.id));
               const page = {
                 id, strokes, background: value.background || 'grid',
-                order: value.order ?? 0, clearedAt: value.clearedAt || 0
+                order: value.order ?? 0, clearedAt: value.clearedAt || 0,
+                pageRoom: value.pageRoom || (roomKey + '_p_' + id)
               };
               if (nbPages[nbId]) nbPages[nbId].push(page);
             }
@@ -2235,7 +2325,7 @@
           }
         }
 
-        const { unsubscribe } = metaDb ? metaDb.map(function({ id, value, action }) {
+        const { unsubscribe } = rootDb ? rootDb.map(function({ id, value, action }) {
           if (id === 'settings') return;
 
           if (!dbInitialized) {
@@ -2252,11 +2342,21 @@
 
             if (value.type === 'notebook') {
               if (action === 'removed') {
+                const deletedNb = app.notebooks.find(nb => String(nb.id) === String(id));
+                // Pages des gelöschten Notebooks aus rootDb entfernen
+                if (deletedNb) {
+                  for (const page of (deletedNb.pages || [])) {
+                    if (rootDb) rootDb.remove(String(page.id));
+                  }
+                }
                 app.notebooks = app.notebooks.filter(nb => String(nb.id) !== String(id));
+                delete app.currentPages[String(id)];
                 if (String(id) === String(app.currentNotebookId) && app.notebooks.length > 0) {
                   app.currentNotebookId = app.notebooks[0].id;
+                  if (!(app.currentNotebookId in app.currentPages)) app.currentPages[app.currentNotebookId] = 0;
+                  const targetPageId = String(app.currentPage?.id);
                   app.drawBackground();
-                  app.redrawStrokes();
+                  openPageDb(targetPageId, true).then(() => { app.redrawStrokes(); app.fitToContent(); });
                 }
                 return;
               }
@@ -2286,10 +2386,12 @@
                   existing.background = value.background || existing.background;
                   existing.order = value.order ?? existing.order;
                   existing.clearedAt = Math.max(value.clearedAt || 0, existing.clearedAt || 0);
+                  if (value.pageRoom) existing.pageRoom = value.pageRoom;
                 } else {
                   nb.pages.push({
                     id: String(id), strokes: [], background: value.background || 'grid',
-                    order: value.order ?? nb.pages.length, clearedAt: value.clearedAt || 0
+                    order: value.order ?? nb.pages.length, clearedAt: value.clearedAt || 0,
+                    pageRoom: value.pageRoom || (roomKey + '_p_' + id)
                   });
                   nb.pages.sort((a, b) => a.order - b.order);
                 }
@@ -2304,9 +2406,9 @@
         await Promise.race([earlyPromise, new Promise(r => setTimeout(r, 600))]);
         let existingNotebooks = buildNotebooksFromNodes(initNodes, 'Phase1-GenosDB');
 
-        // Phase 2: Relay-first (Antwort in <100ms wenn Server läuft)
+        // Phase 2: Relay (immer wenn sync aktiv — merged in lokale Daten)
         const relayNodes = {};
-        if (existingNotebooks.length === 0 && this.syncEnabled && RELAY_URL) {
+        if (this.syncEnabled && RELAY_URL) {
           console.log('[Sync] Phase 2: Relay-Sync...');
           this.syncing = true;
           const self = this;
@@ -2341,14 +2443,38 @@
             }, 200);
             setTimeout(() => { clearInterval(check); finish(); }, 3000);
           });
-          // Relay-Nodes in Notebooks umwandeln
+          // Relay-Nodes in lokale Daten mergen
           if (Object.keys(relayNodes).length > 0) {
-            existingNotebooks = buildNotebooksFromNodes(relayNodes, 'Phase2-Relay');
-            // Auch in GenosDB speichern damit Delta-Sync funktioniert
-            for (const [id, data] of Object.entries(relayNodes)) {
-              if (metaDb) metaDb.put(data, id);
+            const relayNotebooks = buildNotebooksFromNodes(relayNodes, 'Phase2-Relay');
+            if (existingNotebooks.length === 0) {
+              existingNotebooks = relayNotebooks;
+            } else {
+              // Merge: fehlende Notebooks/Pages aus Relay ergänzen
+              for (const rnb of relayNotebooks) {
+                const local = existingNotebooks.find(nb => String(nb.id) === String(rnb.id));
+                if (!local) {
+                  existingNotebooks.push(rnb);
+                } else {
+                  for (const rp of rnb.pages) {
+                    if (!local.pages.find(p => String(p.id) === String(rp.id))) {
+                      local.pages.push(rp);
+                    }
+                  }
+                  local.pages.sort((a, b) => a.order - b.order);
+                }
+              }
             }
-            console.log('[Sync] Relay erfolgreich:', existingNotebooks.length, 'Notebooks');
+            // Nur NEUE Nodes (die lokal fehlen) in rootDb speichern, damit Delta-Sync sie verteilt.
+            // Bestehende Nodes NICHT überschreiben — lokaler Stand ist neuer als Relay-Snapshot.
+            // Strokes gehören in pageDb, nicht in rootDb.
+            for (const [id, data] of Object.entries(relayNodes)) {
+              if (rootDb && !initNodes[id]) {
+                const metaOnly = { ...data };
+                delete metaOnly.strokes;
+                rootDb.put(metaOnly, id);
+              }
+            }
+            console.log('[Sync] Relay erfolgreich:', relayNotebooks.length, 'Notebooks, merged in', existingNotebooks.length, 'lokale');
           }
         }
 
@@ -2410,6 +2536,25 @@
         }
         await this.loadSnapshots();
 
+        // Finale Merge: P2P-Nodes die nach Phase 1 eingetroffen sind (z.B. neue Seiten von Peers)
+        if (this.notebooks.length > 0) {
+          const lateNodes = buildNotebooksFromNodes(initNodes, 'Final-Merge');
+          for (const lnb of lateNodes) {
+            const existing = this.notebooks.find(nb => String(nb.id) === String(lnb.id));
+            if (!existing) {
+              this.notebooks.push(lnb);
+              if (!(String(lnb.id) in this.currentPages)) this.currentPages[String(lnb.id)] = 0;
+            } else {
+              for (const lp of lnb.pages) {
+                if (!existing.pages.find(p => String(p.id) === String(lp.id))) {
+                  existing.pages.push(lp);
+                }
+              }
+              existing.pages.sort((a, b) => a.order - b.order);
+            }
+          }
+        }
+
         dbInitialized = true;
 
         // Bei Reconnect: GenosDB Delta-Sync übernimmt automatisch (Graph-Nodes bereits gespeichert)
@@ -2427,18 +2572,26 @@
             () => {}
           );
 
-          // Kompletten Snapshot an Relay pushen (einmalig nach Init)
+          // Snapshot an Relay pushen (einmalig nach Init)
+          // Metadaten für alle Seiten, Strokes nur für die aktuelle Seite (verhindert Überschreiben mit leeren Strokes)
+          const currentPageId = String(this.currentPage?.id || '');
           const pushSnapshotToRelay = () => {
             for (const nb of this.notebooks) {
               relaySend({ type: 'node-put', id: String(nb.id), data: { type: 'notebook', name: nb.name } });
               for (const page of (nb.pages || [])) {
-                const strokes = (page.strokes || []).map(s => ({
-                  id: String(s.id), points: s.points, color: s.color, size: s.size, tool: s.tool
-                }));
-                relaySend({ type: 'node-put', id: String(page.id), data: {
+                const pid = String(page.id);
+                const pgRoom = page.pageRoom || (roomKey + '_p_' + pid);
+                const data = {
                   type: 'page', notebookId: String(nb.id), background: page.background,
-                  order: page.order ?? 0, clearedAt: page.clearedAt || 0, strokes
-                }});
+                  order: page.order ?? 0, clearedAt: page.clearedAt || 0, pageRoom: pgRoom
+                };
+                // Strokes nur für aktuelle Seite (die einzige mit geladenen Strokes)
+                if (pid === currentPageId && page.strokes?.length > 0) {
+                  data.strokes = page.strokes.map(s => ({
+                    id: String(s.id), points: s.points, color: s.color, size: s.size, tool: s.tool
+                  }));
+                }
+                relaySend({ type: 'node-put', id: pid, data });
               }
             }
             relayPushNav(this.currentNotebookId, { ...this.currentPages });
@@ -2616,10 +2769,10 @@
           }
         }
         // Tombstones für Notebooks die im Snapshot nicht mehr existieren (Sync an Peers)
-        if (metaDb) {
+        if (rootDb) {
           for (const oldId of oldIds) {
             if (!newIds.has(oldId)) {
-              await metaDb.put({ _deleted: true, id: oldId }, oldId);
+              await rootDb.put({ _deleted: true, id: oldId }, oldId);
             }
           }
         }
@@ -2649,10 +2802,9 @@
         this.currentPages[nbId] = 0;
 
         // Graph-Nodes erstellen
-        if (metaDb) {
-          metaDb.put({ type: 'notebook', name }, nbId);
-          metaDb.put({ type: 'page', notebookId: nbId, background: 'grid', order: 0 }, pageId);
-          metaDb.link(nbId, pageId);
+        if (rootDb) {
+          rootDb.put({ type: 'notebook', name }, nbId);
+          rootDb.put({ type: 'page', notebookId: nbId, background: 'grid', order: 0, pageRoom: roomKey + '_p_' + pageId }, pageId);
         }
       },
 
@@ -2952,17 +3104,17 @@
           };
           this.currentNotebook.pages.push(newPage);
 
-          // Graph-Node erstellen + verlinken
-          if (metaDb) {
-            metaDb.put({ type: 'page', notebookId: nbId, background: newPage.background, order: nextIndex }, pageId);
-            metaDb.link(nbId, pageId);
+          // Graph-Node erstellen
+          const pageRoom = roomKey + '_p_' + pageId;
+          if (rootDb) {
+            rootDb.put({ type: 'page', notebookId: nbId, background: newPage.background, order: nextIndex, pageRoom }, pageId);
           }
-          relaySend({ type: 'node-put', id: pageId, data: { type: 'page', notebookId: nbId, background: newPage.background, order: nextIndex } });
+          relaySend({ type: 'node-put', id: pageId, data: { type: 'page', notebookId: nbId, background: newPage.background, order: nextIndex, pageRoom } });
         }
         this.currentPages[nbId] = nextIndex;
         const targetPageId = String(this.currentPage?.id);
         this.drawBackground();
-        openPageDb(targetPageId).then(() => { this.redrawStrokes(); this.fitToContent(); });
+        openPageDb(targetPageId, !isNewPage).then(() => { this.redrawStrokes(); this.fitToContent(); });
         this._saveLocalSettings();
       },
 
@@ -2973,7 +3125,7 @@
         this.currentPages[nbId] = (this.currentPages[nbId] ?? 0) - 1;
         const targetPageId = String(this.currentPage?.id);
         this.drawBackground();
-        openPageDb(targetPageId).then(() => { this.redrawStrokes(); this.fitToContent(); });
+        openPageDb(targetPageId, true).then(() => { this.redrawStrokes(); this.fitToContent(); });
         this._saveLocalSettings();
       },
 
@@ -2983,13 +3135,11 @@
         if (!(id in this.currentPages)) this.currentPages[id] = 0;
         this.showNotebookMenu = false;
         const targetPageId = String(this.currentPage?.id);
-        setTimeout(() => {
-          this.drawBackground();
-          openPageDb(targetPageId).then(() => { this.redrawStrokes(); this.fitToContent(); });
-        }, 0);
+        this.drawBackground();
+        openPageDb(targetPageId, true).then(() => { this.redrawStrokes(); this.fitToContent(); });
         this._saveLocalSettings();
       },
-      
+
       createNotebook() {
         const nbId = String(Date.now());
         const pageId = String(Date.now() + 1);
@@ -3004,18 +3154,18 @@
         this.showNotebookMenu = false;
 
         // Graph-Nodes erstellen
-        if (metaDb) {
-          metaDb.put({ type: 'notebook', name: newNb.name }, nbId);
-          metaDb.put({ type: 'page', notebookId: nbId, background: 'grid', order: 0 }, pageId);
-          metaDb.link(nbId, pageId);
+        const pageRoom = roomKey + '_p_' + pageId;
+        if (rootDb) {
+          rootDb.put({ type: 'notebook', name: newNb.name }, nbId);
+          rootDb.put({ type: 'page', notebookId: nbId, background: 'grid', order: 0, pageRoom }, pageId);
         }
         relaySend({ type: 'node-put', id: nbId, data: { type: 'notebook', name: newNb.name } });
-        relaySend({ type: 'node-put', id: pageId, data: { type: 'page', notebookId: nbId, background: 'grid', order: 0 } });
+        relaySend({ type: 'node-put', id: pageId, data: { type: 'page', notebookId: nbId, background: 'grid', order: 0, pageRoom } });
 
-        setTimeout(() => {
+        openPageDb(pageId).then(() => {
           this.drawBackground();
           this.redrawStrokes();
-        }, 0);
+        });
         this._saveLocalSettings();
       },
 
@@ -3038,12 +3188,12 @@
         this.currentNotebookId = nbId;
         this.currentPages[nbId] = 0;
         this.showNotebookMenu = false;
-        if (metaDb) {
-          metaDb.put({ type: 'notebook', name: newNb.name }, nbId);
-          metaDb.put({ type: 'page', notebookId: nbId, background: 'grid', order: 0 }, pageId);
-          metaDb.link(nbId, pageId);
+        const pageRoom = roomKey + '_p_' + pageId;
+        if (rootDb) {
+          rootDb.put({ type: 'notebook', name: newNb.name }, nbId);
+          rootDb.put({ type: 'page', notebookId: nbId, background: 'grid', order: 0, pageRoom }, pageId);
         }
-        setTimeout(() => { this.drawBackground(); this.redrawStrokes(); this.fitToContent(); }, 0);
+        openPageDb(pageId).then(() => { this.drawBackground(); this.redrawStrokes(); this.fitToContent(); });
         this._saveLocalSettings();
       },
 
@@ -3051,13 +3201,15 @@
         if (this.notebooks.length <= 1) return;
         const nb = this.notebooks.find(n => String(n.id) === String(id));
 
-        // Pages + Notebook entfernen
+        // Pages + Notebook aus rootDb und Relay entfernen
         if (nb) {
           for (const page of (nb.pages || [])) {
-            if (metaDb) metaDb.remove(String(page.id));
+            const pid = String(page.id);
+            if (rootDb) rootDb.remove(pid);
+            relaySend({ type: 'node-remove', id: pid });
           }
         }
-        if (metaDb) metaDb.remove(String(id));
+        if (rootDb) rootDb.remove(String(id));
         relaySend({ type: 'node-remove', id: String(id) });
 
         this.notebooks = this.notebooks.filter(nb => nb.id !== id);
@@ -3067,10 +3219,9 @@
           if (!(this.currentNotebookId in this.currentPages)) {
             this.currentPages[this.currentNotebookId] = 0;
           }
-          setTimeout(() => {
-            this.drawBackground();
-            this.redrawStrokes();
-          }, 0);
+          const targetPageId = String(this.currentPage?.id);
+          this.drawBackground();
+          openPageDb(targetPageId, true).then(() => { this.redrawStrokes(); this.fitToContent(); });
         }
         this._saveLocalSettings();
       },
@@ -3253,7 +3404,7 @@
         const nbId = String(this.currentNotebookId);
         this.currentNotebook.name = name;
         this.editingName = false;
-        if (metaDb) metaDb.put({ type: 'notebook', name }, nbId);
+        if (rootDb) rootDb.put({ type: 'notebook', name }, nbId);
         relaySend({ type: 'node-put', id: nbId, data: { type: 'notebook', name } });
       },
       
@@ -3338,6 +3489,9 @@
       
       startDrawing(e) {
         e.preventDefault();
+
+        // Während pageLoading: Zeichnen blockieren (Sync läuft, Strokes würden überschrieben)
+        if (this.pageLoading) return;
 
         // Zoom-Move-Modus (Schloss offen): Touch → Panning/Pinch, Zeichnen komplett gesperrt
         if (this.hasTouchscreen && !this.zoomLocked) {
@@ -3608,7 +3762,7 @@
         this.isDrawing = false;
         this.activePointerId = null;
 
-        // Keine deferred Page-Updates nötig — metaDb hat keine Strokes, pageDb hat eigenen Channel
+        // Keine deferred Page-Updates nötig — rootDb hat nur Metadaten, pageDb hat eigenen Channel
         this.activePointerType = null;
         
         if (this.currentPoints.length > 0 && this.currentPage) {
