@@ -885,26 +885,48 @@ async function startP2P() {
       console.log('[P2P] Full-Sync von', peerId, ':', payload.notebooks?.length, 'Notebooks');
       await applyFullSync(payload);
 
-      // Leeres Default-Notebook entfernen wenn ein gleichnamiges vom Peer kam
-      // (passiert bei Cache-Clear + Neuverbindung)
+      // Duplikat-Notebooks entfernen: gleicher Name, verschiedene ID → ältere behalten (niedrigere ID = früher erstellt)
       if (payload.notebooks?.length > 0) {
-        const remoteNames = new Set(payload.notebooks.map(n => n.name));
-        const toRemove = state.notebooks.filter(n =>
-          remoteNames.has(n.name) &&
-          !payload.notebooks.some(rn => rn.id === n.id) &&
-          n.pages.every(p => !p.strokes || p.strokes.length === 0)
-        );
-        for (const nb of toRemove) {
-          state.notebooks = state.notebooks.filter(n => n.id !== nb.id);
-          delete state.currentPages[nb.id];
-          deleteNotebookData(nb.id);
+        const byName = {};
+        for (const nb of state.notebooks) {
+          if (!byName[nb.name]) byName[nb.name] = [];
+          byName[nb.name].push(nb);
+        }
+        const toRemove = [];
+        for (const [name, nbs] of Object.entries(byName)) {
+          if (nbs.length <= 1) continue;
+          // Ältestes behalten (niedrigste ID = frühester Timestamp)
+          nbs.sort((a, b) => String(a.id) < String(b.id) ? -1 : 1);
+          // Strokes des Ältesten mit den Duplikaten mergen, dann Duplikate löschen
+          const keeper = nbs[0];
+          for (let i = 1; i < nbs.length; i++) {
+            const dup = nbs[i];
+            // Strokes der Duplikat-Pages in den Keeper mergen
+            for (const dp of dup.pages) {
+              const kp = keeper.pages.find(p => p.id === dp.id);
+              if (!kp && dp.strokes?.length > 0) {
+                keeper.pages.push(dp);
+              } else if (kp) {
+                const existing = new Map(kp.strokes.map(s => [s.id, s]));
+                for (const s of (dp.strokes || [])) { if (!existing.has(s.id)) existing.set(s.id, s); }
+                kp.strokes = [...existing.values()].sort((a, b) => Number(a.id) - Number(b.id));
+              }
+            }
+            toRemove.push(dup.id);
+          }
         }
         if (toRemove.length > 0) {
+          for (const id of toRemove) {
+            state.notebooks = state.notebooks.filter(n => n.id !== id);
+            delete state.currentPages[id];
+            deleteNotebookData(id);
+          }
           if (!state.notebooks.find(n => n.id === state.currentNotebookId)) {
             state.currentNotebookId = state.notebooks[0]?.id;
             state.currentPages[state.currentNotebookId] = 0;
           }
           await saveAppMeta();
+          console.log('[P2P] Duplikat-Notebooks entfernt:', toRemove.length);
         }
       }
 
@@ -1122,6 +1144,12 @@ function copyShareLink() {
 
 async function saveLocalSettings() {
   if (!settingsDB) return;
+  try {
+    // Prüfen ob DB noch offen ist
+    settingsDB.transaction('settings', 'readonly');
+  } catch {
+    try { settingsDB = await openSettingsDB(); } catch { return; }
+  }
   await settingsPut(roomKey + ':currentNotebookId', state.currentNotebookId);
   await settingsPut(roomKey + ':pagePositions', { ...state.currentPages });
   await settingsPut(roomKey + ':color', state.color);
