@@ -835,21 +835,8 @@ async function startP2P() {
       if (!page) return;
       if (page.strokes.some(s => s.id === stroke.id)) return;
       page.strokes.push(stroke);
-      if (notebookId === state.currentNotebookId && pageId === currentPage()?.id && staticCtx) {
-        staticCtx.save();
-        staticCtx.translate(state.viewX, state.viewY);
-        staticCtx.scale(state.viewScale, state.viewScale);
-        drawStrokeToCanvas(staticCtx, stroke);
-        staticCtx.restore();
-        if (strokeCacheCanvas) {
-          const cCtx = strokeCacheCanvas.getContext('2d');
-          cCtx.setTransform(DPR, 0, 0, DPR, 0, 0);
-          cCtx.save();
-          cCtx.translate(cacheViewX, cacheViewY);
-          cCtx.scale(cacheViewScale, cacheViewScale);
-          drawStrokeToCanvas(cCtx, stroke);
-          cCtx.restore();
-        }
+      if (notebookId === state.currentNotebookId && pageId === currentPage()?.id) {
+        redrawStrokes();
       }
       saveCurrentPage();
     },
@@ -1304,24 +1291,7 @@ function onPointerUp(e) {
   };
 
   page.strokes.push(newStroke);
-
-  // Inkrementell auf staticCanvas + Cache zeichnen
-  if (staticCtx) {
-    staticCtx.save();
-    staticCtx.translate(state.viewX, state.viewY);
-    staticCtx.scale(state.viewScale, state.viewScale);
-    drawStrokeToCanvas(staticCtx, newStroke);
-    staticCtx.restore();
-  }
-  if (strokeCacheCanvas) {
-    const cCtx = strokeCacheCanvas.getContext('2d');
-    cCtx.setTransform(DPR, 0, 0, DPR, 0, 0);
-    cCtx.save();
-    cCtx.translate(cacheViewX, cacheViewY);
-    cCtx.scale(cacheViewScale, cacheViewScale);
-    drawStrokeToCanvas(cCtx, newStroke);
-    cCtx.restore();
-  }
+  redrawStrokes();
 
   saveCurrentPage();
   p2pSend('stroke', { notebookId: state.currentNotebookId, pageId: page.id, stroke: newStroke });
