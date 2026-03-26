@@ -336,7 +336,7 @@ function redrawStrokes() {
 
   const cacheCtx = strokeCacheCanvas.getContext('2d');
   cacheCtx.setTransform(DPR, 0, 0, DPR, 0, 0);
-  cacheCtx.clearRect(0, 0, w, h);
+  cacheCtx.clearRect(0, 0, w / DPR, h / DPR);
 
   const strokes = currentPage()?.strokes || [];
   cacheCtx.save();
@@ -351,11 +351,12 @@ function redrawStrokes() {
   cacheViewY = state.viewY;
   cacheViewScale = state.viewScale;
 
-  // Auf sichtbares Canvas kopieren
+  // Auf sichtbares Canvas kopieren (1:1 Pixel)
   const ctx = staticCtx;
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, w, h);
   ctx.drawImage(strokeCacheCanvas, 0, 0);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
 }
 
 /**
