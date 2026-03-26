@@ -1472,8 +1472,9 @@ async function init() {
   const page = currentPage();
   if (page) await loadPage(state.currentNotebookId, page.id, page);
 
-  // 10. Canvas aufsetzen
+  // 10. Canvas aufsetzen (mit kurzer Verzögerung damit Layout stabil ist)
   setupCanvases();
+  requestAnimationFrame(() => setupCanvases());
 
   // 11. Event-Listener
   setupEvents();
