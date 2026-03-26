@@ -4,7 +4,8 @@
 
 import { initStorage, savePageData, loadPageData, deletePageData, deleteNotebookData, saveMeta, loadMeta, clearAll } from './storage.js';
 import { roundPoints, drawStrokeToCanvas, drawBackground } from './canvas.js';
-import { initP2P, broadcastStroke, broadcastUndo, broadcastClear, sendFullSync, leaveRoom } from './p2p-sync.js';
+import { initP2P, send as p2pSend, leaveRoom } from './p2p-sync.js';
+import { deriveKeyFromPassphrase, exportKey } from './encryption.js';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -51,6 +52,8 @@ const state = {
   // Sync
   syncEnabled: true,
   connectedPeers: [],
+  /** @type {string|null} Hex-Hash des MasterKeys — bestimmt Room-ID */
+  masterKeyHash: null,
 
   // UI
   sidebarOpen: true,
@@ -387,12 +390,10 @@ async function nextPage() {
   if (nextIdx >= nb.pages.length) {
     // Neue Seite erstellen
     const pageId = String(Date.now());
-    nb.pages.push({
-      id: pageId, strokes: [],
-      background: currentPage()?.background || 'grid',
-      order: nextIdx
-    });
+    const bg = currentPage()?.background || 'grid';
+    nb.pages.push({ id: pageId, strokes: [], background: bg, order: nextIdx });
     await saveAppMeta();
+    p2pSend('page-created', { notebookId: state.currentNotebookId, page: { id: pageId, background: bg, order: nextIdx } });
   }
 
   await goToPage(nextIdx);
@@ -425,13 +426,15 @@ async function selectNotebook(nbId) {
 async function createNotebook() {
   const nbId = String(Date.now());
   const pageId = String(Date.now() + 1);
+  const name = 'Neues Notizbuch';
   state.notebooks.push({
-    id: nbId,
-    name: 'Neues Notizbuch',
+    id: nbId, name,
     pages: [{ id: pageId, strokes: [], background: 'grid', order: 0 }]
   });
   state.currentPages[nbId] = 0;
   await saveAppMeta();
+  p2pSend('nb-created', { id: nbId, name });
+  p2pSend('page-created', { notebookId: nbId, page: { id: pageId, background: 'grid', order: 0 } });
   await selectNotebook(nbId);
 }
 
@@ -449,6 +452,7 @@ async function deleteNotebook(nbId) {
     state.currentPages[state.currentNotebookId] = 0;
   }
   await saveAppMeta();
+  p2pSend('nb-deleted', { id: nbId });
   const page = currentPage();
   if (page) await loadPage(state.currentNotebookId, page.id, page);
   redrawBackground();
@@ -464,8 +468,10 @@ async function deleteNotebook(nbId) {
  */
 async function renameNotebook(nbId, name) {
   const nb = state.notebooks.find(n => n.id === nbId);
-  if (nb) nb.name = name.trim() || nb.name;
+  if (!nb) return;
+  nb.name = name.trim() || nb.name;
   await saveAppMeta();
+  p2pSend('nb-renamed', { id: nbId, name: nb.name });
   renderUI();
 }
 
@@ -517,7 +523,7 @@ function undo() {
   page.strokes.pop();
   redrawStrokes();
   saveCurrentPage();
-  broadcastUndo({ pageId: page.id });
+  p2pSend('undo', { notebookId: state.currentNotebookId, pageId: page.id });
 }
 
 function clearPage() {
@@ -526,7 +532,7 @@ function clearPage() {
   page.strokes = [];
   redrawStrokes();
   saveCurrentPage();
-  broadcastClear({ pageId: page.id });
+  p2pSend('clear', { notebookId: state.currentNotebookId, pageId: page.id });
 }
 
 // ─── Tool Selection ─────────────────────────────────────────────────────────
@@ -651,22 +657,185 @@ function startRename() {
   input.select();
 }
 
+// ─── MasterKey Management ───────────────────────────────────────────────────
+
+/** @type {Uint8Array|null} Raw MasterKey bytes (32 bytes) */
+let masterKeyRaw = null;
+
+/** PBKDF2-Salt — fest pro App (kein Geheimnis, muss nur konsistent sein) */
+const MASTER_SALT = new Uint8Array([78,111,116,105,122,98,117,99,104,45,118,50,45,115,97,108,116]);
+
+/**
+ * MasterKey aus Passphrase ableiten.
+ * @param {string} passphrase
+ * @returns {Promise<{keyHash: string, keyRaw: Uint8Array}>}
+ */
+async function deriveMasterKey(passphrase) {
+  const key = await deriveKeyFromPassphrase(passphrase, MASTER_SALT);
+  const raw = await exportKey(key);
+  // Hash für Room-ID (erste 16 bytes als Hex)
+  const hashBytes = new Uint8Array(await crypto.subtle.digest('SHA-256', raw));
+  const keyHash = Array.from(hashBytes.slice(0, 16)).map(b => b.toString(16).padStart(2, '0')).join('');
+  return { keyHash, keyRaw: new Uint8Array(raw) };
+}
+
+/**
+ * Passphrase-Dialog anzeigen und MasterKey ableiten.
+ * Gibt den Key-Hash zurück (= Room-ID).
+ * @returns {Promise<string>} keyHash
+ */
+function showPassphraseDialog() {
+  return new Promise(resolve => {
+    const overlay = document.getElementById('passphrase-modal');
+    const input = document.getElementById('passphrase-input');
+    const btn = document.getElementById('passphrase-ok');
+    const error = document.getElementById('passphrase-error');
+    if (!overlay || !input || !btn) {
+      // Fallback: prompt
+      const p = prompt('Passphrase eingeben (leer = neues Notizbuch):') || '';
+      resolve(p);
+      return;
+    }
+    overlay.classList.remove('hidden');
+    input.value = '';
+    input.focus();
+    error.textContent = '';
+
+    const submit = async () => {
+      const passphrase = input.value.trim();
+      if (!passphrase) {
+        error.textContent = 'Bitte Passphrase eingeben';
+        return;
+      }
+      btn.disabled = true;
+      btn.textContent = 'Ableiten...';
+      try {
+        const { keyHash, keyRaw } = await deriveMasterKey(passphrase);
+        masterKeyRaw = keyRaw;
+        state.masterKeyHash = keyHash;
+        localStorage.setItem('notizbuch:masterKeyHash', keyHash);
+        localStorage.setItem('notizbuch:masterKeyRaw', JSON.stringify(Array.from(keyRaw)));
+        overlay.classList.add('hidden');
+        resolve(keyHash);
+      } catch (e) {
+        error.textContent = 'Fehler: ' + e.message;
+        btn.disabled = false;
+        btn.textContent = 'Verbinden';
+      }
+    };
+
+    btn.onclick = submit;
+    input.onkeydown = (e) => { if (e.key === 'Enter') submit(); };
+  });
+}
+
+/**
+ * Gespeicherten MasterKey laden oder Passphrase-Dialog zeigen.
+ * @returns {Promise<string>} roomKey (= masterKeyHash)
+ */
+async function initMasterKey() {
+  // Gespeicherten Key prüfen
+  const savedHash = localStorage.getItem('notizbuch:masterKeyHash');
+  const savedRaw = localStorage.getItem('notizbuch:masterKeyRaw');
+  if (savedHash && savedRaw) {
+    try {
+      masterKeyRaw = new Uint8Array(JSON.parse(savedRaw));
+      state.masterKeyHash = savedHash;
+      return savedHash;
+    } catch {}
+  }
+  // Kein gespeicherter Key → Dialog
+  return showPassphraseDialog();
+}
+
 // ─── P2P Sync Integration ───────────────────────────────────────────────────
 
-/** P2P-Room für den aktuellen roomKey beitreten. */
+/**
+ * Kompletten App-State als Sync-Payload erstellen.
+ * @returns {Object}
+ */
+function buildFullSyncPayload() {
+  return {
+    notebooks: state.notebooks.map(nb => ({
+      id: nb.id,
+      name: nb.name,
+      pages: nb.pages.map(p => ({
+        id: p.id,
+        background: p.background || 'grid',
+        order: p.order ?? 0,
+        strokes: (p.strokes || []).map(s => ({
+          id: s.id, points: s.points, color: s.color, size: s.size, tool: s.tool
+        }))
+      }))
+    }))
+  };
+}
+
+/**
+ * Full-Sync Payload in lokalen State mergen (Union-Merge).
+ * @param {Object} payload - { notebooks: [...] }
+ */
+async function applyFullSync(payload) {
+  if (!payload?.notebooks?.length) return;
+
+  for (const remoteNb of payload.notebooks) {
+    const localNb = state.notebooks.find(n => n.id === remoteNb.id);
+    if (!localNb) {
+      // Neues Notebook übernehmen
+      state.notebooks.push({
+        id: remoteNb.id, name: remoteNb.name,
+        pages: remoteNb.pages.map(p => ({
+          id: p.id, background: p.background || 'grid', order: p.order ?? 0,
+          strokes: p.strokes || []
+        }))
+      });
+      if (!(remoteNb.id in state.currentPages)) state.currentPages[remoteNb.id] = 0;
+    } else {
+      // Bestehendes Notebook: Pages mergen
+      for (const rp of remoteNb.pages) {
+        const localPage = localNb.pages.find(p => p.id === rp.id);
+        if (!localPage) {
+          localNb.pages.push({
+            id: rp.id, background: rp.background || 'grid', order: rp.order ?? 0,
+            strokes: rp.strokes || []
+          });
+        } else {
+          // Strokes Union-Merge by ID
+          const existing = new Map(localPage.strokes.map(s => [s.id, s]));
+          for (const s of (rp.strokes || [])) {
+            if (!existing.has(s.id)) existing.set(s.id, s);
+          }
+          localPage.strokes = [...existing.values()].sort((a, b) => Number(a.id) - Number(b.id));
+        }
+      }
+      localNb.pages.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    }
+  }
+
+  // Sortieren und persistieren
+  state.notebooks.sort((a, b) => String(a.id) < String(b.id) ? -1 : 1);
+  await saveAppMeta();
+  // Alle Pages speichern
+  for (const nb of state.notebooks) {
+    for (const p of nb.pages) {
+      if (p.strokes?.length > 0) {
+        await savePageData(nb.id, p.id, serializeStrokes(p.strokes));
+      }
+    }
+  }
+}
+
+/** P2P-Room beitreten und alle Callbacks verdrahten. */
 async function startP2P() {
   await initP2P(roomKey, {
-    onStroke({ pageId, stroke }, peerId) {
-      // Stroke von Peer: auf richtige Seite einfügen
-      const nb = currentNotebook();
+    onStroke({ notebookId, pageId, stroke }, peerId) {
+      const nb = state.notebooks.find(n => n.id === notebookId);
       if (!nb) return;
       const page = nb.pages.find(p => p.id === pageId);
       if (!page) return;
-      // Deduplizieren
       if (page.strokes.some(s => s.id === stroke.id)) return;
       page.strokes.push(stroke);
-      // Wenn aktuelle Seite → inkrementell auf Canvas zeichnen
-      if (pageId === currentPage()?.id && staticCtx) {
+      if (notebookId === state.currentNotebookId && pageId === currentPage()?.id && staticCtx) {
         staticCtx.save();
         staticCtx.translate(state.viewX, state.viewY);
         staticCtx.scale(state.viewScale, state.viewScale);
@@ -685,51 +854,98 @@ async function startP2P() {
       saveCurrentPage();
     },
 
-    onUndo({ pageId }, peerId) {
-      const nb = currentNotebook();
-      if (!nb) return;
-      const page = nb.pages.find(p => p.id === pageId);
+    onUndo({ notebookId, pageId }, peerId) {
+      const nb = state.notebooks.find(n => n.id === notebookId);
+      const page = nb?.pages.find(p => p.id === pageId);
       if (!page || !page.strokes.length) return;
       page.strokes.pop();
-      if (pageId === currentPage()?.id) redrawStrokes();
+      if (notebookId === state.currentNotebookId && pageId === currentPage()?.id) redrawStrokes();
       saveCurrentPage();
     },
 
-    onClear({ pageId }, peerId) {
-      const nb = currentNotebook();
-      if (!nb) return;
-      const page = nb.pages.find(p => p.id === pageId);
+    onClear({ notebookId, pageId }, peerId) {
+      const nb = state.notebooks.find(n => n.id === notebookId);
+      const page = nb?.pages.find(p => p.id === pageId);
       if (!page) return;
       page.strokes = [];
-      if (pageId === currentPage()?.id) redrawStrokes();
+      if (notebookId === state.currentNotebookId && pageId === currentPage()?.id) redrawStrokes();
       saveCurrentPage();
     },
 
-    onFullSync({ pageId, strokes }, peerId) {
-      const nb = currentNotebook();
-      if (!nb) return;
-      const page = nb.pages.find(p => p.id === pageId);
-      if (!page) return;
-      // Union-Merge by ID
-      const existing = new Map(page.strokes.map(s => [s.id, s]));
-      for (const s of strokes) {
-        if (!existing.has(s.id)) existing.set(s.id, s);
+    onFullSync(payload, peerId) {
+      console.log('[P2P] Full-Sync von', peerId, ':', payload.notebooks?.length, 'Notebooks');
+      applyFullSync(payload).then(() => {
+        // Aktuelle Seite neu laden falls sich Daten geändert haben
+        if (currentPage()) {
+          loadPage(state.currentNotebookId, currentPage().id, currentPage()).then(() => {
+            redrawStrokes();
+            renderUI();
+          });
+        } else {
+          renderUI();
+        }
+      });
+    },
+
+    onNbCreated({ id, name }, peerId) {
+      if (state.notebooks.find(n => n.id === id)) return;
+      state.notebooks.push({ id, name, pages: [] });
+      state.currentPages[id] = 0;
+      saveAppMeta();
+      renderUI();
+      console.log('[P2P] Notebook erstellt von Peer:', name);
+    },
+
+    onNbDeleted({ id }, peerId) {
+      state.notebooks = state.notebooks.filter(n => n.id !== id);
+      delete state.currentPages[id];
+      if (state.currentNotebookId === id && state.notebooks.length > 0) {
+        state.currentNotebookId = state.notebooks[0].id;
+        state.currentPages[state.currentNotebookId] = 0;
+        const page = currentPage();
+        if (page) loadPage(state.currentNotebookId, page.id, page).then(() => {
+          redrawBackground(); redrawStrokes();
+        });
       }
-      page.strokes = [...existing.values()].sort((a, b) => Number(a.id) - Number(b.id));
-      if (pageId === currentPage()?.id) redrawStrokes();
-      saveCurrentPage();
-      console.log('[P2P] Full-Sync von', peerId, ':', strokes.length, 'Strokes für Seite', pageId);
+      deleteNotebookData(id);
+      saveAppMeta();
+      renderUI();
+    },
+
+    onNbRenamed({ id, name }, peerId) {
+      const nb = state.notebooks.find(n => n.id === id);
+      if (nb) nb.name = name;
+      saveAppMeta();
+      renderUI();
+    },
+
+    onPageCreated({ notebookId, page }, peerId) {
+      const nb = state.notebooks.find(n => n.id === notebookId);
+      if (!nb) return;
+      if (nb.pages.find(p => p.id === page.id)) return;
+      nb.pages.push({ id: page.id, strokes: [], background: page.background || 'grid', order: page.order ?? nb.pages.length });
+      nb.pages.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+      saveAppMeta();
+      renderUI();
+    },
+
+    onPageDeleted({ notebookId, pageId }, peerId) {
+      const nb = state.notebooks.find(n => n.id === notebookId);
+      if (!nb) return;
+      nb.pages = nb.pages.filter(p => p.id !== pageId);
+      deletePageData(notebookId, pageId);
+      saveAppMeta();
+      if (notebookId === state.currentNotebookId) { redrawStrokes(); renderUI(); }
     },
 
     onPeerJoin(peerId) {
-      if (!state.connectedPeers.includes(peerId)) {
-        state.connectedPeers.push(peerId);
-      }
+      if (!state.connectedPeers.includes(peerId)) state.connectedPeers.push(peerId);
       renderUI();
-      // Full-Sync an neuen Peer: aktuelle Seite senden
-      const page = currentPage();
-      if (page && page.strokes.length > 0) {
-        sendFullSync({ pageId: page.id, strokes: page.strokes }, peerId);
+      // Full-Sync an neuen Peer senden
+      const payload = buildFullSyncPayload();
+      if (payload.notebooks.length > 0) {
+        p2pSend('full-sync', payload, peerId);
+        console.log('[P2P] Full-Sync gesendet an', peerId);
       }
     },
 
@@ -1108,7 +1324,7 @@ function onPointerUp(e) {
   }
 
   saveCurrentPage();
-  broadcastStroke({ pageId: page.id, stroke: newStroke });
+  p2pSend('stroke', { notebookId: state.currentNotebookId, pageId: page.id, stroke: newStroke });
   currentPoints = [];
   lastPoint = null;
 }
@@ -1214,19 +1430,9 @@ async function init() {
   // 2. Settings-DB öffnen
   settingsDB = await openSettingsDB();
 
-  // 3. Room-Key aus URL-Hash
-  roomKey = window.location.hash.slice(1);
-  if (!roomKey) {
-    const savedKey = localStorage.getItem('lastRoomKey');
-    if (savedKey) {
-      roomKey = savedKey;
-    } else {
-      roomKey = Array.from(crypto.getRandomValues(new Uint8Array(16)))
-        .map(b => b.toString(16).padStart(2, '0')).join('');
-    }
-    window.location.hash = roomKey;
-  }
-  localStorage.setItem('lastRoomKey', roomKey);
+  // 3. MasterKey → Room-Key ableiten
+  roomKey = await initMasterKey();
+  window.location.hash = roomKey;
 
   // 4. Lokale Settings laden
   const savedCurrentId = await loadLocalSettings();
@@ -1275,9 +1481,9 @@ async function init() {
   // 12. UI rendern
   renderUI();
 
-  // 13. P2P-Sync starten
+  // 13. P2P-Sync starten (nicht awaiten — soll im Hintergrund verbinden)
   if (state.syncEnabled) {
-    startP2P();
+    startP2P().then(() => console.log('[App] P2P gestartet')).catch(e => console.error('[App] P2P Fehler:', e));
   }
 
   console.log('[App] Bereit.', state.notebooks.length, 'Notebooks');

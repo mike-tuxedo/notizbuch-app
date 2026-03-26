@@ -3,43 +3,33 @@
 // Datentransport via WebRTC DataChannel — direkte Peer-Verbindung.
 //
 // Actions:
-//   'stroke'     — Ein neuer Stroke (JSON-serialisiert)
-//   'undo'       — Letzter Stroke gelöscht
-//   'clear'      — Seite geleert
-//   'full-sync'  — Alle Strokes einer Seite (bei Peer-Join)
+//   'stroke'       — Ein neuer Stroke
+//   'undo'         — Letzter Stroke gelöscht
+//   'clear'        — Seite geleert
+//   'full-sync'    — Kompletter State (alle Notebooks, Pages, Strokes)
+//   'nb-created'   — Neues Notebook
+//   'nb-deleted'   — Notebook gelöscht
+//   'nb-renamed'   — Notebook umbenannt
+//   'page-created' — Neue Seite
+//   'page-deleted' — Seite gelöscht
 
 /** @type {string} App-ID für Trystero Room-Naming */
 const APP_ID = 'notizbuch-v2';
 
 let room = null;
-let _sendStroke = null;
-let _sendUndo = null;
-let _sendClear = null;
-let _sendFullSync = null;
-let _onStroke = null;
-let _onUndo = null;
-let _onClear = null;
-let _onFullSync = null;
-let _peerJoinCallback = null;
-let _peerLeaveCallback = null;
+let _actions = {};
 
 /**
- * P2P-Room für ein Notebook beitreten.
- * Room-ID = roomKey (URL-Hash), damit alle Peers im selben Raum sind.
- * @param {string} roomId - Room-ID (roomKey aus URL-Hash)
- * @param {Object} callbacks
- * @param {function(Object, string): void} callbacks.onStroke - Neuer Stroke von Peer
- * @param {function(Object, string): void} callbacks.onUndo - Undo von Peer
- * @param {function(Object, string): void} callbacks.onClear - Clear von Peer
- * @param {function(Object, string): void} callbacks.onFullSync - Full-Sync Antwort von Peer
- * @param {function(string): void} callbacks.onPeerJoin - Peer beigetreten
- * @param {function(string): void} callbacks.onPeerLeave - Peer gegangen
+ * P2P-Room beitreten.
+ * @param {string} roomId - Room-ID (z.B. Hash des MasterKeys)
+ * @param {Object} callbacks - Handler für eingehende Actions
+ * @returns {Promise<void>}
  */
 export async function initP2P(roomId, callbacks) {
-  // Vorherigen Room verlassen
   if (room) {
     try { room.leave(); } catch {}
     room = null;
+    _actions = {};
   }
 
   try {
@@ -50,29 +40,26 @@ export async function initP2P(roomId, callbacks) {
     return;
   }
 
-  // Actions registrieren
-  const [sendStroke, receiveStroke] = room.makeAction('stroke');
-  const [sendUndo, receiveUndo] = room.makeAction('undo');
-  const [sendClear, receiveClear] = room.makeAction('clear');
-  const [sendFullSync, receiveFullSync] = room.makeAction('full-sync');
+  // Alle Actions registrieren
+  const actionNames = [
+    'stroke', 'undo', 'clear', 'full-sync',
+    'nb-created', 'nb-deleted', 'nb-renamed',
+    'page-created', 'page-deleted'
+  ];
 
-  _sendStroke = sendStroke;
-  _sendUndo = sendUndo;
-  _sendClear = sendClear;
-  _sendFullSync = sendFullSync;
+  for (const name of actionNames) {
+    const [send, receive] = room.makeAction(name);
+    _actions[name] = send;
 
-  receiveStroke((data, peerId) => {
-    if (callbacks.onStroke) callbacks.onStroke(data, peerId);
-  });
-  receiveUndo((data, peerId) => {
-    if (callbacks.onUndo) callbacks.onUndo(data, peerId);
-  });
-  receiveClear((data, peerId) => {
-    if (callbacks.onClear) callbacks.onClear(data, peerId);
-  });
-  receiveFullSync((data, peerId) => {
-    if (callbacks.onFullSync) callbacks.onFullSync(data, peerId);
-  });
+    // Callback-Name: 'full-sync' → 'onFullSync', 'nb-created' → 'onNbCreated'
+    const cbName = 'on' + name.split('-').map((s, i) =>
+      s.charAt(0).toUpperCase() + s.slice(1)
+    ).join('');
+
+    receive((data, peerId) => {
+      if (callbacks[cbName]) callbacks[cbName](data, peerId);
+    });
+  }
 
   room.onPeerJoin(peerId => {
     console.log('[P2P] Peer joined:', peerId);
@@ -87,56 +74,35 @@ export async function initP2P(roomId, callbacks) {
 }
 
 /**
- * Neuen Stroke an alle Peers senden.
- * @param {Object} data - { pageId, stroke }
+ * Action an alle Peers (oder einen bestimmten) senden.
+ * @param {string} action - Action-Name
+ * @param {*} data - Daten
+ * @param {string} [peerId] - Nur an diesen Peer
  */
-export function broadcastStroke(data) {
-  if (_sendStroke) {
-    try { _sendStroke(data); } catch {}
+export function send(action, data, peerId) {
+  const fn = _actions[action];
+  if (!fn) {
+    console.warn('[P2P] Action nicht registriert:', action);
+    return;
+  }
+  try {
+    if (peerId) fn(data, peerId);
+    else fn(data);
+  } catch (e) {
+    console.error('[P2P] Senden fehlgeschlagen:', action, e);
   }
 }
 
-/**
- * Undo an alle Peers senden.
- * @param {Object} data - { pageId }
- */
-export function broadcastUndo(data) {
-  if (_sendUndo) {
-    try { _sendUndo(data); } catch {}
-  }
-}
-
-/**
- * Clear an alle Peers senden.
- * @param {Object} data - { pageId }
- */
-export function broadcastClear(data) {
-  if (_sendClear) {
-    try { _sendClear(data); } catch {}
-  }
-}
-
-/**
- * Full-Sync (alle Strokes einer Seite) an einen bestimmten Peer oder alle senden.
- * @param {Object} data - { pageId, strokes }
- * @param {string} [peerId] - Wenn gesetzt, nur an diesen Peer
- */
-export function sendFullSync(data, peerId) {
-  if (_sendFullSync) {
-    try { _sendFullSync(data, peerId); } catch {}
-  }
-}
-
-/**
- * Aktuellen Room verlassen.
- */
+/** Aktuellen Room verlassen. */
 export function leaveRoom() {
   if (room) {
     try { room.leave(); } catch {}
     room = null;
-    _sendStroke = null;
-    _sendUndo = null;
-    _sendClear = null;
-    _sendFullSync = null;
+    _actions = {};
   }
+}
+
+/** Prüfen ob mit Peers verbunden. */
+export function isConnected() {
+  return room !== null;
 }

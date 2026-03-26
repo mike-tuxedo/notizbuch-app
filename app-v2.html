@@ -453,6 +453,23 @@
     </main>
   </div>
 
+  <!-- Passphrase Modal -->
+  <div class="modal-overlay" id="passphrase-modal">
+    <div class="modal" style="width: 340px;">
+      <div class="modal-header">
+        <h2>Notizbuch verbinden</h2>
+      </div>
+      <div class="modal-body" style="gap: 12px;">
+        <p class="modal-hint" style="text-align: left; width: 100%;">
+          Gib eine Passphrase ein. Alle Geräte mit der gleichen Passphrase synchronisieren automatisch.
+        </p>
+        <input class="link-input" type="text" id="passphrase-input" placeholder="Passphrase eingeben..." style="width: 100%; font-size: 14px; padding: 10px 12px;">
+        <span id="passphrase-error" style="color: var(--danger); font-size: 12px; min-height: 16px;"></span>
+        <button class="copy-btn" id="passphrase-ok" style="width: 100%; text-align: center;">Verbinden</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Sidebar Overlay (mobil) -->
   <div class="sidebar-overlay" id="sidebar-overlay"></div>
 
