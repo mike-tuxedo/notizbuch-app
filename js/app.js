@@ -1670,9 +1670,12 @@ function renderUI() {
     });
   }
 
-  // Notebook-Name in Toolbar
+  // Notebook-Name in Toolbar + Pagebar (mobil)
+  const nbName = currentNotebook()?.name || '';
   const titleEl = document.getElementById('notebook-title');
-  if (titleEl) titleEl.textContent = currentNotebook()?.name || '';
+  if (titleEl) titleEl.textContent = nbName;
+  const pagebarTitle = document.getElementById('pagebar-title');
+  if (pagebarTitle) pagebarTitle.textContent = nbName;
 
   // Page-Indicator
   const pageIndicator = document.getElementById('page-indicator');
@@ -1862,8 +1865,14 @@ function setupEvents() {
   // Bei Tab-Fokus: P2P-Verbindung prüfen und ggf. neu verbinden
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && state.syncEnabled) {
-      console.log('[App] Tab aktiv — prüfe P2P-Verbindung');
-      startP2P().catch(e => console.error('[App] P2P Reconnect Fehler:', e));
+      console.log('[App] Tab aktiv — P2P Reconnect + Full-Sync');
+      startP2P().then(() => {
+        // Nach Reconnect: Full-Sync an alle Peers (lokale Änderungen die im Hintergrund passiert sind)
+        setTimeout(() => {
+          const payload = buildFullSyncPayload();
+          if (payload.notebooks.length > 0) p2pSend('full-sync', payload);
+        }, 2000); // 2s warten bis Peers verbunden
+      }).catch(e => console.error('[App] P2P Reconnect Fehler:', e));
     }
   });
 

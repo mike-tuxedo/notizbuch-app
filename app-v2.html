@@ -207,10 +207,15 @@
 
     /* ─── Page Bar ───────────────────────────────────────────────────────── */
     .page-bar {
-      display: flex; align-items: center; justify-content: center;
-      gap: 10px; padding: 0 12px;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 12px;
       border-top: 1px solid var(--border);
       background: var(--surface);
+    }
+    .pagebar-left { display: flex; align-items: center; gap: 10px; }
+    .pagebar-title {
+      font-size: 12px; color: var(--text-dim); display: none;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40%;
     }
     .page-btn {
       display: flex; align-items: center; justify-content: center;
@@ -331,13 +336,14 @@
       font-size: 11px; font-weight: 700; color: var(--text-dim);
     }
     .mobile-popup {
-      position: fixed; bottom: var(--pagebar-h); left: 0; right: 0;
-      background: var(--surface); border-top: 1px solid var(--border);
+      position: fixed; top: var(--toolbar-h); left: 0; right: 0;
+      background: var(--surface); border-bottom: 1px solid var(--border);
       padding: 12px; z-index: 150;
-      animation: slideUp 0.15s ease;
+      animation: slideDown 0.15s ease;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.4);
     }
     .mobile-popup.hidden { display: none; }
-    @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+    @keyframes slideDown { from { transform: translateY(-100%); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
     .mobile-popup-content {
       display: flex; flex-wrap: wrap; gap: 8px; justify-content: center;
     }
@@ -356,7 +362,8 @@
       .burger-btn { display: flex; }
       .color-palette, .size-palette, .desktop-only { display: none !important; }
       .mobile-color-trigger, .mobile-size-trigger { display: flex; }
-      #notebook-title { font-size: 12px; }
+      .toolbar-center { display: none; }
+      .pagebar-title { display: block; }
     }
 
     /* ─── Scrollbar ──────────────────────────────────────────────────────── */
@@ -478,13 +485,16 @@
 
       <!-- Page Bar -->
       <div class="page-bar">
-        <button class="page-btn" id="btn-prev" disabled>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="15 18 9 12 15 6"/></svg>
-        </button>
-        <span id="page-indicator">1 / 1</span>
-        <button class="page-btn" id="btn-next">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg>
-        </button>
+        <div class="pagebar-left">
+          <button class="page-btn" id="btn-prev" disabled>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="15 18 9 12 15 6"/></svg>
+          </button>
+          <span id="page-indicator">1 / 1</span>
+          <button class="page-btn" id="btn-next">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg>
+          </button>
+        </div>
+        <span class="pagebar-title" id="pagebar-title"></span>
       </div>
 
     </main>
