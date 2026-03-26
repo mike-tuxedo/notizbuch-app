@@ -4,7 +4,7 @@
 
 import { initStorage, savePageData, loadPageData, deletePageData, deleteNotebookData, saveMeta, loadMeta, clearAll } from './storage.js';
 import { roundPoints, drawStrokeToCanvas, drawBackground } from './canvas.js';
-import { initP2P, broadcastStroke, leaveRoom } from './p2p-sync.js';
+import { initP2P, broadcastStroke, broadcastUndo, broadcastClear, sendFullSync, leaveRoom } from './p2p-sync.js';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -517,6 +517,7 @@ function undo() {
   page.strokes.pop();
   redrawStrokes();
   saveCurrentPage();
+  broadcastUndo({ pageId: page.id });
 }
 
 function clearPage() {
@@ -525,6 +526,7 @@ function clearPage() {
   page.strokes = [];
   redrawStrokes();
   saveCurrentPage();
+  broadcastClear({ pageId: page.id });
 }
 
 // ─── Tool Selection ─────────────────────────────────────────────────────────
@@ -647,6 +649,95 @@ function startRename() {
   titleEl.appendChild(input);
   input.focus();
   input.select();
+}
+
+// ─── P2P Sync Integration ───────────────────────────────────────────────────
+
+/** P2P-Room für den aktuellen roomKey beitreten. */
+async function startP2P() {
+  await initP2P(roomKey, {
+    onStroke({ pageId, stroke }, peerId) {
+      // Stroke von Peer: auf richtige Seite einfügen
+      const nb = currentNotebook();
+      if (!nb) return;
+      const page = nb.pages.find(p => p.id === pageId);
+      if (!page) return;
+      // Deduplizieren
+      if (page.strokes.some(s => s.id === stroke.id)) return;
+      page.strokes.push(stroke);
+      // Wenn aktuelle Seite → inkrementell auf Canvas zeichnen
+      if (pageId === currentPage()?.id && staticCtx) {
+        staticCtx.save();
+        staticCtx.translate(state.viewX, state.viewY);
+        staticCtx.scale(state.viewScale, state.viewScale);
+        drawStrokeToCanvas(staticCtx, stroke);
+        staticCtx.restore();
+        if (strokeCacheCanvas) {
+          const cCtx = strokeCacheCanvas.getContext('2d');
+          cCtx.setTransform(DPR, 0, 0, DPR, 0, 0);
+          cCtx.save();
+          cCtx.translate(cacheViewX, cacheViewY);
+          cCtx.scale(cacheViewScale, cacheViewScale);
+          drawStrokeToCanvas(cCtx, stroke);
+          cCtx.restore();
+        }
+      }
+      saveCurrentPage();
+    },
+
+    onUndo({ pageId }, peerId) {
+      const nb = currentNotebook();
+      if (!nb) return;
+      const page = nb.pages.find(p => p.id === pageId);
+      if (!page || !page.strokes.length) return;
+      page.strokes.pop();
+      if (pageId === currentPage()?.id) redrawStrokes();
+      saveCurrentPage();
+    },
+
+    onClear({ pageId }, peerId) {
+      const nb = currentNotebook();
+      if (!nb) return;
+      const page = nb.pages.find(p => p.id === pageId);
+      if (!page) return;
+      page.strokes = [];
+      if (pageId === currentPage()?.id) redrawStrokes();
+      saveCurrentPage();
+    },
+
+    onFullSync({ pageId, strokes }, peerId) {
+      const nb = currentNotebook();
+      if (!nb) return;
+      const page = nb.pages.find(p => p.id === pageId);
+      if (!page) return;
+      // Union-Merge by ID
+      const existing = new Map(page.strokes.map(s => [s.id, s]));
+      for (const s of strokes) {
+        if (!existing.has(s.id)) existing.set(s.id, s);
+      }
+      page.strokes = [...existing.values()].sort((a, b) => Number(a.id) - Number(b.id));
+      if (pageId === currentPage()?.id) redrawStrokes();
+      saveCurrentPage();
+      console.log('[P2P] Full-Sync von', peerId, ':', strokes.length, 'Strokes für Seite', pageId);
+    },
+
+    onPeerJoin(peerId) {
+      if (!state.connectedPeers.includes(peerId)) {
+        state.connectedPeers.push(peerId);
+      }
+      renderUI();
+      // Full-Sync an neuen Peer: aktuelle Seite senden
+      const page = currentPage();
+      if (page && page.strokes.length > 0) {
+        sendFullSync({ pageId: page.id, strokes: page.strokes }, peerId);
+      }
+    },
+
+    onPeerLeave(peerId) {
+      state.connectedPeers = state.connectedPeers.filter(id => id !== peerId);
+      renderUI();
+    }
+  });
 }
 
 // ─── Pinch-Zoom ─────────────────────────────────────────────────────────────
@@ -1017,6 +1108,7 @@ function onPointerUp(e) {
   }
 
   saveCurrentPage();
+  broadcastStroke({ pageId: page.id, stroke: newStroke });
   currentPoints = [];
   lastPoint = null;
 }
@@ -1182,6 +1274,11 @@ async function init() {
 
   // 12. UI rendern
   renderUI();
+
+  // 13. P2P-Sync starten
+  if (state.syncEnabled) {
+    startP2P();
+  }
 
   console.log('[App] Bereit.', state.notebooks.length, 'Notebooks');
 }
