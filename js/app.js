@@ -360,23 +360,83 @@ function redrawStrokes() {
 
 /**
  * Bitmap-Cache auf staticCanvas compositen (für Pan/Zoom ohne Full-Redraw).
+ * Berechnet Delta zwischen Cache-Transform und aktuellem Transform.
  */
 function compositeStrokes() {
   if (!staticCanvas || !strokeCacheCanvas) { redrawStrokes(); return; }
   const w = staticCanvas.width;
   const h = staticCanvas.height;
   const ctx = staticCtx;
+
+  const scaleRatio = state.viewScale / cacheViewScale;
+  const tx = (state.viewX - cacheViewX * scaleRatio) * DPR;
+  const ty = (state.viewY - cacheViewY * scaleRatio) * DPR;
+
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, w, h);
-
-  // Offset berechnen: Differenz zwischen aktuellem View und Cache-View
-  const dx = (state.viewX - cacheViewX) * DPR;
-  const dy = (state.viewY - cacheViewY) * DPR;
-  const ds = state.viewScale / cacheViewScale;
-
-  ctx.setTransform(ds, 0, 0, ds, dx, dy);
+  ctx.translate(tx, ty);
+  ctx.scale(scaleRatio, scaleRatio);
   ctx.drawImage(strokeCacheCanvas, 0, 0);
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+
+// ─── Fit to Content ─────────────────────────────────────────────────────────
+
+/**
+ * Bounding-Box aller Strokes berechnen.
+ * @returns {{minX: number, minY: number, maxX: number, maxY: number}|null}
+ */
+function computeStrokeBounds() {
+  const strokes = currentPage()?.strokes;
+  if (!strokes?.length) return null;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const s of strokes) {
+    if (s.tool === 'eraser') continue;
+    for (const p of (s.points || [])) {
+      if (p.x < minX) minX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y > maxY) maxY = p.y;
+    }
+  }
+  if (!isFinite(minX)) return null;
+  return { minX, minY, maxX, maxY };
+}
+
+/**
+ * View berechnen um alle Strokes zentriert + mit Padding anzuzeigen.
+ * @returns {{scale: number, x: number, y: number}}
+ */
+function computeFitView() {
+  const container = document.getElementById('canvas-container');
+  if (!container) return { scale: 1, x: 0, y: 0 };
+  const cw = container.clientWidth;
+  const ch = container.clientHeight;
+  const bounds = computeStrokeBounds();
+  if (!bounds) return { scale: 1, x: 0, y: 0 };
+  const pad = 40;
+  const bw = bounds.maxX - bounds.minX + pad * 2;
+  const bh = bounds.maxY - bounds.minY + pad * 2;
+  const scale = Math.min(cw / bw, ch / bh, 1);
+  const cx = bounds.minX - pad;
+  const cy = bounds.minY - pad;
+  const x = (cw - bw * scale) / 2 - cx * scale;
+  const y = (ch - bh * scale) / 2 - cy * scale;
+  return { scale, x, y };
+}
+
+/**
+ * View anpassen um alle Strokes sichtbar + zentriert anzuzeigen.
+ * Wird vom Home-Button aufgerufen.
+ */
+function fitToContent() {
+  const { scale, x, y } = computeFitView();
+  state.viewScale = scale;
+  state.viewX = x;
+  state.viewY = y;
+  clearAllCanvases();
+  redrawBackground();
+  redrawStrokes();
 }
 
 // ─── Navigation ─────────────────────────────────────────────────────────────
@@ -1075,12 +1135,9 @@ function onWheel(e) {
 }
 
 /** View auf 1:1 zurücksetzen. */
+/** View zurücksetzen: Fit-to-Content oder 1:1 wenn keine Strokes. */
 function resetView() {
-  state.viewX = 0;
-  state.viewY = 0;
-  state.viewScale = 1;
-  redrawBackground();
-  redrawStrokes();
+  fitToContent();
 }
 
 // ─── Mobile Sidebar Toggle ──────────────────────────────────────────────────
