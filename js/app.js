@@ -649,6 +649,129 @@ function startRename() {
   input.select();
 }
 
+// ─── Pinch-Zoom ─────────────────────────────────────────────────────────────
+
+/** Pinch-Zoom starten (2 Finger erkannt). */
+function _startPinch() {
+  const ids = Object.keys(pinchState.touches);
+  if (ids.length < 2) return;
+  const t0 = pinchState.touches[ids[0]];
+  const t1 = pinchState.touches[ids[1]];
+  pinchState.active = true;
+  pinchState.startViewX = state.viewX;
+  pinchState.startViewY = state.viewY;
+  pinchState.startScale = state.viewScale;
+  pinchState.startMidX = (t0.x + t1.x) / 2;
+  pinchState.startMidY = (t0.y + t1.y) / 2;
+  pinchState.startDist = Math.hypot(t1.x - t0.x, t1.y - t0.y) || 1;
+}
+
+/** Pinch-Zoom aktualisieren. */
+function _updatePinch() {
+  const ids = Object.keys(pinchState.touches);
+  if (ids.length < 2) return;
+  const t0 = pinchState.touches[ids[0]];
+  const t1 = pinchState.touches[ids[1]];
+  const dist = Math.hypot(t1.x - t0.x, t1.y - t0.y) || 1;
+  const scale = Math.min(8, Math.max(0.2, pinchState.startScale * (dist / pinchState.startDist)));
+  const midX = (t0.x + t1.x) / 2;
+  const midY = (t0.y + t1.y) / 2;
+
+  // Offset: Container-relative Position
+  const container = document.getElementById('canvas-container');
+  const rect = container?.getBoundingClientRect();
+  const offX = rect ? midX - rect.left : midX;
+  const offY = rect ? midY - rect.top : midY;
+
+  const canvasX = (offX - pinchState.startViewX) / pinchState.startScale;
+  const canvasY = (offY - pinchState.startViewY) / pinchState.startScale;
+
+  state.viewScale = scale;
+  state.viewX = offX - canvasX * scale + (midX - pinchState.startMidX);
+  state.viewY = offY - canvasY * scale + (midY - pinchState.startMidY);
+
+  redrawBackground();
+  compositeStrokes();
+}
+
+/**
+ * Mausrad-Zoom auf Canvas-Container.
+ * @param {WheelEvent} e
+ */
+function onWheel(e) {
+  if (state.tool !== 'hand') return;
+  e.preventDefault();
+  const container = document.getElementById('canvas-container');
+  const rect = container.getBoundingClientRect();
+  const mouseX = e.clientX - rect.left;
+  const mouseY = e.clientY - rect.top;
+  const delta = e.deltaY > 0 ? 0.9 : 1.1;
+  const newScale = Math.min(8, Math.max(0.2, state.viewScale * delta));
+  const canvasX = (mouseX - state.viewX) / state.viewScale;
+  const canvasY = (mouseY - state.viewY) / state.viewScale;
+  state.viewX = mouseX - canvasX * newScale;
+  state.viewY = mouseY - canvasY * newScale;
+  state.viewScale = newScale;
+  redrawBackground();
+  compositeStrokes();
+}
+
+/** View auf 1:1 zurücksetzen. */
+function resetView() {
+  state.viewX = 0;
+  state.viewY = 0;
+  state.viewScale = 1;
+  redrawBackground();
+  redrawStrokes();
+}
+
+// ─── Mobile Sidebar Toggle ──────────────────────────────────────────────────
+
+/** Sidebar auf mobil ein-/ausblenden. */
+function toggleSidebar() {
+  const sidebar = document.querySelector('.sidebar');
+  const overlay = document.getElementById('sidebar-overlay');
+  if (!sidebar) return;
+  const open = sidebar.classList.toggle('sidebar-open');
+  overlay?.classList.toggle('active', open);
+}
+
+// ─── Share Modal ────────────────────────────────────────────────────────────
+
+/** Share-Modal öffnen mit aktuellem Room-Link. */
+function openShareModal() {
+  const modal = document.getElementById('share-modal');
+  if (!modal) return;
+  const url = `${location.origin}${location.pathname}#${roomKey}`;
+  const linkInput = document.getElementById('share-link');
+  if (linkInput) linkInput.value = url;
+  // QR-Code generieren
+  const qrContainer = document.getElementById('qr-container');
+  if (qrContainer && typeof QRCode !== 'undefined') {
+    qrContainer.innerHTML = '';
+    QRCode.toCanvas(document.createElement('canvas'), url, {
+      width: 200, margin: 2,
+      color: { dark: '#1a1730', light: '#fefcf8' }
+    }, (err, canvas) => {
+      if (!err && canvas) qrContainer.appendChild(canvas);
+    });
+  }
+  modal.classList.remove('hidden');
+}
+
+function closeShareModal() {
+  document.getElementById('share-modal')?.classList.add('hidden');
+}
+
+function copyShareLink() {
+  const link = document.getElementById('share-link')?.value;
+  if (!link) return;
+  navigator.clipboard.writeText(link).then(() => {
+    const btn = document.getElementById('btn-copy-link');
+    if (btn) { btn.textContent = 'Kopiert!'; setTimeout(() => { btn.textContent = 'Kopieren'; }, 2000); }
+  });
+}
+
 // ─── Settings Persistence ───────────────────────────────────────────────────
 
 async function saveLocalSettings() {
@@ -703,18 +826,47 @@ function screenToWorld(sx, sy) {
   };
 }
 
+// ─── Pan State ──────────────────────────────────────────────────────────────
+
+let isPanning = false;
+let panStartX = 0, panStartY = 0;
+let panStartViewX = 0, panStartViewY = 0;
+let panPointerId = null;
+
 function onPointerDown(e) {
-  // Palm-Rejection: Pen erkannt → Touch ignorieren
+  // Palm-Rejection: Pen erkannt → Touch ignorieren für Zeichnen
   if (e.pointerType === 'pen') {
     state.penDetected = true;
   }
+
+  // Touch bei aktivem Stift: nur Pinch/Swipe erlauben
   if (state.penDetected && e.pointerType === 'touch') {
-    // Touch bei aktivem Stift nur für Swipe/Pinch
+    // Pinch-Zoom tracken
+    pinchState.touches[e.pointerId] = { x: e.clientX, y: e.clientY };
+    if (Object.keys(pinchState.touches).length === 2) {
+      _startPinch();
+    } else if (Object.keys(pinchState.touches).length === 1) {
+      // Swipe starten
+      swipeState.active = true;
+      swipeState.pointerId = e.pointerId;
+      swipeState.startX = e.clientX;
+      swipeState.startY = e.clientY;
+      swipeState.startTime = Date.now();
+      swipeState.currentX = e.clientX;
+    }
     return;
   }
 
+  // Hand-Tool → Panning
   if (state.tool === 'hand') {
-    // Panning starten
+    isPanning = true;
+    panPointerId = e.pointerId;
+    panStartX = e.clientX;
+    panStartY = e.clientY;
+    panStartViewX = state.viewX;
+    panStartViewY = state.viewY;
+    e.target?.setPointerCapture?.(e.pointerId);
+    e.preventDefault();
     return;
   }
 
@@ -739,6 +891,27 @@ function onPointerDown(e) {
 }
 
 function onPointerMove(e) {
+  // Pinch-Zoom
+  if (pinchState.touches[e.pointerId]) {
+    pinchState.touches[e.pointerId] = { x: e.clientX, y: e.clientY };
+    if (pinchState.active) _updatePinch();
+    // Swipe-Tracking
+    if (swipeState.active && e.pointerId === swipeState.pointerId) {
+      swipeState.currentX = e.clientX;
+    }
+    return;
+  }
+
+  // Panning
+  if (isPanning && e.pointerId === panPointerId) {
+    state.viewX = panStartViewX + (e.clientX - panStartX);
+    state.viewY = panStartViewY + (e.clientY - panStartY);
+    redrawBackground();
+    compositeStrokes();
+    e.preventDefault();
+    return;
+  }
+
   if (!isDrawing || e.pointerId !== activePointerId) return;
   e.preventDefault();
 
@@ -763,6 +936,34 @@ function onPointerMove(e) {
 }
 
 function onPointerUp(e) {
+  // Pinch-Zoom beenden
+  if (pinchState.touches[e.pointerId]) {
+    delete pinchState.touches[e.pointerId];
+    if (pinchState.active) {
+      pinchState.active = false;
+      redrawStrokes(); // Cache nach Zoom aktualisieren
+    }
+    // Swipe auswerten
+    if (swipeState.active && e.pointerId === swipeState.pointerId) {
+      swipeState.active = false;
+      const dx = swipeState.currentX - swipeState.startX;
+      const dt = Date.now() - swipeState.startTime;
+      if (Math.abs(dx) > 80 && dt < 800) {
+        if (dx > 0) prevPage();
+        else nextPage();
+      }
+    }
+    return;
+  }
+
+  // Panning beenden
+  if (isPanning && e.pointerId === panPointerId) {
+    isPanning = false;
+    panPointerId = null;
+    redrawStrokes(); // Cache aktualisieren
+    return;
+  }
+
   if (!isDrawing || e.pointerId !== activePointerId) return;
   isDrawing = false;
   activePointerId = null;
@@ -859,6 +1060,13 @@ function renderUI() {
   document.querySelectorAll('[data-tool]').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.tool === state.tool);
   });
+
+  // Canvas-Cursor
+  const container = document.getElementById('canvas-container');
+  if (container) {
+    container.classList.toggle('hand-cursor', state.tool === 'hand');
+    if (state.tool !== 'hand') container.style.cursor = state.tool === 'eraser' ? 'cell' : 'crosshair';
+  }
 
   // Farb-Palette (Standard + Custom + Picker)
   const colorPalette = document.getElementById('color-palette');
@@ -995,6 +1203,22 @@ function setupEvents() {
   document.querySelectorAll('[data-tool]').forEach(btn => {
     btn.addEventListener('click', () => setTool(btn.dataset.tool));
   });
+
+  // Mausrad-Zoom
+  document.getElementById('canvas-container')?.addEventListener('wheel', onWheel, { passive: false });
+
+  // View-Reset
+  document.getElementById('btn-reset-view')?.addEventListener('click', resetView);
+
+  // Sidebar-Toggle (mobil)
+  document.getElementById('btn-burger')?.addEventListener('click', toggleSidebar);
+  // Sidebar schließen bei Klick auf Overlay
+  document.getElementById('sidebar-overlay')?.addEventListener('click', toggleSidebar);
+
+  // Share
+  document.getElementById('btn-share')?.addEventListener('click', openShareModal);
+  document.getElementById('btn-close-share')?.addEventListener('click', closeShareModal);
+  document.getElementById('btn-copy-link')?.addEventListener('click', copyShareLink);
 
   // Color-Picker
   document.getElementById('btn-color-picker')?.addEventListener('click', toggleColorPicker);
