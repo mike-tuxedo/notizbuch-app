@@ -232,14 +232,20 @@ async function _flushSave() {
 }
 
 /**
- * Seite laden und Strokes in Memory setzen.
+ * Seite laden: OPFS-Daten mit In-Memory Strokes (von P2P) mergen.
+ * Union-Merge by ID — Remote-Strokes die während der Navigation ankamen bleiben erhalten.
  * @param {string} notebookId
  * @param {string} pageId
  * @param {{id: string, strokes: Array}} page - Page-Objekt (wird mutiert)
  */
 async function loadPage(notebookId, pageId, page) {
   const data = await loadPageData(notebookId, pageId);
-  page.strokes = data ? deserializeStrokes(data) : [];
+  const diskStrokes = data ? deserializeStrokes(data) : [];
+  // Union-Merge: OPFS + In-Memory (P2P-Strokes die noch nicht gespeichert waren)
+  const merged = new Map();
+  for (const s of diskStrokes) merged.set(s.id, s);
+  for (const s of (page.strokes || [])) merged.set(s.id, s);
+  page.strokes = [...merged.values()].sort((a, b) => Number(a.id) - Number(b.id));
 }
 
 // ─── Meta Persistence ───────────────────────────────────────────────────────
@@ -289,6 +295,18 @@ function setupCanvases() {
 
   redrawBackground();
   redrawStrokes();
+}
+
+/** Alle Canvas-Layer komplett leeren (bei Seitenwechsel). */
+function clearAllCanvases() {
+  for (const c of [bgCanvas, staticCanvas, activeCanvas]) {
+    if (!c) continue;
+    const ctx = c.getContext('2d');
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, c.width, c.height);
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+  strokeCacheCanvas = null; // Cache invalidieren
 }
 
 /** Hintergrund auf bgCanvas zeichnen. */
@@ -374,6 +392,8 @@ async function goToPage(index) {
   state.currentPages[state.currentNotebookId] = index;
   const page = currentPage();
   await loadPage(state.currentNotebookId, page.id, page);
+  // Alle Canvas-Layer komplett leeren vor dem Neuzeichnen
+  clearAllCanvases();
   redrawBackground();
   redrawStrokes();
   renderUI();
@@ -416,6 +436,7 @@ async function selectNotebook(nbId) {
   if (!(nbId in state.currentPages)) state.currentPages[nbId] = 0;
   const page = currentPage();
   if (page) await loadPage(nbId, page.id, page);
+  clearAllCanvases();
   redrawBackground();
   redrawStrokes();
   renderUI();
@@ -838,7 +859,8 @@ async function startP2P() {
       if (notebookId === state.currentNotebookId && pageId === currentPage()?.id) {
         redrawStrokes();
       }
-      saveCurrentPage();
+      // Immer die betroffene Page speichern (nicht nur aktuelle)
+      savePageData(notebookId, pageId, serializeStrokes(page.strokes));
     },
 
     onUndo({ notebookId, pageId }, peerId) {
@@ -847,7 +869,7 @@ async function startP2P() {
       if (!page || !page.strokes.length) return;
       page.strokes.pop();
       if (notebookId === state.currentNotebookId && pageId === currentPage()?.id) redrawStrokes();
-      saveCurrentPage();
+      savePageData(notebookId, pageId, serializeStrokes(page.strokes));
     },
 
     onClear({ notebookId, pageId }, peerId) {
@@ -856,7 +878,7 @@ async function startP2P() {
       if (!page) return;
       page.strokes = [];
       if (notebookId === state.currentNotebookId && pageId === currentPage()?.id) redrawStrokes();
-      saveCurrentPage();
+      savePageData(notebookId, pageId, serializeStrokes(page.strokes));
     },
 
     onFullSync(payload, peerId) {
