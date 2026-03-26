@@ -1,0 +1,907 @@
+// app.js — Notizbuch Hauptlogik
+// State-Management, Init, Canvas-Steuerung, Input-Handling, Navigation.
+// Importiert Module für Storage, Canvas-Engine, P2P, Encryption.
+
+import { initStorage, savePageData, loadPageData, deletePageData, deleteNotebookData, saveMeta, loadMeta, clearAll } from './storage.js';
+import { roundPoints, drawStrokeToCanvas, drawBackground } from './canvas.js';
+import { initP2P, broadcastStroke, leaveRoom } from './p2p-sync.js';
+
+// ─── Constants ──────────────────────────────────────────────────────────────
+
+/** @type {number} DPR gekappt auf 2 für Performance */
+const DPR = Math.min(window.devicePixelRatio || 1, 2);
+
+/** @type {Array<string>} Standard-Farbpalette */
+const COLORS = ['#363636', '#ffffff', '#ff6b6b', '#ffa94d', '#ffd43b', '#69db7c', '#38d9a9', '#4dabf7', '#748ffc', '#da77f2'];
+
+/** @type {Array<{name: string, size: number}>} Stiftgrößen */
+const PEN_SIZES = [
+  { name: 'XS', size: 1 },
+  { name: 'S', size: 2 },
+  { name: 'M', size: 4 },
+  { name: 'L', size: 8 },
+  { name: 'XL', size: 16 }
+];
+
+const BACKGROUNDS = ['grid', 'lined', 'blank'];
+
+// ─── State ──────────────────────────────────────────────────────────────────
+
+/** @type {Object} Globaler App-State */
+const state = {
+  /** @type {Array<{id: string, name: string, pages: Array}>} */
+  notebooks: [],
+  /** @type {string|null} */
+  currentNotebookId: null,
+  /** @type {Object<string, number>} notebookId → pageIndex */
+  currentPages: {},
+
+  // Tools
+  tool: 'pen',        // 'pen' | 'eraser' | 'hand'
+  color: '#363636',
+  penSizeIndex: 2,
+  customColors: [],
+  penDetected: false,
+
+  // View
+  viewScale: 1,
+  viewX: 0,
+  viewY: 0,
+
+  // Sync
+  syncEnabled: true,
+  connectedPeers: [],
+
+  // UI
+  sidebarOpen: true,
+};
+
+// ─── DOM References ─────────────────────────────────────────────────────────
+
+/** @type {HTMLCanvasElement} */
+let bgCanvas, staticCanvas, activeCanvas;
+/** @type {CanvasRenderingContext2D} */
+let bgCtx, staticCtx, activeCtx;
+/** @type {HTMLCanvasElement|null} Bitmap-Cache für Pan/Zoom */
+let strokeCacheCanvas = null;
+let cacheViewX = 0, cacheViewY = 0, cacheViewScale = 1;
+
+// ─── Drawing State ──────────────────────────────────────────────────────────
+
+let isDrawing = false;
+let currentPoints = [];
+let lastPoint = null;
+let activePointerId = null;
+let activePointerType = null;
+
+// ─── Pinch/Zoom State (outside reactive for performance) ────────────────────
+
+const pinchState = {
+  touches: {}, active: false,
+  startViewX: 0, startViewY: 0, startScale: 1,
+  startMidX: 0, startMidY: 0, startDist: 1
+};
+
+// ─── Swipe State ────────────────────────────────────────────────────────────
+
+const swipeState = {
+  active: false, pointerId: null,
+  startX: 0, startY: 0, startTime: 0, currentX: 0
+};
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+/** @returns {{id: string, name: string, pages: Array}|undefined} */
+function currentNotebook() {
+  return state.notebooks.find(n => n.id === state.currentNotebookId);
+}
+
+/** @returns {{id: string, strokes: Array, background: string}|undefined} */
+function currentPage() {
+  const nb = currentNotebook();
+  const idx = state.currentPages[state.currentNotebookId] ?? 0;
+  return nb?.pages?.[idx];
+}
+
+/** @returns {number} */
+function currentPageIndex() {
+  return state.currentPages[state.currentNotebookId] ?? 0;
+}
+
+/** @returns {number} */
+function totalPages() {
+  return currentNotebook()?.pages?.length || 1;
+}
+
+// ─── IndexedDB Settings (device-local, not synced) ──────────────────────────
+
+let settingsDB = null;
+let roomKey = '';
+
+/** @returns {Promise<IDBDatabase>} */
+function openSettingsDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open('notizbuch-settings', 1);
+    req.onupgradeneeded = e => e.target.result.createObjectStore('settings');
+    req.onsuccess = e => resolve(e.target.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+/**
+ * @param {string} key
+ * @returns {Promise<*>}
+ */
+function settingsGet(key) {
+  return new Promise(resolve => {
+    settingsDB.transaction('settings', 'readonly')
+      .objectStore('settings').get(key).onsuccess = e => resolve(e.target.result ?? null);
+  });
+}
+
+/**
+ * @param {string} key
+ * @param {*} value
+ * @returns {Promise<void>}
+ */
+function settingsPut(key, value) {
+  return new Promise(resolve => {
+    settingsDB.transaction('settings', 'readwrite')
+      .objectStore('settings').put(value, key).onsuccess = () => resolve();
+  });
+}
+
+// ─── Browser/Device Detection ───────────────────────────────────────────────
+
+/** @returns {string} z.B. "Chrome Desktop", "Firefox Android" */
+function getClientName() {
+  const ua = navigator.userAgent;
+  let browser = 'Browser';
+  if (ua.includes('Firefox')) browser = 'Firefox';
+  else if (ua.includes('Edg/')) browser = 'Edge';
+  else if (ua.includes('Chrome')) browser = 'Chrome';
+  else if (ua.includes('Safari')) browser = 'Safari';
+  let device = 'Desktop';
+  if (/Android/i.test(ua)) device = 'Android';
+  else if (/iPad/i.test(ua)) device = 'iPad';
+  else if (/iPhone/i.test(ua)) device = 'iPhone';
+  else if (/Mobile/i.test(ua)) device = 'Mobile';
+  return `${browser} ${device}`;
+}
+
+// ─── Serialization ──────────────────────────────────────────────────────────
+
+/**
+ * Strokes einer Seite als JSON-Uint8Array serialisieren (für Storage).
+ * @param {Array} strokes
+ * @returns {Uint8Array}
+ */
+function serializeStrokes(strokes) {
+  const json = JSON.stringify(strokes.map(s => ({
+    id: s.id,
+    points: roundPoints(s.points || []),
+    color: s.color,
+    size: s.size,
+    tool: s.tool || 'pen'
+  })));
+  return new TextEncoder().encode(json);
+}
+
+/**
+ * Uint8Array zurück zu Stroke-Array deserialisieren.
+ * @param {Uint8Array} data
+ * @returns {Array}
+ */
+function deserializeStrokes(data) {
+  try {
+    return JSON.parse(new TextDecoder().decode(data));
+  } catch {
+    return [];
+  }
+}
+
+// ─── Page Load / Save ───────────────────────────────────────────────────────
+
+let _saveTimer = null;
+
+/**
+ * Aktuelle Seite speichern (debounced, 1s).
+ */
+function saveCurrentPage() {
+  if (_saveTimer) clearTimeout(_saveTimer);
+  _saveTimer = setTimeout(_flushSave, 1000);
+}
+
+/** Sofort speichern (für beforeunload). */
+function flushSave() {
+  if (_saveTimer) { clearTimeout(_saveTimer); _saveTimer = null; }
+  _flushSave();
+}
+
+async function _flushSave() {
+  _saveTimer = null;
+  const page = currentPage();
+  if (!page) return;
+  const nbId = state.currentNotebookId;
+  const data = serializeStrokes(page.strokes || []);
+  await savePageData(nbId, String(page.id), data);
+}
+
+/**
+ * Seite laden und Strokes in Memory setzen.
+ * @param {string} notebookId
+ * @param {string} pageId
+ * @param {{id: string, strokes: Array}} page - Page-Objekt (wird mutiert)
+ */
+async function loadPage(notebookId, pageId, page) {
+  const data = await loadPageData(notebookId, pageId);
+  page.strokes = data ? deserializeStrokes(data) : [];
+}
+
+// ─── Meta Persistence ───────────────────────────────────────────────────────
+
+/** App-Metadaten speichern (Notebook-Struktur ohne Strokes). */
+async function saveAppMeta() {
+  const meta = {
+    notebooks: state.notebooks.map(nb => ({
+      id: nb.id,
+      name: nb.name,
+      pages: nb.pages.map(p => ({ id: p.id, background: p.background || 'grid', order: p.order ?? 0 }))
+    }))
+  };
+  await saveMeta(meta);
+}
+
+/** App-Metadaten laden und Notebooks wiederherstellen. */
+async function loadAppMeta() {
+  const meta = await loadMeta();
+  if (!meta?.notebooks?.length) return;
+  state.notebooks = meta.notebooks.map(nb => ({
+    id: nb.id,
+    name: nb.name,
+    pages: (nb.pages || []).map(p => ({
+      id: p.id, strokes: [], background: p.background || 'grid', order: p.order ?? 0
+    }))
+  }));
+}
+
+// ─── Canvas Management ──────────────────────────────────────────────────────
+
+/** Canvas-Größen an Container anpassen. */
+function setupCanvases() {
+  const container = document.getElementById('canvas-container');
+  if (!container) return;
+  const w = container.clientWidth;
+  const h = container.clientHeight;
+
+  for (const c of [bgCanvas, staticCanvas, activeCanvas]) {
+    if (!c) continue;
+    c.width = w * DPR;
+    c.height = h * DPR;
+    c.style.width = w + 'px';
+    c.style.height = h + 'px';
+    c.getContext('2d').setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+
+  redrawBackground();
+  redrawStrokes();
+}
+
+/** Hintergrund auf bgCanvas zeichnen. */
+function redrawBackground() {
+  if (!bgCtx || !bgCanvas) return;
+  const w = bgCanvas.width / DPR;
+  const h = bgCanvas.height / DPR;
+  const bg = currentPage()?.background || 'grid';
+  drawBackground(bgCtx, w, h, bg, state.viewX, state.viewY, state.viewScale);
+}
+
+/**
+ * Alle Strokes auf staticCanvas + Bitmap-Cache neu zeichnen.
+ * Wird bei Seitenwechsel, Undo, Clear, Sync aufgerufen.
+ */
+function redrawStrokes() {
+  if (!staticCanvas) return;
+  const w = staticCanvas.width;
+  const h = staticCanvas.height;
+
+  // Bitmap-Cache erstellen/aktualisieren
+  if (!strokeCacheCanvas || strokeCacheCanvas.width !== w || strokeCacheCanvas.height !== h) {
+    strokeCacheCanvas = document.createElement('canvas');
+    strokeCacheCanvas.width = w;
+    strokeCacheCanvas.height = h;
+  }
+
+  const cacheCtx = strokeCacheCanvas.getContext('2d');
+  cacheCtx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  cacheCtx.clearRect(0, 0, w, h);
+
+  const strokes = currentPage()?.strokes || [];
+  cacheCtx.save();
+  cacheCtx.translate(state.viewX, state.viewY);
+  cacheCtx.scale(state.viewScale, state.viewScale);
+  for (const s of strokes) {
+    drawStrokeToCanvas(cacheCtx, s);
+  }
+  cacheCtx.restore();
+
+  cacheViewX = state.viewX;
+  cacheViewY = state.viewY;
+  cacheViewScale = state.viewScale;
+
+  // Auf sichtbares Canvas kopieren
+  const ctx = staticCtx;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  ctx.drawImage(strokeCacheCanvas, 0, 0);
+}
+
+/**
+ * Bitmap-Cache auf staticCanvas compositen (für Pan/Zoom ohne Full-Redraw).
+ */
+function compositeStrokes() {
+  if (!staticCanvas || !strokeCacheCanvas) { redrawStrokes(); return; }
+  const w = staticCanvas.width;
+  const h = staticCanvas.height;
+  const ctx = staticCtx;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+
+  // Offset berechnen: Differenz zwischen aktuellem View und Cache-View
+  const dx = (state.viewX - cacheViewX) * DPR;
+  const dy = (state.viewY - cacheViewY) * DPR;
+  const ds = state.viewScale / cacheViewScale;
+
+  ctx.setTransform(ds, 0, 0, ds, dx, dy);
+  ctx.drawImage(strokeCacheCanvas, 0, 0);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+
+// ─── Navigation ─────────────────────────────────────────────────────────────
+
+/**
+ * Zu einer Seite im aktuellen Notebook navigieren.
+ * @param {number} index
+ */
+async function goToPage(index) {
+  const nb = currentNotebook();
+  if (!nb || index < 0 || index >= nb.pages.length) return;
+  flushSave();
+  state.currentPages[state.currentNotebookId] = index;
+  const page = currentPage();
+  await loadPage(state.currentNotebookId, page.id, page);
+  redrawBackground();
+  redrawStrokes();
+  renderUI();
+  saveLocalSettings();
+}
+
+/** Nächste Seite (erstellt neue wenn am Ende). */
+async function nextPage() {
+  const nb = currentNotebook();
+  if (!nb) return;
+  const idx = currentPageIndex();
+  const nextIdx = idx + 1;
+
+  if (nextIdx >= nb.pages.length) {
+    // Neue Seite erstellen
+    const pageId = String(Date.now());
+    nb.pages.push({
+      id: pageId, strokes: [],
+      background: currentPage()?.background || 'grid',
+      order: nextIdx
+    });
+    await saveAppMeta();
+  }
+
+  await goToPage(nextIdx);
+}
+
+/** Vorherige Seite. */
+async function prevPage() {
+  const idx = currentPageIndex();
+  if (idx > 0) await goToPage(idx - 1);
+}
+
+/**
+ * Notebook wechseln.
+ * @param {string} nbId
+ */
+async function selectNotebook(nbId) {
+  if (nbId === state.currentNotebookId) return;
+  flushSave();
+  state.currentNotebookId = nbId;
+  if (!(nbId in state.currentPages)) state.currentPages[nbId] = 0;
+  const page = currentPage();
+  if (page) await loadPage(nbId, page.id, page);
+  redrawBackground();
+  redrawStrokes();
+  renderUI();
+  saveLocalSettings();
+}
+
+/** Neues Notebook erstellen. */
+async function createNotebook() {
+  const nbId = String(Date.now());
+  const pageId = String(Date.now() + 1);
+  state.notebooks.push({
+    id: nbId,
+    name: 'Neues Notizbuch',
+    pages: [{ id: pageId, strokes: [], background: 'grid', order: 0 }]
+  });
+  state.currentPages[nbId] = 0;
+  await saveAppMeta();
+  await selectNotebook(nbId);
+}
+
+/**
+ * Notebook löschen.
+ * @param {string} nbId
+ */
+async function deleteNotebook(nbId) {
+  if (state.notebooks.length <= 1) return;
+  await deleteNotebookData(nbId);
+  state.notebooks = state.notebooks.filter(n => n.id !== nbId);
+  delete state.currentPages[nbId];
+  if (state.currentNotebookId === nbId) {
+    state.currentNotebookId = state.notebooks[0].id;
+    state.currentPages[state.currentNotebookId] = 0;
+  }
+  await saveAppMeta();
+  const page = currentPage();
+  if (page) await loadPage(state.currentNotebookId, page.id, page);
+  redrawBackground();
+  redrawStrokes();
+  renderUI();
+  saveLocalSettings();
+}
+
+/**
+ * Notebook umbenennen.
+ * @param {string} nbId
+ * @param {string} name
+ */
+async function renameNotebook(nbId, name) {
+  const nb = state.notebooks.find(n => n.id === nbId);
+  if (nb) nb.name = name.trim() || nb.name;
+  await saveAppMeta();
+  renderUI();
+}
+
+/** Default-Notebook erstellen (erster Start). */
+function createDefaultNotebook() {
+  const nbId = String(Date.now());
+  const pageId = String(Date.now() + 1);
+  state.notebooks = [{
+    id: nbId,
+    name: `Notizen ${getClientName()}`,
+    pages: [{ id: pageId, strokes: [], background: 'grid', order: 0 }]
+  }];
+  state.currentNotebookId = nbId;
+  state.currentPages[nbId] = 0;
+}
+
+/** Testbuch mit 1000 Strokes erstellen. */
+async function createTestNotebook() {
+  const nbId = String(Date.now());
+  const pageId = String(Date.now() + 1);
+  const strokes = [];
+  for (let i = 0; i < 1000; i++) {
+    const y = 20 + (i % 50) * 30;
+    const x = 20 + Math.floor(i / 50) * 40;
+    const points = [];
+    for (let j = 0; j < 8; j++) {
+      points.push({ x: x + j * 4 + Math.random() * 2, y: y + Math.sin(j) * 10 + Math.random() * 2 });
+    }
+    strokes.push({ id: String(Date.now() + i + 2), points: roundPoints(points), color: '#000000', size: 2, tool: 'pen' });
+  }
+  state.notebooks.push({
+    id: nbId,
+    name: `Testbuch (${strokes.length} Strokes)`,
+    pages: [{ id: pageId, strokes, background: 'grid', order: 0 }]
+  });
+  state.currentPages[nbId] = 0;
+  await saveAppMeta();
+  await selectNotebook(nbId);
+  // Strokes sofort speichern
+  const data = serializeStrokes(strokes);
+  await savePageData(nbId, pageId, data);
+}
+
+// ─── Undo / Clear ───────────────────────────────────────────────────────────
+
+function undo() {
+  const page = currentPage();
+  if (!page || !page.strokes.length) return;
+  page.strokes.pop();
+  redrawStrokes();
+  saveCurrentPage();
+}
+
+function clearPage() {
+  const page = currentPage();
+  if (!page) return;
+  page.strokes = [];
+  redrawStrokes();
+  saveCurrentPage();
+}
+
+// ─── Tool Selection ─────────────────────────────────────────────────────────
+
+/**
+ * @param {string} tool - 'pen' | 'eraser' | 'hand'
+ */
+function setTool(tool) {
+  state.tool = tool;
+  renderUI();
+}
+
+/**
+ * @param {string} color
+ */
+function setColor(color) {
+  state.color = color;
+  saveLocalSettings();
+  renderUI();
+}
+
+/**
+ * @param {number} idx
+ */
+function setPenSize(idx) {
+  state.penSizeIndex = idx;
+  saveLocalSettings();
+  renderUI();
+}
+
+// ─── Settings Persistence ───────────────────────────────────────────────────
+
+async function saveLocalSettings() {
+  if (!settingsDB) return;
+  await settingsPut(roomKey + ':currentNotebookId', state.currentNotebookId);
+  await settingsPut(roomKey + ':pagePositions', { ...state.currentPages });
+  await settingsPut(roomKey + ':color', state.color);
+  await settingsPut(roomKey + ':penSizeIndex', state.penSizeIndex);
+  await settingsPut(roomKey + ':customColors', [...state.customColors]);
+  await settingsPut(roomKey + ':penDetected', state.penDetected);
+}
+
+async function loadLocalSettings() {
+  const savedCurrentId = await settingsGet(roomKey + ':currentNotebookId');
+  const savedColor = await settingsGet(roomKey + ':color');
+  if (savedColor) state.color = savedColor;
+  const savedPenSizeIndex = await settingsGet(roomKey + ':penSizeIndex');
+  if (typeof savedPenSizeIndex === 'number') state.penSizeIndex = savedPenSizeIndex;
+  const savedCustomColors = await settingsGet(roomKey + ':customColors');
+  if (Array.isArray(savedCustomColors)) state.customColors = savedCustomColors;
+  const savedPenDetected = await settingsGet(roomKey + ':penDetected');
+  if (typeof savedPenDetected === 'boolean') state.penDetected = savedPenDetected;
+  return savedCurrentId;
+}
+
+// ─── Input Handling ─────────────────────────────────────────────────────────
+
+/**
+ * Pointer-Position relativ zum Canvas-Container.
+ * @param {PointerEvent} e
+ * @returns {{x: number, y: number}}
+ */
+function getCanvasPos(e) {
+  const container = document.getElementById('canvas-container');
+  const rect = container.getBoundingClientRect();
+  return {
+    x: e.clientX - rect.left,
+    y: e.clientY - rect.top
+  };
+}
+
+/**
+ * Screen-Koordinaten → World-Koordinaten.
+ * @param {number} sx
+ * @param {number} sy
+ * @returns {{x: number, y: number}}
+ */
+function screenToWorld(sx, sy) {
+  return {
+    x: (sx - state.viewX) / state.viewScale,
+    y: (sy - state.viewY) / state.viewScale
+  };
+}
+
+function onPointerDown(e) {
+  // Palm-Rejection: Pen erkannt → Touch ignorieren
+  if (e.pointerType === 'pen') {
+    state.penDetected = true;
+  }
+  if (state.penDetected && e.pointerType === 'touch') {
+    // Touch bei aktivem Stift nur für Swipe/Pinch
+    return;
+  }
+
+  if (state.tool === 'hand') {
+    // Panning starten
+    return;
+  }
+
+  if (isDrawing) return;
+  const pos = getCanvasPos(e);
+  const world = screenToWorld(pos.x, pos.y);
+
+  isDrawing = true;
+  activePointerId = e.pointerId;
+  activePointerType = e.pointerType;
+  currentPoints = [world];
+  lastPoint = pos;
+
+  // Live-Preview auf activeCanvas
+  if (activeCtx) {
+    activeCtx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    activeCtx.clearRect(0, 0, activeCanvas.width / DPR, activeCanvas.height / DPR);
+  }
+
+  e.target?.setPointerCapture?.(e.pointerId);
+  e.preventDefault();
+}
+
+function onPointerMove(e) {
+  if (!isDrawing || e.pointerId !== activePointerId) return;
+  e.preventDefault();
+
+  const pos = getCanvasPos(e);
+  const world = screenToWorld(pos.x, pos.y);
+  currentPoints.push(world);
+
+  // Live-Preview zeichnen
+  if (activeCtx && lastPoint) {
+    activeCtx.beginPath();
+    activeCtx.moveTo(lastPoint.x, lastPoint.y);
+    activeCtx.lineTo(pos.x, pos.y);
+    const size = PEN_SIZES[state.penSizeIndex].size * state.viewScale;
+    activeCtx.lineWidth = state.tool === 'eraser' ? size * 3 : size;
+    activeCtx.strokeStyle = state.tool === 'eraser' ? 'rgba(128,128,128,0.5)' : state.color;
+    activeCtx.lineCap = 'round';
+    activeCtx.lineJoin = 'round';
+    activeCtx.globalCompositeOperation = 'source-over';
+    activeCtx.stroke();
+  }
+  lastPoint = pos;
+}
+
+function onPointerUp(e) {
+  if (!isDrawing || e.pointerId !== activePointerId) return;
+  isDrawing = false;
+  activePointerId = null;
+
+  // Active Canvas leeren
+  if (activeCtx) {
+    activeCtx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    activeCtx.clearRect(0, 0, activeCanvas.width / DPR, activeCanvas.height / DPR);
+  }
+
+  const page = currentPage();
+  if (!page || currentPoints.length < 2) { currentPoints = []; lastPoint = null; return; }
+
+  const strokeId = String(Date.now());
+  const newStroke = {
+    id: strokeId,
+    points: roundPoints(currentPoints),
+    color: state.color,
+    size: PEN_SIZES[state.penSizeIndex].size,
+    tool: state.tool === 'eraser' ? 'eraser' : 'pen'
+  };
+
+  page.strokes.push(newStroke);
+
+  // Inkrementell auf staticCanvas + Cache zeichnen
+  if (staticCtx) {
+    staticCtx.save();
+    staticCtx.translate(state.viewX, state.viewY);
+    staticCtx.scale(state.viewScale, state.viewScale);
+    drawStrokeToCanvas(staticCtx, newStroke);
+    staticCtx.restore();
+  }
+  if (strokeCacheCanvas) {
+    const cCtx = strokeCacheCanvas.getContext('2d');
+    cCtx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    cCtx.save();
+    cCtx.translate(cacheViewX, cacheViewY);
+    cCtx.scale(cacheViewScale, cacheViewScale);
+    drawStrokeToCanvas(cCtx, newStroke);
+    cCtx.restore();
+  }
+
+  saveCurrentPage();
+  currentPoints = [];
+  lastPoint = null;
+}
+
+// ─── UI Rendering ───────────────────────────────────────────────────────────
+
+/** Sidebar + Toolbar + Page-Bar aktualisieren. */
+function renderUI() {
+  // Notebook-Liste in Sidebar
+  const nbList = document.getElementById('notebook-list');
+  if (nbList) {
+    nbList.innerHTML = state.notebooks.map(nb => `
+      <button class="notebook-tab ${nb.id === state.currentNotebookId ? 'active' : ''}" data-nb="${nb.id}">
+        <span class="nb-name">${nb.name}</span>
+        ${state.notebooks.length > 1 ? `<button class="nb-delete" data-delete="${nb.id}" title="Löschen">&times;</button>` : ''}
+      </button>
+    `).join('');
+
+    // Event-Listener
+    nbList.querySelectorAll('.notebook-tab').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        if (e.target.classList.contains('nb-delete')) return;
+        selectNotebook(btn.dataset.nb);
+      });
+    });
+    nbList.querySelectorAll('.nb-delete').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (confirm('Notebook löschen?')) deleteNotebook(btn.dataset.delete);
+      });
+    });
+  }
+
+  // Notebook-Name in Toolbar
+  const titleEl = document.getElementById('notebook-title');
+  if (titleEl) titleEl.textContent = currentNotebook()?.name || '';
+
+  // Page-Indicator
+  const pageIndicator = document.getElementById('page-indicator');
+  if (pageIndicator) {
+    pageIndicator.textContent = `${currentPageIndex() + 1} / ${totalPages()}`;
+  }
+
+  // Prev/Next Buttons
+  const prevBtn = document.getElementById('btn-prev');
+  const nextBtn = document.getElementById('btn-next');
+  if (prevBtn) prevBtn.disabled = currentPageIndex() === 0;
+  if (nextBtn) nextBtn.disabled = false; // Immer erlaubt (erstellt neue Seite)
+
+  // Tool-Buttons
+  document.querySelectorAll('[data-tool]').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.tool === state.tool);
+  });
+
+  // Farb-Palette
+  const colorPalette = document.getElementById('color-palette');
+  if (colorPalette) {
+    colorPalette.innerHTML = COLORS.map(c =>
+      `<button class="color-dot ${c === state.color ? 'active' : ''}" data-color="${c}" style="background:${c}"></button>`
+    ).join('');
+    colorPalette.querySelectorAll('.color-dot').forEach(btn => {
+      btn.addEventListener('click', () => setColor(btn.dataset.color));
+    });
+  }
+
+  // Größen-Palette
+  const sizePalette = document.getElementById('size-palette');
+  if (sizePalette) {
+    sizePalette.innerHTML = PEN_SIZES.map((s, i) =>
+      `<button class="size-btn ${i === state.penSizeIndex ? 'active' : ''}" data-size="${i}">${s.name}</button>`
+    ).join('');
+    sizePalette.querySelectorAll('.size-btn').forEach(btn => {
+      btn.addEventListener('click', () => setPenSize(Number(btn.dataset.size)));
+    });
+  }
+
+  // Peer-Count
+  const peerEl = document.getElementById('peer-count');
+  if (peerEl) {
+    const n = state.connectedPeers.length;
+    peerEl.textContent = n > 0 ? `${n} Peer${n > 1 ? 's' : ''}` : '';
+  }
+}
+
+// ─── Init ───────────────────────────────────────────────────────────────────
+
+async function init() {
+  console.log('[App] Init...');
+
+  // 1. Storage initialisieren
+  const storageBackend = await initStorage();
+  console.log('[App] Storage:', storageBackend);
+
+  // 2. Settings-DB öffnen
+  settingsDB = await openSettingsDB();
+
+  // 3. Room-Key aus URL-Hash
+  roomKey = window.location.hash.slice(1);
+  if (!roomKey) {
+    const savedKey = localStorage.getItem('lastRoomKey');
+    if (savedKey) {
+      roomKey = savedKey;
+    } else {
+      roomKey = Array.from(crypto.getRandomValues(new Uint8Array(16)))
+        .map(b => b.toString(16).padStart(2, '0')).join('');
+    }
+    window.location.hash = roomKey;
+  }
+  localStorage.setItem('lastRoomKey', roomKey);
+
+  // 4. Lokale Settings laden
+  const savedCurrentId = await loadLocalSettings();
+
+  // 5. App-Metadaten laden
+  await loadAppMeta();
+
+  // 6. Wenn keine Notebooks: Default erstellen
+  if (state.notebooks.length === 0) {
+    createDefaultNotebook();
+    await saveAppMeta();
+  }
+
+  // 7. Nav-State wiederherstellen
+  if (savedCurrentId && state.notebooks.find(n => n.id === savedCurrentId)) {
+    state.currentNotebookId = savedCurrentId;
+    const pagePositions = await settingsGet(roomKey + ':pagePositions') || {};
+    for (const nb of state.notebooks) {
+      state.currentPages[nb.id] = pagePositions[nb.id] ?? 0;
+    }
+  } else {
+    state.currentNotebookId = state.notebooks[0].id;
+  }
+  for (const nb of state.notebooks) {
+    if (!(nb.id in state.currentPages)) state.currentPages[nb.id] = 0;
+  }
+
+  // 8. Canvas-Referenzen
+  bgCanvas = document.getElementById('bg-canvas');
+  staticCanvas = document.getElementById('static-canvas');
+  activeCanvas = document.getElementById('active-canvas');
+  if (bgCanvas) bgCtx = bgCanvas.getContext('2d');
+  if (staticCanvas) staticCtx = staticCanvas.getContext('2d');
+  if (activeCanvas) activeCtx = activeCanvas.getContext('2d');
+
+  // 9. Aktuelle Seite laden
+  const page = currentPage();
+  if (page) await loadPage(state.currentNotebookId, page.id, page);
+
+  // 10. Canvas aufsetzen
+  setupCanvases();
+
+  // 11. Event-Listener
+  setupEvents();
+
+  // 12. UI rendern
+  renderUI();
+
+  console.log('[App] Bereit.', state.notebooks.length, 'Notebooks');
+}
+
+function setupEvents() {
+  const container = document.getElementById('canvas-container');
+  if (container) {
+    container.addEventListener('pointerdown', onPointerDown);
+    container.addEventListener('pointermove', onPointerMove);
+    container.addEventListener('pointerup', onPointerUp);
+    container.addEventListener('pointerleave', onPointerUp);
+    container.addEventListener('pointercancel', onPointerUp);
+  }
+
+  window.addEventListener('resize', () => setupCanvases());
+  window.addEventListener('beforeunload', () => { flushSave(); saveLocalSettings(); });
+
+  // Toolbar-Buttons
+  document.getElementById('btn-prev')?.addEventListener('click', prevPage);
+  document.getElementById('btn-next')?.addEventListener('click', nextPage);
+  document.getElementById('btn-add-notebook')?.addEventListener('click', createNotebook);
+  document.getElementById('btn-add-testbook')?.addEventListener('click', createTestNotebook);
+  document.getElementById('btn-undo')?.addEventListener('click', undo);
+  document.getElementById('btn-clear')?.addEventListener('click', () => {
+    if (confirm('Seite wirklich leeren?')) clearPage();
+  });
+
+  // Tool-Buttons
+  document.querySelectorAll('[data-tool]').forEach(btn => {
+    btn.addEventListener('click', () => setTool(btn.dataset.tool));
+  });
+}
+
+// ─── Boot ───────────────────────────────────────────────────────────────────
+
+init().catch(err => {
+  console.error('[App] Init fehlgeschlagen:', err);
+});
