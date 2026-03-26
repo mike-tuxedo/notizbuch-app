@@ -322,6 +322,28 @@
     }
     .copy-btn:hover { background: rgba(77,171,247,0.25); }
 
+    /* ─── Mobile Color/Size Triggers ─────────────────────────────────────── */
+    .mobile-color-trigger, .mobile-size-trigger { display: none; }
+    .mobile-color-dot {
+      width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--border);
+    }
+    .mobile-size-label {
+      font-size: 11px; font-weight: 700; color: var(--text-dim);
+    }
+    .mobile-popup {
+      position: fixed; bottom: var(--pagebar-h); left: 0; right: 0;
+      background: var(--surface); border-top: 1px solid var(--border);
+      padding: 12px; z-index: 150;
+      animation: slideUp 0.15s ease;
+    }
+    .mobile-popup.hidden { display: none; }
+    @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+    .mobile-popup-content {
+      display: flex; flex-wrap: wrap; gap: 8px; justify-content: center;
+    }
+    .mobile-popup-content .color-dot { width: 32px; height: 32px; }
+    .mobile-popup-content .size-btn { padding: 8px 14px; font-size: 14px; }
+
     /* ─── Responsive: Sidebar auf mobil verstecken ───────────────────────── */
     @media (max-width: 768px) {
       .app { grid-template-columns: 1fr; }
@@ -332,6 +354,9 @@
       }
       .sidebar.sidebar-open { transform: translateX(0); }
       .burger-btn { display: flex; }
+      .color-palette, .size-palette, .desktop-only { display: none !important; }
+      .mobile-color-trigger, .mobile-size-trigger { display: flex; }
+      #notebook-title { font-size: 12px; }
     }
 
     /* ─── Scrollbar ──────────────────────────────────────────────────────── */
@@ -371,6 +396,10 @@
         <button class="footer-btn" id="btn-export" title="Export">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
           Export
+        </button>
+        <button class="footer-btn" id="btn-import" title="Import">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          Import
         </button>
       </div>
     </aside>
@@ -422,10 +451,18 @@
         </div>
 
         <div class="toolbar-right">
+          <!-- Mobile: Farb-Trigger -->
+          <button class="tool-btn mobile-color-trigger" id="btn-mobile-color" title="Farbe">
+            <span class="mobile-color-dot" id="mobile-color-dot"></span>
+          </button>
+          <!-- Mobile: Größen-Trigger -->
+          <button class="tool-btn mobile-size-trigger" id="btn-mobile-size" title="Größe">
+            <span class="mobile-size-label" id="mobile-size-label">M</span>
+          </button>
           <div class="color-palette" id="color-palette">
             <!-- Dynamisch via renderUI() -->
           </div>
-          <span class="divider"></span>
+          <span class="divider desktop-only"></span>
           <div class="size-palette" id="size-palette">
             <!-- Dynamisch via renderUI() -->
           </div>
@@ -467,6 +504,20 @@
         <span id="passphrase-error" style="color: var(--danger); font-size: 12px; min-height: 16px;"></span>
         <button class="copy-btn" id="passphrase-ok" style="width: 100%; text-align: center;">Verbinden</button>
       </div>
+    </div>
+  </div>
+
+  <!-- Mobile Color Menu -->
+  <div class="mobile-popup hidden" id="mobile-color-menu">
+    <div class="mobile-popup-content" id="mobile-color-grid">
+      <!-- Dynamisch via renderUI() -->
+    </div>
+  </div>
+
+  <!-- Mobile Size Menu -->
+  <div class="mobile-popup hidden" id="mobile-size-menu">
+    <div class="mobile-popup-content" id="mobile-size-grid">
+      <!-- Dynamisch via renderUI() -->
     </div>
   </div>
 

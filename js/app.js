@@ -6,6 +6,7 @@ import { initStorage, savePageData, loadPageData, deletePageData, deleteNotebook
 import { roundPoints, drawStrokeToCanvas, drawBackground } from './canvas.js';
 import { initP2P, send as p2pSend, leaveRoom } from './p2p-sync.js';
 import { generateKey, exportKey, importKey, encrypt, decrypt, deriveKeyFromPassphrase } from './encryption.js';
+import { exportAppBundle, importAppBundle } from './share.js';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -1241,11 +1242,16 @@ function toggleSidebar() {
 
 // ─── Share Modal ────────────────────────────────────────────────────────────
 
-/** Share-Modal öffnen mit aktuellem Room-Link. */
+/** Share-Modal öffnen — Notebook-Invite-Link mit NotebookKey im Fragment. */
 async function openShareModal() {
   const modal = document.getElementById('share-modal');
   if (!modal) return;
-  // Bei localhost: LAN-IP verwenden, damit andere Geräte den Link öffnen können
+  const nbId = state.currentNotebookId;
+  const nbKey = await getNotebookKey(nbId);
+  const nbKeyRaw = await exportKey(nbKey);
+  const keyB64 = btoa(String.fromCharCode(...nbKeyRaw));
+
+  // Bei localhost: LAN-IP verwenden
   let origin = location.origin;
   if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
     try {
@@ -1256,7 +1262,9 @@ async function openShareModal() {
       }
     } catch {}
   }
-  const url = `${origin}${location.pathname}#${roomKey}`;
+  // Format: #nb={notebookId}&k={base64(notebookKey)}&name={name}
+  const nb = currentNotebook();
+  const url = `${origin}${location.pathname}#nb=${nbId}&k=${encodeURIComponent(keyB64)}&name=${encodeURIComponent(nb?.name || '')}`;
   const linkInput = document.getElementById('share-link');
   if (linkInput) linkInput.value = url;
   // QR-Code generieren (qrcode.js API: new QRCode(element, options))
@@ -1274,6 +1282,114 @@ async function openShareModal() {
 
 function closeShareModal() {
   document.getElementById('share-modal')?.classList.add('hidden');
+}
+
+/**
+ * Invite-Link aus URL-Fragment parsen.
+ * Format: #nb={notebookId}&k={base64(notebookKey)}&name={name}
+ * @returns {Promise<{notebookId: string, key: CryptoKey, name: string}|null>}
+ */
+async function parseInviteLink() {
+  const hash = location.hash;
+  if (!hash || !hash.includes('nb=')) return null;
+  try {
+    const params = new URLSearchParams(hash.slice(1));
+    const notebookId = params.get('nb');
+    const keyB64 = params.get('k');
+    const name = params.get('name') || 'Geteiltes Notizbuch';
+    if (!notebookId || !keyB64) return null;
+    const raw = Uint8Array.from(atob(decodeURIComponent(keyB64)), c => c.charCodeAt(0));
+    const key = await importKey(raw, true);
+    return { notebookId, key, name };
+  } catch (e) {
+    console.warn('[Share] Invite-Link ungültig:', e);
+    return null;
+  }
+}
+
+/**
+ * Invite-Link verarbeiten: NotebookKey installieren, Notebook erstellen wenn nötig.
+ * @param {{notebookId: string, key: CryptoKey, name: string}} invite
+ */
+async function handleInvite(invite) {
+  // NotebookKey speichern
+  state.notebookKeys[invite.notebookId] = invite.key;
+  const raw = await exportKey(invite.key);
+  localStorage.setItem(`notizbuch:nbKey:${invite.notebookId}`, JSON.stringify(Array.from(raw)));
+
+  // Notebook erstellen wenn nicht vorhanden
+  if (!state.notebooks.find(n => n.id === invite.notebookId)) {
+    const pageId = String(Date.now() + 1);
+    state.notebooks.push({
+      id: invite.notebookId, name: invite.name,
+      pages: [{ id: pageId, strokes: [], background: 'grid', order: 0 }]
+    });
+    state.currentPages[invite.notebookId] = 0;
+    await saveAppMeta();
+  }
+
+  // Zum geteilten Notebook wechseln
+  await selectNotebook(invite.notebookId);
+
+  // URL-Fragment bereinigen (MasterKey-Hash setzen)
+  history.replaceState(null, '', location.pathname + '#' + roomKey);
+  console.log('[Share] Invite verarbeitet:', invite.name, invite.notebookId);
+}
+
+// ─── Export / Import ─────────────────────────────────────────────────────────
+
+/** Alle Keys als verschlüsseltes Bundle exportieren (.enc Datei). */
+async function exportApp() {
+  const passphrase = prompt('Passphrase für den Export:');
+  if (!passphrase?.trim()) return;
+  try {
+    const masterKey = await getMasterCryptoKey();
+    if (!masterKey) { alert('Kein MasterKey vorhanden.'); return; }
+    const bundle = await exportAppBundle(masterKey, state.notebookKeys, passphrase);
+    // Download triggern
+    const blob = new Blob([bundle], { type: 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    const a = Object.assign(document.createElement('a'), { href: url, download: 'notizbuch-backup.enc' });
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    alert('Export fehlgeschlagen: ' + e.message);
+  }
+}
+
+/** Verschlüsseltes Bundle importieren — alle Keys installieren. */
+async function importApp() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.enc';
+  input.onchange = async () => {
+    const file = input.files[0];
+    if (!file) return;
+    const passphrase = prompt('Passphrase für den Import:');
+    if (!passphrase?.trim()) return;
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const { masterKey, notebookKeyMap } = await importAppBundle(bytes, passphrase);
+      // MasterKey installieren
+      const rawMaster = await exportKey(masterKey);
+      masterKeyRaw = rawMaster;
+      const hashBytes = new Uint8Array(await crypto.subtle.digest('SHA-256', rawMaster));
+      state.masterKeyHash = Array.from(hashBytes.slice(0, 16)).map(b => b.toString(16).padStart(2, '0')).join('');
+      localStorage.setItem('notizbuch:masterKeyHash', state.masterKeyHash);
+      localStorage.setItem('notizbuch:masterKeyRaw', JSON.stringify(Array.from(rawMaster)));
+      // NotebookKeys installieren
+      for (const [id, key] of Object.entries(notebookKeyMap)) {
+        state.notebookKeys[id] = key;
+        const raw = await exportKey(key);
+        localStorage.setItem(`notizbuch:nbKey:${id}`, JSON.stringify(Array.from(raw)));
+      }
+      alert('Import erfolgreich! App wird neu geladen.');
+      location.reload();
+    } catch (e) {
+      alert('Import fehlgeschlagen — falsche Passphrase? ' + e.message);
+    }
+  };
+  input.click();
 }
 
 function copyShareLink() {
@@ -1358,22 +1474,33 @@ function onPointerDown(e) {
     state.penDetected = true;
   }
 
-  // Touch bei aktivem Stift: nur Pinch/Swipe erlauben
-  if (state.penDetected && e.pointerType === 'touch') {
-    // Pinch-Zoom tracken
-    pinchState.touches[e.pointerId] = { x: e.clientX, y: e.clientY };
-    if (Object.keys(pinchState.touches).length === 2) {
-      _startPinch();
-    } else if (Object.keys(pinchState.touches).length === 1) {
-      // Swipe starten
-      swipeState.active = true;
-      swipeState.pointerId = e.pointerId;
-      swipeState.startX = e.clientX;
-      swipeState.startY = e.clientY;
-      swipeState.startTime = Date.now();
-      swipeState.currentX = e.clientX;
+  // Touch-Handling: Bei Pen-Erkennung oder wenn nicht Hand-Tool → Touch ignorieren für Zeichnen
+  if (e.pointerType === 'touch') {
+    if (state.tool === 'hand') {
+      // Hand-Tool: Touch erlaubt für Pan/Pinch/Swipe
+      pinchState.touches[e.pointerId] = { x: e.clientX, y: e.clientY };
+      if (Object.keys(pinchState.touches).length === 2) {
+        _startPinch();
+      } else if (Object.keys(pinchState.touches).length === 1) {
+        // Single-Touch: Pan starten
+        isPanning = true;
+        panPointerId = e.pointerId;
+        panStartX = e.clientX;
+        panStartY = e.clientY;
+        panStartViewX = state.viewX;
+        panStartViewY = state.viewY;
+        // Gleichzeitig Swipe tracken
+        swipeState.active = true;
+        swipeState.pointerId = e.pointerId;
+        swipeState.startX = e.clientX;
+        swipeState.startY = e.clientY;
+        swipeState.startTime = Date.now();
+        swipeState.currentX = e.clientX;
+      }
+      return;
     }
-    return;
+    // Pen erkannt → Touch komplett ignorieren (Palm-Rejection)
+    if (state.penDetected) return;
   }
 
   // Hand-Tool → Panning
@@ -1595,6 +1722,42 @@ function renderUI() {
     });
   }
 
+  // Mobile Farb-Trigger Dot
+  const mColorDot = document.getElementById('mobile-color-dot');
+  if (mColorDot) mColorDot.style.background = state.color;
+  // Mobile Größen-Label
+  const mSizeLabel = document.getElementById('mobile-size-label');
+  if (mSizeLabel) mSizeLabel.textContent = PEN_SIZES[state.penSizeIndex].name;
+
+  // Mobile Color Grid
+  const mColorGrid = document.getElementById('mobile-color-grid');
+  if (mColorGrid) {
+    const allColors = [...COLORS, ...state.customColors];
+    mColorGrid.innerHTML = allColors.map(c =>
+      `<button class="color-dot ${c === state.color ? 'active' : ''}" data-mcolor="${c}" style="background:${c}"></button>`
+    ).join('');
+    mColorGrid.querySelectorAll('[data-mcolor]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        setColor(btn.dataset.mcolor);
+        document.getElementById('mobile-color-menu')?.classList.add('hidden');
+      });
+    });
+  }
+
+  // Mobile Size Grid
+  const mSizeGrid = document.getElementById('mobile-size-grid');
+  if (mSizeGrid) {
+    mSizeGrid.innerHTML = PEN_SIZES.map((s, i) =>
+      `<button class="size-btn ${i === state.penSizeIndex ? 'active' : ''}" data-msize="${i}">${s.name}</button>`
+    ).join('');
+    mSizeGrid.querySelectorAll('[data-msize]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        setPenSize(Number(btn.dataset.msize));
+        document.getElementById('mobile-size-menu')?.classList.add('hidden');
+      });
+    });
+  }
+
   // Peer-Count
   const peerEl = document.getElementById('peer-count');
   if (peerEl) {
@@ -1615,20 +1778,28 @@ async function init() {
   // 2. Settings-DB öffnen
   settingsDB = await openSettingsDB();
 
-  // 3. MasterKey → Room-Key ableiten
+  // 3. Invite-Link prüfen (bevor MasterKey-Dialog kommt)
+  const invite = await parseInviteLink();
+
+  // 4. MasterKey → Room-Key ableiten
   roomKey = await initMasterKey();
   window.location.hash = roomKey;
 
-  // 4. Lokale Settings laden
+  // 5. Lokale Settings laden
   const savedCurrentId = await loadLocalSettings();
 
-  // 5. App-Metadaten laden
+  // 6. App-Metadaten laden
   await loadAppMeta();
 
-  // 6. Wenn keine Notebooks: Default erstellen
+  // 7. Wenn keine Notebooks: Default erstellen
   if (state.notebooks.length === 0) {
     createDefaultNotebook();
     await saveAppMeta();
+  }
+
+  // 7b. Invite-Link verarbeiten (nach Meta-Load, damit Notebook-Check funktioniert)
+  if (invite) {
+    await handleInvite(invite);
   }
 
   // 7. Nav-State wiederherstellen
@@ -1724,6 +1895,18 @@ function setupEvents() {
 
   // Share
   document.getElementById('btn-share')?.addEventListener('click', openShareModal);
+  document.getElementById('btn-export')?.addEventListener('click', exportApp);
+  document.getElementById('btn-import')?.addEventListener('click', importApp);
+
+  // Mobile Farb-/Größen-Menüs
+  document.getElementById('btn-mobile-color')?.addEventListener('click', () => {
+    document.getElementById('mobile-color-menu')?.classList.toggle('hidden');
+    document.getElementById('mobile-size-menu')?.classList.add('hidden');
+  });
+  document.getElementById('btn-mobile-size')?.addEventListener('click', () => {
+    document.getElementById('mobile-size-menu')?.classList.toggle('hidden');
+    document.getElementById('mobile-color-menu')?.classList.add('hidden');
+  });
   document.getElementById('btn-close-share')?.addEventListener('click', closeShareModal);
   document.getElementById('btn-copy-link')?.addEventListener('click', copyShareLink);
 
