@@ -881,19 +881,17 @@ async function startP2P() {
       savePageData(notebookId, pageId, serializeStrokes(page.strokes));
     },
 
-    onFullSync(payload, peerId) {
+    async onFullSync(payload, peerId) {
       console.log('[P2P] Full-Sync von', peerId, ':', payload.notebooks?.length, 'Notebooks');
-      applyFullSync(payload).then(() => {
-        // Aktuelle Seite neu laden falls sich Daten geändert haben
-        if (currentPage()) {
-          loadPage(state.currentNotebookId, currentPage().id, currentPage()).then(() => {
-            redrawStrokes();
-            renderUI();
-          });
-        } else {
-          renderUI();
-        }
-      });
+      await applyFullSync(payload);
+      // Sidebar sofort aktualisieren
+      renderUI();
+      // Aktuelle Seite neu laden falls sich Strokes geändert haben
+      const page = currentPage();
+      if (page) {
+        await loadPage(state.currentNotebookId, page.id, page);
+        redrawStrokes();
+      }
     },
 
     onNbCreated({ id, name }, peerId) {
