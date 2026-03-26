@@ -1543,6 +1543,14 @@ function setupEvents() {
   window.addEventListener('resize', () => setupCanvases());
   window.addEventListener('beforeunload', () => { flushSave(); saveLocalSettings(); });
 
+  // Bei Tab-Fokus: P2P-Verbindung prüfen und ggf. neu verbinden
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && state.syncEnabled) {
+      console.log('[App] Tab aktiv — prüfe P2P-Verbindung');
+      startP2P().catch(e => console.error('[App] P2P Reconnect Fehler:', e));
+    }
+  });
+
   // Toolbar-Buttons
   document.getElementById('btn-prev')?.addEventListener('click', prevPage);
   document.getElementById('btn-next')?.addEventListener('click', nextPage);
