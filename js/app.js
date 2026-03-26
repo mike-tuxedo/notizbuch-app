@@ -5,7 +5,7 @@
 import { initStorage, savePageData, loadPageData, deletePageData, deleteNotebookData, saveMeta, loadMeta, clearAll } from './storage.js';
 import { roundPoints, drawStrokeToCanvas, drawBackground } from './canvas.js';
 import { initP2P, send as p2pSend, leaveRoom } from './p2p-sync.js';
-import { deriveKeyFromPassphrase, exportKey } from './encryption.js';
+import { generateKey, exportKey, importKey, encrypt, decrypt, deriveKeyFromPassphrase } from './encryption.js';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -54,6 +54,8 @@ const state = {
   connectedPeers: [],
   /** @type {string|null} Hex-Hash des MasterKeys — bestimmt Room-ID */
   masterKeyHash: null,
+  /** @type {Object<string, CryptoKey>} notebookId → NotebookKey (für OPFS-Verschlüsselung) */
+  notebookKeys: {},
 
   // UI
   sidebarOpen: true,
@@ -176,11 +178,13 @@ function getClientName() {
 // ─── Serialization ──────────────────────────────────────────────────────────
 
 /**
- * Strokes einer Seite als JSON-Uint8Array serialisieren (für Storage).
+ * Strokes verschlüsselt serialisieren (für OPFS-Storage).
+ * JSON → UTF-8 → AES-GCM encrypt(notebookKey) → Uint8Array
  * @param {Array} strokes
- * @returns {Uint8Array}
+ * @param {string} notebookId
+ * @returns {Promise<Uint8Array>}
  */
-function serializeStrokes(strokes) {
+async function serializeStrokes(strokes, notebookId) {
   const json = JSON.stringify(strokes.map(s => ({
     id: s.id,
     points: roundPoints(s.points || []),
@@ -188,19 +192,35 @@ function serializeStrokes(strokes) {
     size: s.size,
     tool: s.tool || 'pen'
   })));
-  return new TextEncoder().encode(json);
+  const plain = new TextEncoder().encode(json);
+  try {
+    const key = await getNotebookKey(notebookId);
+    return encrypt(key, plain);
+  } catch (e) {
+    console.warn('[Crypto] Verschlüsselung fehlgeschlagen, speichere plain:', e);
+    return plain;
+  }
 }
 
 /**
- * Uint8Array zurück zu Stroke-Array deserialisieren.
+ * Verschlüsselte Uint8Array zu Stroke-Array deserialisieren.
+ * Uint8Array → AES-GCM decrypt(notebookKey) → UTF-8 → JSON
  * @param {Uint8Array} data
- * @returns {Array}
+ * @param {string} notebookId
+ * @returns {Promise<Array>}
  */
-function deserializeStrokes(data) {
+async function deserializeStrokes(data, notebookId) {
   try {
-    return JSON.parse(new TextDecoder().decode(data));
+    const key = await getNotebookKey(notebookId);
+    const plainBuf = await decrypt(key, data);
+    return JSON.parse(new TextDecoder().decode(plainBuf));
   } catch {
-    return [];
+    // Fallback: versuche als plain JSON (für Migration bestehender Daten)
+    try {
+      return JSON.parse(new TextDecoder().decode(data));
+    } catch {
+      return [];
+    }
   }
 }
 
@@ -227,7 +247,7 @@ async function _flushSave() {
   const page = currentPage();
   if (!page) return;
   const nbId = state.currentNotebookId;
-  const data = serializeStrokes(page.strokes || []);
+  const data = await serializeStrokes(page.strokes || [], nbId);
   await savePageData(nbId, String(page.id), data);
 }
 
@@ -240,7 +260,7 @@ async function _flushSave() {
  */
 async function loadPage(notebookId, pageId, page) {
   const data = await loadPageData(notebookId, pageId);
-  const diskStrokes = data ? deserializeStrokes(data) : [];
+  const diskStrokes = data ? await deserializeStrokes(data, notebookId) : [];
   // Union-Merge: OPFS + In-Memory (P2P-Strokes die noch nicht gespeichert waren)
   const merged = new Map();
   for (const s of diskStrokes) merged.set(s.id, s);
@@ -259,12 +279,41 @@ async function saveAppMeta() {
       pages: nb.pages.map(p => ({ id: p.id, background: p.background || 'grid', order: p.order ?? 0 }))
     }))
   };
-  await saveMeta(meta);
+  // Meta mit MasterKey verschlüsseln
+  const plain = new TextEncoder().encode(JSON.stringify(meta));
+  try {
+    const masterKey = await getMasterCryptoKey();
+    if (masterKey) {
+      const encrypted = await encrypt(masterKey, plain);
+      await saveMeta(encrypted);
+    } else {
+      await saveMeta(meta); // Fallback: plain
+    }
+  } catch {
+    await saveMeta(meta);
+  }
 }
 
 /** App-Metadaten laden und Notebooks wiederherstellen. */
 async function loadAppMeta() {
-  const meta = await loadMeta();
+  const raw = await loadMeta();
+  if (!raw) return;
+  let meta;
+  if (raw instanceof Uint8Array || raw?.type === 'Buffer' || ArrayBuffer.isView(raw)) {
+    // Verschlüsselt — mit MasterKey entschlüsseln
+    try {
+      const masterKey = await getMasterCryptoKey();
+      if (!masterKey) return;
+      const plainBuf = await decrypt(masterKey, raw);
+      meta = JSON.parse(new TextDecoder().decode(plainBuf));
+    } catch {
+      return; // Entschlüsselung fehlgeschlagen
+    }
+  } else if (typeof raw === 'object' && raw.notebooks) {
+    meta = raw; // Plain-JSON (Migration bestehender Daten)
+  } else {
+    return;
+  }
   if (!meta?.notebooks?.length) return;
   state.notebooks = meta.notebooks.map(nb => ({
     id: nb.id,
@@ -593,7 +642,7 @@ async function createTestNotebook() {
   await saveAppMeta();
   await selectNotebook(nbId);
   // Strokes sofort speichern
-  const data = serializeStrokes(strokes);
+  const data = await serializeStrokes(strokes, nbId);
   await savePageData(nbId, pageId, data);
 }
 
@@ -830,6 +879,44 @@ async function initMasterKey() {
   return showPassphraseDialog();
 }
 
+// ─── NotebookKey Management ─────────────────────────────────────────────────
+
+/**
+ * NotebookKey für ein Notebook holen (oder erstellen + speichern).
+ * @param {string} notebookId
+ * @returns {Promise<CryptoKey>}
+ */
+async function getNotebookKey(notebookId) {
+  if (state.notebookKeys[notebookId]) return state.notebookKeys[notebookId];
+
+  // Aus localStorage laden
+  const stored = localStorage.getItem(`notizbuch:nbKey:${notebookId}`);
+  if (stored) {
+    try {
+      const raw = new Uint8Array(JSON.parse(stored));
+      const key = await importKey(raw, true);
+      state.notebookKeys[notebookId] = key;
+      return key;
+    } catch {}
+  }
+
+  // Neuen Key generieren + speichern
+  const key = await generateKey(true);
+  state.notebookKeys[notebookId] = key;
+  const raw = await exportKey(key);
+  localStorage.setItem(`notizbuch:nbKey:${notebookId}`, JSON.stringify(Array.from(raw)));
+  return key;
+}
+
+/**
+ * MasterKey als CryptoKey importieren (für Meta-Verschlüsselung).
+ * @returns {Promise<CryptoKey|null>}
+ */
+async function getMasterCryptoKey() {
+  if (!masterKeyRaw) return null;
+  return importKey(masterKeyRaw, true);
+}
+
 // ─── P2P Sync Integration ───────────────────────────────────────────────────
 
 /**
@@ -901,7 +988,7 @@ async function applyFullSync(payload) {
   for (const nb of state.notebooks) {
     for (const p of nb.pages) {
       if (p.strokes?.length > 0) {
-        await savePageData(nb.id, p.id, serializeStrokes(p.strokes));
+        await savePageData(nb.id, p.id, await serializeStrokes(p.strokes, nb.id));
       }
     }
   }
@@ -921,7 +1008,7 @@ async function startP2P() {
         redrawStrokes();
       }
       // Immer die betroffene Page speichern (nicht nur aktuelle)
-      savePageData(notebookId, pageId, serializeStrokes(page.strokes));
+      serializeStrokes(page.strokes, notebookId).then(d => savePageData(notebookId, pageId, d));
     },
 
     onUndo({ notebookId, pageId }, peerId) {
@@ -930,7 +1017,7 @@ async function startP2P() {
       if (!page || !page.strokes.length) return;
       page.strokes.pop();
       if (notebookId === state.currentNotebookId && pageId === currentPage()?.id) redrawStrokes();
-      savePageData(notebookId, pageId, serializeStrokes(page.strokes));
+      serializeStrokes(page.strokes, notebookId).then(d => savePageData(notebookId, pageId, d));
     },
 
     onClear({ notebookId, pageId }, peerId) {
@@ -939,7 +1026,7 @@ async function startP2P() {
       if (!page) return;
       page.strokes = [];
       if (notebookId === state.currentNotebookId && pageId === currentPage()?.id) redrawStrokes();
-      savePageData(notebookId, pageId, serializeStrokes(page.strokes));
+      serializeStrokes(page.strokes, notebookId).then(d => savePageData(notebookId, pageId, d));
     },
 
     async onFullSync(payload, peerId) {

@@ -225,21 +225,34 @@ async function _opfsDeleteNotebookData(notebookId) {
 }
 
 /** @param {Object} meta */
+/** @param {Object|Uint8Array} meta */
 async function _opfsSaveMeta(meta) {
   const root = await navigator.storage.getDirectory();
-  const fh = await root.getFileHandle('meta.json', { create: true });
+  const fh = await root.getFileHandle('meta.bin', { create: true });
   const writable = await fh.createWritable();
-  await writable.write(JSON.stringify(meta));
+  // Uint8Array (verschlüsselt) oder Object (plain JSON)
+  const data = meta instanceof Uint8Array ? meta : new TextEncoder().encode(JSON.stringify(meta));
+  await writable.write(data);
   await writable.close();
 }
 
-/** @returns {Promise<Object|null>} */
+/** @returns {Promise<Uint8Array|Object|null>} */
 async function _opfsLoadMeta() {
   try {
     const root = await navigator.storage.getDirectory();
-    const fh = await root.getFileHandle('meta.json');
-    const file = await fh.getFile();
-    return JSON.parse(await file.text());
+    // Versuche zuerst verschlüsselte meta.bin, dann plain meta.json (Migration)
+    let file;
+    try {
+      const fh = await root.getFileHandle('meta.bin');
+      file = await fh.getFile();
+    } catch {
+      try {
+        const fh = await root.getFileHandle('meta.json');
+        file = await fh.getFile();
+        return JSON.parse(await file.text()); // Plain JSON (alte Daten)
+      } catch { return null; }
+    }
+    return new Uint8Array(await file.arrayBuffer());
   } catch {
     return null;
   }
@@ -352,7 +365,7 @@ async function _idbDeleteNotebookData(notebookId) {
   });
 }
 
-/** @param {Object} meta */
+/** @param {Object|Uint8Array} meta */
 async function _idbSaveMeta(meta) {
   await _idbTx(IDB_STORE_META, 'readwrite', s => s.put(meta, 'meta'));
 }
