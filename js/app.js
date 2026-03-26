@@ -884,9 +884,31 @@ async function startP2P() {
     async onFullSync(payload, peerId) {
       console.log('[P2P] Full-Sync von', peerId, ':', payload.notebooks?.length, 'Notebooks');
       await applyFullSync(payload);
-      // Sidebar sofort aktualisieren
+
+      // Leeres Default-Notebook entfernen wenn ein gleichnamiges vom Peer kam
+      // (passiert bei Cache-Clear + Neuverbindung)
+      if (payload.notebooks?.length > 0) {
+        const remoteNames = new Set(payload.notebooks.map(n => n.name));
+        const toRemove = state.notebooks.filter(n =>
+          remoteNames.has(n.name) &&
+          !payload.notebooks.some(rn => rn.id === n.id) &&
+          n.pages.every(p => !p.strokes || p.strokes.length === 0)
+        );
+        for (const nb of toRemove) {
+          state.notebooks = state.notebooks.filter(n => n.id !== nb.id);
+          delete state.currentPages[nb.id];
+          deleteNotebookData(nb.id);
+        }
+        if (toRemove.length > 0) {
+          if (!state.notebooks.find(n => n.id === state.currentNotebookId)) {
+            state.currentNotebookId = state.notebooks[0]?.id;
+            state.currentPages[state.currentNotebookId] = 0;
+          }
+          await saveAppMeta();
+        }
+      }
+
       renderUI();
-      // Aktuelle Seite neu laden falls sich Strokes geändert haben
       const page = currentPage();
       if (page) {
         await loadPage(state.currentNotebookId, page.id, page);
