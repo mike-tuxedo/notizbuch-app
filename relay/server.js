@@ -343,9 +343,9 @@ wss.on('connection', (ws, req) => {
 httpsServer.listen(PORT, '0.0.0.0', () => {
   const lanIp = getLanIp();
   console.log(`\n  Notizbuch Dev-Server läuft:`);
-  console.log(`    App:       https://localhost:${PORT}/app.html`);
+  console.log(`    App:       https://localhost:${PORT}/app-v2.html`);
   console.log(`    Dashboard: https://localhost:${PORT}/debug.html`);
-  if (lanIp) console.log(`    WLAN:      https://${lanIp}:${PORT}/app.html`);
+  if (lanIp) console.log(`    WLAN:      https://${lanIp}:${PORT}/app-v2.html`);
   console.log(`    Daten:     ${DATA_FILE}`);
   console.log();
 });
