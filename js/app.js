@@ -54,6 +54,7 @@ const state = {
 
   // UI
   sidebarOpen: true,
+  zenMode: false,
 };
 
 // ─── DOM References ─────────────────────────────────────────────────────────
@@ -546,12 +547,106 @@ function setColor(color) {
 }
 
 /**
+ * Custom-Farbe zur Palette hinzufügen (max 10).
+ * @param {string} hex
+ */
+function addCustomColor(hex) {
+  hex = hex.toLowerCase();
+  if (COLORS.includes(hex) || state.customColors.includes(hex)) return;
+  state.customColors.push(hex);
+  if (state.customColors.length > 10) state.customColors.shift();
+  saveLocalSettings();
+  renderUI();
+}
+
+/** iro.js Color-Picker öffnen/schließen. */
+function toggleColorPicker() {
+  const popup = document.getElementById('color-picker-popup');
+  if (!popup) return;
+  const isOpen = !popup.classList.contains('hidden');
+  if (isOpen) {
+    popup.classList.add('hidden');
+    return;
+  }
+  popup.classList.remove('hidden');
+  const container = document.getElementById('iro-container');
+  if (!container) return;
+  container.innerHTML = '';
+  // iro.js ist global via <script> geladen
+  if (typeof iro === 'undefined') return;
+  const picker = new iro.ColorPicker(container, {
+    width: 180,
+    color: state.color,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.15)',
+    layout: [
+      { component: iro.ui.Wheel },
+      { component: iro.ui.Slider, options: { sliderType: 'value' } }
+    ]
+  });
+  picker.on('color:change', (c) => { state.color = c.hexString; });
+  // Confirm-Button
+  document.getElementById('iro-confirm')?.addEventListener('click', () => {
+    addCustomColor(state.color);
+    setColor(state.color);
+    popup.classList.add('hidden');
+  });
+}
+
+/**
  * @param {number} idx
  */
 function setPenSize(idx) {
   state.penSizeIndex = idx;
   saveLocalSettings();
   renderUI();
+}
+
+// ─── Zen Mode ───────────────────────────────────────────────────────────────
+
+/** Zen-Modus: Sidebar + Toolbar + Pagebar ausblenden, Fullscreen. */
+function toggleZenMode() {
+  state.zenMode = !state.zenMode;
+  document.body.classList.toggle('zen-mode', state.zenMode);
+  if (state.zenMode) {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen().catch(() => {});
+    }
+  } else {
+    if (document.fullscreenElement) {
+      document.exitFullscreen().catch(() => {});
+    }
+  }
+  setTimeout(() => setupCanvases(), 100);
+}
+
+// ─── Notebook Rename ────────────────────────────────────────────────────────
+
+/** Inline-Rename im Notebook-Titel starten. */
+function startRename() {
+  const titleEl = document.getElementById('notebook-title');
+  if (!titleEl) return;
+  const nb = currentNotebook();
+  if (!nb) return;
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = nb.name;
+  input.className = 'rename-input';
+  input.addEventListener('keydown', async (e) => {
+    if (e.key === 'Enter') {
+      await renameNotebook(nb.id, input.value);
+      renderUI();
+    }
+    if (e.key === 'Escape') renderUI();
+  });
+  input.addEventListener('blur', async () => {
+    await renameNotebook(nb.id, input.value);
+    renderUI();
+  });
+  titleEl.textContent = '';
+  titleEl.appendChild(input);
+  input.focus();
+  input.select();
 }
 
 // ─── Settings Persistence ───────────────────────────────────────────────────
@@ -765,15 +860,17 @@ function renderUI() {
     btn.classList.toggle('active', btn.dataset.tool === state.tool);
   });
 
-  // Farb-Palette
+  // Farb-Palette (Standard + Custom + Picker)
   const colorPalette = document.getElementById('color-palette');
   if (colorPalette) {
-    colorPalette.innerHTML = COLORS.map(c =>
+    const allColors = [...COLORS, ...state.customColors];
+    colorPalette.innerHTML = allColors.map(c =>
       `<button class="color-dot ${c === state.color ? 'active' : ''}" data-color="${c}" style="background:${c}"></button>`
-    ).join('');
-    colorPalette.querySelectorAll('.color-dot').forEach(btn => {
+    ).join('') + `<button class="color-dot color-picker-btn" id="btn-color-picker" title="Farbwähler"></button>`;
+    colorPalette.querySelectorAll('.color-dot[data-color]').forEach(btn => {
       btn.addEventListener('click', () => setColor(btn.dataset.color));
     });
+    document.getElementById('btn-color-picker')?.addEventListener('click', toggleColorPicker);
   }
 
   // Größen-Palette
@@ -898,6 +995,23 @@ function setupEvents() {
   document.querySelectorAll('[data-tool]').forEach(btn => {
     btn.addEventListener('click', () => setTool(btn.dataset.tool));
   });
+
+  // Color-Picker
+  document.getElementById('btn-color-picker')?.addEventListener('click', toggleColorPicker);
+
+  // Zen-Mode
+  document.getElementById('btn-zen')?.addEventListener('click', toggleZenMode);
+  // Escape beendet Zen-Mode
+  document.addEventListener('fullscreenchange', () => {
+    if (!document.fullscreenElement && state.zenMode) {
+      state.zenMode = false;
+      document.body.classList.remove('zen-mode');
+      setTimeout(() => setupCanvases(), 100);
+    }
+  });
+
+  // Notebook-Title Doppelklick → Rename
+  document.getElementById('notebook-title')?.addEventListener('dblclick', startRename);
 }
 
 // ─── Boot ───────────────────────────────────────────────────────────────────
