@@ -745,15 +745,14 @@ function openShareModal() {
   const url = `${location.origin}${location.pathname}#${roomKey}`;
   const linkInput = document.getElementById('share-link');
   if (linkInput) linkInput.value = url;
-  // QR-Code generieren
+  // QR-Code generieren (qrcode.js API: new QRCode(element, options))
   const qrContainer = document.getElementById('qr-container');
   if (qrContainer && typeof QRCode !== 'undefined') {
     qrContainer.innerHTML = '';
-    QRCode.toCanvas(document.createElement('canvas'), url, {
-      width: 200, margin: 2,
-      color: { dark: '#1a1730', light: '#fefcf8' }
-    }, (err, canvas) => {
-      if (!err && canvas) qrContainer.appendChild(canvas);
+    new QRCode(qrContainer, {
+      text: url, width: 200, height: 200,
+      colorDark: '#1a1730', colorLight: '#fefcf8',
+      correctLevel: QRCode.CorrectLevel.L
     });
   }
   modal.classList.remove('hidden');
