@@ -739,10 +739,21 @@ function toggleSidebar() {
 // ─── Share Modal ────────────────────────────────────────────────────────────
 
 /** Share-Modal öffnen mit aktuellem Room-Link. */
-function openShareModal() {
+async function openShareModal() {
   const modal = document.getElementById('share-modal');
   if (!modal) return;
-  const url = `${location.origin}${location.pathname}#${roomKey}`;
+  // Bei localhost: LAN-IP verwenden, damit andere Geräte den Link öffnen können
+  let origin = location.origin;
+  if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
+    try {
+      const res = await fetch('/api/lan-ip').catch(() => null);
+      if (res?.ok) {
+        const data = await res.json();
+        if (data.ip) origin = `${location.protocol}//${data.ip}:${location.port}`;
+      }
+    } catch {}
+  }
+  const url = `${origin}${location.pathname}#${roomKey}`;
   const linkInput = document.getElementById('share-link');
   if (linkInput) linkInput.value = url;
   // QR-Code generieren (qrcode.js API: new QRCode(element, options))
