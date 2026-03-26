@@ -1,4 +1,4 @@
-const CACHE_NAME = 'notizbuch-v18';
+const CACHE_NAME = 'notizbuch-v19';
 
 const STATIC_ASSETS = [
   './',
@@ -7,8 +7,6 @@ const STATIC_ASSETS = [
   './app-evolu.html',
   './manifest.json',
   './libs/petite-vue.iife.js',
-  './libs/genosdb.js',
-  './libs/genosrtc.min.js',
   './libs/qrcode.min.js',
   './libs/iro.min.js'
 ];
@@ -48,6 +46,11 @@ self.addEventListener('activate', (event) => {
 //   Rest → Cache-first
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
+  // CDN-Requests (Yjs) cachen
+  if (event.request.url.includes('cdn.jsdelivr.net')) {
+    event.respondWith(staleWhileRevalidate(event.request, event));
+    return;
+  }
   if (!event.request.url.startsWith(self.location.origin)) return;
   // WebSocket-Upgrades nicht anfassen
   if (event.request.headers.get('upgrade') === 'websocket') return;

@@ -1523,22 +1523,28 @@
   <script>
     const { createApp } = PetiteVue;
 
-    // GenosDB instance (initialized in init())
-    let rootDb;       // Haupt-GenosDB: Notebook/Page-Struktur (ohne Strokes)
-    let pageDb;       // GenosDB für aktuelle Seite (Strokes), wechselt bei Navigation
-    let strokeChannel = null;
-    let gdbFactory;   // gecachte gdb-Import-Funktion
-    let app;          // petite-vue App-Referenz (gesetzt in init)
+    // Yjs-Instanzen (initialized in init())
+    let app;          // petite-vue App-Referenz
     let localDB;
     let dbInitialized = false;
     let roomKey = '';
     let syncEnabled = false;
 
-    // WebSocket Relay – optionaler persistenter Sync-Kanal
-    // Relay-URL: automatisch vom aktuellen Host ableiten (gleicher Server)
-    const RELAY_URL = localStorage.getItem('relayUrl') || `wss://${location.host}`;
-    let relayWs = null;
-    let relayReconnectTimer = null;
+    // Yjs Docs + Provider
+    let rootDoc = null;         // Y.Doc für Notebook-Liste (Room: roomKey)
+    let rootProvider = null;    // WebrtcProvider für rootDoc
+    let rootPersistence = null; // IndexeddbPersistence für rootDoc
+    let nbDoc = null;           // Y.Doc für aktuelles Notebook (Room: roomKey_nb_<nbId>)
+    let nbProvider = null;      // WebrtcProvider für nbDoc
+    let nbPersistence = null;   // IndexeddbPersistence für nbDoc
+    let undoManager = null;     // UndoManager für aktuelle Seite
+    let currentStrokeObserver = null; // Observer auf aktuellem Y.Array
+    let currentStrokeArray = null;    // Y.Array der aktuellen Seite
+
+    // Yjs CDN imports (geladen in init)
+    let Y = null;
+    let WebrtcProvider = null;
+    let IndexeddbPersistence = null;
 
     // Browser/Gerät-Name ermitteln
     function getClientName() {
@@ -1556,78 +1562,94 @@
       return `${browser} ${device}`;
     }
 
-    function connectRelay(room, onSync, onPut, onDelete) {
-      if (!RELAY_URL || relayWs) return;
-      console.log('[Relay] Verbinde mit', RELAY_URL);
-      try {
-        relayWs = new WebSocket(RELAY_URL);
-      } catch (e) {
-        console.error('[Relay] WebSocket Fehler:', e);
-        return;
+    // Notebook-Doc öffnen (Y.Doc + Provider + Persistence)
+    function openNotebookDoc(notebookId) {
+      closeNotebookDoc();
+      if (!Y) return;
+      const room = roomKey + '_nb_' + notebookId;
+      nbDoc = new Y.Doc();
+      nbPersistence = new IndexeddbPersistence(room, nbDoc);
+      if (syncEnabled) {
+        nbProvider = new WebrtcProvider(room, nbDoc, {
+          password: roomKey,
+          signaling: ['wss://signaling.yjs.dev', 'wss://y-webrtc-signaling-eu.herokuapp.com']
+        });
       }
-
-      relayWs.onopen = () => {
-        console.log('[Relay] Verbunden, join Room:', room.slice(0, 8) + '…');
-        relayWs.send(JSON.stringify({ type: 'join', room, name: getClientName() }));
-      };
-
-      relayWs.onmessage = (e) => {
-        let msg;
-        try { msg = JSON.parse(e.data); } catch { return; }
-        if (msg.type === 'sync' && msg.notebooks) {
-          console.log('[Relay] Sync erhalten:', Object.keys(msg.notebooks).length, 'Notebooks');
-          onSync(msg.notebooks);
-        }
-        else if (msg.type === 'put' && msg.id && msg.data) {
-          console.log('[Relay] Put erhalten:', msg.id.slice(0, 8) + '…');
-          onPut(msg.id, msg.data);
-        }
-        else if (msg.type === 'delete' && msg.id) onDelete(msg.id);
-        else if (msg.type === 'peers') console.log('[Relay] Peers im Room:', msg.count);
-      };
-
-      relayWs.onclose = (e) => {
-        console.log('[Relay] Getrennt, Code:', e.code, e.reason || '');
-        relayWs = null;
-        clearTimeout(relayReconnectTimer);
-        relayReconnectTimer = setTimeout(() => connectRelay(room, onSync, onPut, onDelete), 5000);
-      };
-
-      relayWs.onerror = (e) => {
-        console.error('[Relay] Fehler:', e);
-        relayWs?.close();
-      };
+      console.log('[Yjs] Notebook-Doc geöffnet:', room);
     }
 
-    // Einzelnen Node vom Relay abrufen (z.B. Seiten-Strokes bei Navigation)
-    function relayGetNode(nodeId, timeoutMs = 2000) {
-      return new Promise(resolve => {
-        if (!relayWs || relayWs.readyState !== 1) { resolve(null); return; }
-        const handler = (e) => {
-          try {
-            const msg = JSON.parse(e.data);
-            if (msg.type === 'node-data' && String(msg.id) === String(nodeId)) {
-              relayWs.removeEventListener('message', handler);
-              clearTimeout(timer);
-              resolve(msg.data);
-            }
-          } catch {}
-        };
-        relayWs.addEventListener('message', handler);
-        relaySend({ type: 'node-get', id: nodeId });
-        const timer = setTimeout(() => { relayWs?.removeEventListener('message', handler); resolve(null); }, timeoutMs);
-      });
-    }
-
-    // Nav-State (aktuelles Notebook + Seitenpositionen) an Relay senden
-    function relayPushNav(currentNotebookId, currentPages) {
-      relaySend({ type: 'node-put', id: '_nav', data: { _nav: true, currentNotebookId, currentPages } });
-    }
-
-    function relaySend(msg) {
-      if (relayWs && relayWs.readyState === 1) {
-        relayWs.send(JSON.stringify(msg));
+    // Notebook-Doc schließen
+    function closeNotebookDoc() {
+      if (currentStrokeObserver && currentStrokeArray) {
+        currentStrokeArray.unobserve(currentStrokeObserver);
       }
+      currentStrokeObserver = null;
+      currentStrokeArray = null;
+      if (undoManager) { undoManager.destroy(); undoManager = null; }
+      if (nbProvider) { nbProvider.destroy(); nbProvider = null; }
+      if (nbPersistence) { nbPersistence.destroy(); nbPersistence = null; }
+      if (nbDoc) { nbDoc.destroy(); nbDoc = null; }
+    }
+
+    // Y.Array für eine Seite holen (erstellt wenn nötig)
+    function getPageStrokes(pageId) {
+      if (!nbDoc) return null;
+      return nbDoc.getMap('strokes').get(String(pageId)) || _createPageStrokesArray(pageId);
+    }
+
+    function _createPageStrokesArray(pageId) {
+      if (!nbDoc) return null;
+      const strokesMap = nbDoc.getMap('strokes');
+      const arr = new Y.Array();
+      strokesMap.set(String(pageId), arr);
+      return arr;
+    }
+
+    // Strokes aus Y.Array in plain Objects konvertieren
+    function readStrokesFromYArray(yArray) {
+      if (!yArray) return [];
+      return yArray.toArray().map(s => ({
+        id: String(s.id), points: s.points || [], color: s.color, size: s.size, tool: s.tool || 'pen'
+      }));
+    }
+
+    // Observer auf aktuelle Seite setzen (für Live-Updates von Peers)
+    function observePageStrokes(pageId) {
+      // Alten Observer entfernen
+      if (currentStrokeObserver && currentStrokeArray) {
+        currentStrokeArray.unobserve(currentStrokeObserver);
+      }
+      if (undoManager) { undoManager.destroy(); undoManager = null; }
+
+      const yArray = getPageStrokes(pageId);
+      currentStrokeArray = yArray;
+      if (!yArray || !app) return;
+
+      // UndoManager für diese Seite
+      undoManager = new Y.UndoManager(yArray, { captureTimeout: 0 });
+
+      // Observer: bei Änderungen von Peers Canvas neu zeichnen
+      currentStrokeObserver = (event) => {
+        if (event.transaction.local) return; // Eigene Änderungen ignorieren
+        if (!app?.currentPage) return;
+        app.currentPage.strokes = readStrokesFromYArray(yArray);
+        app.redrawStrokes();
+        app.peerSync = true;
+        clearTimeout(app._peerSyncTimer);
+        app._peerSyncTimer = setTimeout(() => { app.peerSync = false; }, 1500);
+      };
+      yArray.observe(currentStrokeObserver);
+    }
+
+    // Aktuelle Seite aus Y.Array laden (synchron, kein Room-Wechsel)
+    function loadCurrentPageStrokes() {
+      if (!app?.currentPage) return;
+      const pageId = String(app.currentPage.id);
+      const yArray = getPageStrokes(pageId);
+      app.currentPage.strokes = readStrokesFromYArray(yArray);
+      observePageStrokes(pageId);
+      app.redrawStrokes();
+      console.log('[Yjs] Seite', pageId, 'geladen,', app.currentPage.strokes.length, 'Strokes');
     }
 
     // Pinch-Zoom-State (außerhalb PetiteVue für high-frequency updates)
@@ -1691,26 +1713,6 @@
       });
     }
 
-    // Compact notebook for storage: round coordinates, remove redundant precision
-    function compactNotebook(nb) {
-      const clone = JSON.parse(JSON.stringify(nb));
-      if (clone.pages) {
-        for (const page of clone.pages) {
-          if (page.strokes) {
-            for (const stroke of page.strokes) {
-              if (stroke.points) {
-                stroke.points = stroke.points.map(p => ({
-                  x: Math.round(p.x * 10) / 10,
-                  y: Math.round(p.y * 10) / 10
-                }));
-              }
-            }
-          }
-        }
-      }
-      return clone;
-    }
-
     // Koordinaten auf 0.1 Präzision runden (für Speicherung)
     function roundPoints(points) {
       return points.map(p => ({
@@ -1719,273 +1721,9 @@
       }));
     }
 
-    // Blob-Notebook in Graph-Nodes migrieren (altes Format → neues Format)
-    async function migrateBlob(id, value, db) {
-      if (!value || !Array.isArray(value.pages) || value.type) return false;
-      console.log('[Migration] Konvertiere Blob-Notebook', id);
+    // (migrateBlob entfernt — alte GenosDB Migration nicht mehr nötig)
 
-      await db.put({ type: 'notebook', name: value.name || 'Notizbuch' }, String(id));
-
-      for (let i = 0; i < value.pages.length; i++) {
-        const page = value.pages[i];
-        const pageId = String(page.id || (Number(id) + i + 1));
-        const clearedAt = page.clearedAt || 0;
-        const deleted = new Set((page.deletedStrokes || []).map(Number));
-
-        // Überlebende Strokes filtern + runden
-        const strokes = (page.strokes || []).filter(s => {
-          if (Number(s.id) <= clearedAt) return false;
-          if (deleted.has(Number(s.id))) return false;
-          return true;
-        }).map(s => ({ id: String(s.id), points: roundPoints(s.points || []), color: s.color, size: s.size, tool: s.tool || 'pen' }));
-
-        // Page-Node mit eingebetteten Strokes
-        await db.put({
-          type: 'page', notebookId: String(id), background: page.background || 'grid',
-          order: i, clearedAt, strokes
-        }, pageId);
-        await db.link(String(id), pageId);
-      }
-
-      console.log('[Migration] Fertig für Notebook', id);
-      return true;
-    }
-
-    // Page-Node in GenosDB + Relay speichern (debounced, pausiert während Zeichnen)
-    let _savePageTimer = null;
-    let _savePagePending = null;
-    function savePageNode(page, notebookId) {
-      _savePagePending = { page, notebookId };
-      if (_savePageTimer) clearTimeout(_savePageTimer);
-      _savePageTimer = setTimeout(_flushPageSave, 2000);
-    }
-    function _flushPageSave() {
-      if (!_savePagePending) return;
-      const { page, notebookId } = _savePagePending;
-      _savePagePending = null;
-      _savePageTimer = null;
-      const strokes = (page.strokes || []).map(s => ({
-        id: String(s.id), points: (s.points || []).map(p => ({ x: p.x, y: p.y })),
-        color: s.color, size: s.size, tool: s.tool || 'pen'
-      }));
-      // Metadaten an rootDb (leichtgewichtig, keine Strokes)
-      const pageId = String(page.id);
-      const pageRoom = roomKey + '_p_' + pageId;
-      if (rootDb) rootDb.put({
-        type: 'page', notebookId: String(notebookId), background: page.background || 'grid',
-        order: page.order ?? 0, clearedAt: page.clearedAt || 0, pageRoom
-      }, pageId);
-      // Strokes an pageDb (eigener Room pro Seite) — deletedStrokes entproxien (petite-vue Proxy → structuredClone DOMException)
-      const deletedStrokes = (page.deletedStrokes || []).map(Number);
-      if (pageDb) pageDb.put({ type: 'pagedata', strokes, deletedStrokes, clearedAt: page.clearedAt || 0 }, 'strokes');
-      // Relay-Snapshot: alles zusammen
-      const relayData = {
-        type: 'page', notebookId: String(notebookId), background: page.background || 'grid',
-        order: page.order ?? 0, clearedAt: page.clearedAt || 0, pageRoom, strokes,
-        deletedStrokes: deletedStrokes.slice() // plain Array für JSON-Serialisierung
-      };
-      relaySend({ type: 'node-put', id: pageId, data: relayData });
-    }
-
-    // GenosDB-Instanz für eine Seite öffnen (eigener Room pro Seite)
-    let _openPageDbTimer = null;
-    let _openPageDbSeq = 0;
-    async function openPageDb(pageId, expectPeerData) {
-      if (!gdbFactory || !pageId) return;
-      _flushPageSave();
-      // Canvas sofort leeren damit keine Zeichnung der vorherigen Seite sichtbar bleibt
-      if (app) app.redrawStrokes();
-      if (pageDb?.room) { try { pageDb.room.leave(); } catch(e) {} }
-      strokeChannel = null;
-      pageDb = null;
-
-      // Debounce: Bei schnellem Blättern nur die letzte Seite öffnen
-      const seq = ++_openPageDbSeq;
-      clearTimeout(_openPageDbTimer);
-      await new Promise(r => { _openPageDbTimer = setTimeout(r, 200); });
-      if (seq !== _openPageDbSeq) return; // Neuere Navigation hat übernommen
-
-      try {
-        pageDb = await gdbFactory(roomKey + '_p_' + pageId, { rtc: syncEnabled, password: roomKey, saveDelay: 0 });
-      } catch(e) {
-        console.error('[PageDb] Init fehlgeschlagen:', e);
-        return;
-      }
-
-      // Strokes aus pageDb laden (nicht-blockierend)
-      // Guard: thisDb wird bei Navigation ungültig → späte Events ignoriert
-      const thisDb = pageDb;
-      const targetPage = pageId;
-      let loaded = false;
-      let pendingPeerSync = null;
-      const loadPromise = new Promise(resolve => {
-        if (!pageDb) { resolve(); return; }
-        pageDb.map(function({ id, value, action }) {
-          console.log('[PageDb] map event:', action, 'id:', id, 'type:', value?.type, 'strokes:', value?.strokes?.length, 'target:', targetPage, 'current:', app?.currentPage?.id, 'db-match:', pageDb === thisDb);
-          // Stale-Guard: ignoriere Events nach Navigation zu anderer Seite
-          if (pageDb !== thisDb || String(app?.currentPage?.id) !== targetPage) {
-            console.log('[PageDb] Stale-Guard: ignoriere', action, 'für', targetPage);
-            return;
-          }
-          if (action === 'initial' || action === 'added' || action === 'updated') {
-            if (value?.type === 'pagedata' && app?.currentPage) {
-              const remoteStrokes = (value.strokes || []).map(s => ({
-                id: String(s.id), points: s.points || [], color: s.color, size: s.size, tool: s.tool || 'pen'
-              }));
-
-              // deletedStrokes + clearedAt aus beiden Quellen vereinigen
-              const remoteDeleted = new Set((value.deletedStrokes || []).map(Number));
-              const localDeleted = new Set((app.currentPage.deletedStrokes || []).map(Number));
-              const allDeleted = new Set([...remoteDeleted, ...localDeleted]);
-              const clearedAt = Math.max(value.clearedAt || 0, app.currentPage.clearedAt || 0);
-
-              // Immer Union-by-ID Merge (auch beim ersten Load)
-              const merged = new Map();
-              for (const s of app.currentPage.strokes) merged.set(String(s.id), s);
-              for (const s of remoteStrokes) merged.set(String(s.id), s);
-
-              // Gelöschte und vor clearedAt liegende Strokes filtern
-              app.currentPage.strokes = [...merged.values()]
-                .filter(s => Number(s.id) > clearedAt && !allDeleted.has(Number(s.id)))
-                .sort((a, b) => Number(a.id) - Number(b.id));
-              app.currentPage.deletedStrokes = [...allDeleted];
-              if (clearedAt) app.currentPage.clearedAt = clearedAt;
-
-              console.log('[PageDb] Merge für', targetPage, ':', action, '→', app.currentPage.strokes.length, 'Strokes (remote:', remoteStrokes.length, ', deleted:', allDeleted.size, ')');
-              if (!loaded) { loaded = true; resolve(); }
-              if (app) app.pageLoading = false;
-              clearTimeout(pendingPeerSync);
-              app.redrawStrokes();
-            }
-          }
-          if (action === 'removed' && value?.type === 'pagedata' && app?.currentPage) {
-            app.currentPage.strokes = [];
-            if (app) app.pageLoading = false;
-            clearTimeout(pendingPeerSync);
-            app.redrawStrokes();
-          }
-        });
-        setTimeout(resolve, 500);
-      });
-      await loadPromise;
-
-      // Wenn nach OPFS-Load keine Strokes: Relay fragen, dann ggf. auf P2P warten
-      if (!loaded && app?.currentPage?.strokes?.length === 0 &&
-          pageDb === thisDb && String(app?.currentPage?.id) === targetPage) {
-
-        // Lade-Indikator sofort zeigen
-        if (app && expectPeerData) app.pageLoading = true;
-
-        // Relay-Fallback (schnell, ~100ms wenn Server läuft)
-        const relayData = await relayGetNode(pageId, 1000);
-
-        if (relayData?.strokes?.length > 0 &&
-            pageDb === thisDb && String(app?.currentPage?.id) === targetPage) {
-          // Relay hatte Strokes → Union-Merge mit lokalen
-          const remoteStrokes = relayData.strokes.map(s => ({
-            id: String(s.id), points: s.points || [], color: s.color, size: s.size, tool: s.tool || 'pen'
-          }));
-          const remoteDeleted = new Set((relayData.deletedStrokes || []).map(Number));
-          const localDeleted = new Set((app.currentPage.deletedStrokes || []).map(Number));
-          const allDeleted = new Set([...remoteDeleted, ...localDeleted]);
-          const clearedAt = Math.max(relayData.clearedAt || 0, app.currentPage.clearedAt || 0);
-          const merged = new Map();
-          for (const s of app.currentPage.strokes) merged.set(String(s.id), s);
-          for (const s of remoteStrokes) merged.set(String(s.id), s);
-          const strokes = [...merged.values()]
-            .filter(s => Number(s.id) > clearedAt && !allDeleted.has(Number(s.id)))
-            .sort((a, b) => Number(a.id) - Number(b.id));
-          app.currentPage.strokes = strokes;
-          app.currentPage.deletedStrokes = [...allDeleted];
-          if (clearedAt) app.currentPage.clearedAt = clearedAt;
-          if (pageDb) pageDb.put({ type: 'pagedata', strokes: strokes.map(s => ({
-            id: s.id, points: s.points.map(p => ({ x: p.x, y: p.y })), color: s.color, size: s.size, tool: s.tool
-          })), deletedStrokes: [...allDeleted], clearedAt }, 'strokes');
-          loaded = true;
-          if (app) app.pageLoading = false;
-          app.redrawStrokes();
-          console.log('[PageDb] Strokes vom Relay geladen:', strokes.length);
-        } else if (relayData && !relayData.strokes?.length) {
-          // Relay kennt die Seite aber hat keine Strokes → Seite ist wirklich leer
-          if (app) app.pageLoading = false;
-        } else {
-          // Relay nicht erreichbar → auf P2P warten (max 5s)
-          pendingPeerSync = setTimeout(() => { if (app) app.pageLoading = false; }, 5000);
-        }
-      }
-
-      // Live-Stroke-Channel auf pageDb Room
-      if (pageDb?.room) {
-        strokeChannel = pageDb.room.channel("stroke-live");
-        strokeChannel.on("message", (data) => {
-          // Stale-Guard: ignoriere Events nach Navigation zu anderer Seite
-          if (pageDb !== thisDb || String(app?.currentPage?.id) !== targetPage) return;
-          if (data.action === 'add') {
-            const stroke = data.stroke;
-            if (!stroke || app.currentPage.strokes.find(s => String(s.id) === String(stroke.id))) return;
-            app.currentPage.strokes.push(stroke);
-            app.currentPage.strokes.sort((a, b) => Number(a.id) - Number(b.id));
-          } else if (data.action === 'undo') {
-            if (data.strokeId) {
-              // Stroke per ID entfernen + in Tombstones aufnehmen
-              app.currentPage.strokes = app.currentPage.strokes.filter(s => String(s.id) !== String(data.strokeId));
-              if (!app.currentPage.deletedStrokes) app.currentPage.deletedStrokes = [];
-              app.currentPage.deletedStrokes.push(Number(data.strokeId));
-            } else {
-              app.currentPage.strokes.pop();
-            }
-          } else if (data.action === 'clear') {
-            app.currentPage.strokes = [];
-            app.currentPage.deletedStrokes = [];
-            app.currentPage.clearedAt = data.clearedAt || Date.now();
-          }
-          app.redrawStrokes();
-          app.peerSync = true;
-          clearTimeout(app._peerSyncTimer);
-          app._peerSyncTimer = setTimeout(() => { app.peerSync = false; }, 1500);
-        });
-      }
-      // pageLoading nur ausschalten wenn Daten geladen wurden — sonst läuft P2P-Sync noch
-      if (loaded && app) app.pageLoading = false;
-      console.log('[PageDb] Seite', pageId, 'geladen,', app?.currentPage?.strokes?.length || 0, 'Strokes', loaded ? '' : '(warte auf P2P)');
-
-      // Workaround: GenosDB map() feuert nach FULL SYNC nicht zuverlässig.
-      // Poll pageDb.get() bis Strokes ankommen oder Timeout (8s).
-      if (!loaded && pageDb === thisDb) {
-        let pollCount = 0;
-        const pollInterval = setInterval(async () => {
-          if (pageDb !== thisDb || String(app?.currentPage?.id) !== targetPage) {
-            clearInterval(pollInterval); return;
-          }
-          try {
-            const result = await pageDb.get('strokes');
-            const value = result?.result?.value;
-            if (value?.type === 'pagedata' && value.strokes?.length > 0) {
-              clearInterval(pollInterval);
-              const remoteStrokes = value.strokes.map(s => ({
-                id: String(s.id), points: s.points || [], color: s.color, size: s.size, tool: s.tool || 'pen'
-              }));
-              const remoteDeleted = new Set((value.deletedStrokes || []).map(Number));
-              const localDeleted = new Set((app.currentPage.deletedStrokes || []).map(Number));
-              const allDeleted = new Set([...remoteDeleted, ...localDeleted]);
-              const clearedAt = Math.max(value.clearedAt || 0, app.currentPage.clearedAt || 0);
-              const merged = new Map();
-              for (const s of app.currentPage.strokes) merged.set(String(s.id), s);
-              for (const s of remoteStrokes) merged.set(String(s.id), s);
-              app.currentPage.strokes = [...merged.values()]
-                .filter(s => Number(s.id) > clearedAt && !allDeleted.has(Number(s.id)))
-                .sort((a, b) => Number(a.id) - Number(b.id));
-              app.currentPage.deletedStrokes = [...allDeleted];
-              if (clearedAt) app.currentPage.clearedAt = clearedAt;
-              if (app) app.pageLoading = false;
-              app.redrawStrokes();
-              console.log('[PageDb] Strokes via Poll geladen:', app.currentPage.strokes.length);
-            }
-          } catch(e) {}
-          if (++pollCount >= 16) { clearInterval(pollInterval); if (app) app.pageLoading = false; }
-        }, 500);
-      }
-    }
+    // (savePageNode/openPageDb entfernt — Yjs auto-persist via y-indexeddb)
 
     // Stroke smoothing
     function smoothPoints(points) {
@@ -2275,421 +2013,147 @@
         const savedSyncEnabled = await idbGet(roomKey + ':syncEnabled');
         if (typeof savedSyncEnabled === 'boolean') this.syncEnabled = savedSyncEnabled;
 
-        // GenosDB laden: rootDb für Notebook/Page-Struktur
+        // ── Yjs laden + initialisieren ──
         syncEnabled = this.syncEnabled;
+        app = this;
+
         try {
-          const mod = await import('./libs/genosdb.js');
-          gdbFactory = mod.gdb;
-          rootDb = await gdbFactory(roomKey, { rtc: syncEnabled, password: roomKey, saveDelay: 0 });
-        } catch (e) {
-          console.error('[GenosDB] Init fehlgeschlagen:', e);
-        }
-
-        this.selfPeerId = rootDb?.selfId;
-        app = this; // Module-Level Referenz für openPageDb
-
-        const isReconnect = !!sessionStorage.getItem('reconnect');
-        if (this.syncEnabled && rootDb?.room) {
-          const initialPeers = rootDb.room.getPeers();
-          if (initialPeers) {
-            this.connectedPeers = initialPeers instanceof Map ? Array.from(initialPeers.keys()) : Object.keys(initialPeers);
-            if (this.connectedPeers.length > 0) this.hadPeers = true;
-          }
-
-          rootDb.room.on('peer:join', (peerId) => {
-            if (!this.connectedPeers.includes(peerId)) {
-              this.connectedPeers.push(peerId);
-            }
-            this.hadPeers = true;
-          });
-          rootDb.room.on('peer:leave', (peerId) => {
-            this.connectedPeers = this.connectedPeers.filter(id => id !== peerId);
-          });
-
-          // Bei Reconnect: Sync-Overlay zeigen bis Peer verbunden UND Daten ausgetauscht
-          if (isReconnect) {
-            sessionStorage.removeItem('reconnect');
-            this.syncing = true;
-            // Warte auf Peer-Join + zusätzlich 1.5s für Datenaustausch
-            const waitForPeer = new Promise(resolve => {
-              rootDb.room.on('peer:join', () => {
-                // Nach Peer-Join: kurz warten damit db.map-Events eintreffen
-                setTimeout(resolve, 1500);
-              });
-            });
-            Promise.race([waitForPeer, new Promise(r => setTimeout(r, 8000))]).then(() => {
-              this.syncing = false;
-            });
-          }
-
-          // WebRTC-Fähigkeit prüfen (läuft parallel, blockiert init nicht)
-          checkWebRTCCapability().then(ok => {
-            if (!ok) this.webrtcWarning = true;
-          });
-        } else if (rootDb?.room) {
-          // Sync deaktiviert: Room explizit verlassen
-          rootDb.room.leave();
-        }
-
-        // Gesammelte Graph-Nodes während der Init-Phase
-        const initNodes = {};
-
-        // Debounce-Resolver: feuert 400ms nach dem letzten P2P-Event
-        let p2pSettled = false;
-        let p2pResolve = null;
-        let p2pDebounceTimer = null;
-        function triggerP2PDone() {
-          p2pSettled = true;
-          if (p2pResolve) p2pResolve();
-        }
-
-        let earlyResolve = null;
-        const earlyPromise = new Promise(r => earlyResolve = r);
-
-        // In-Memory-Modell aus Graph-Nodes aufbauen
-        function buildNotebooksFromNodes(nodes, label) {
-          const types = {};
-          for (const [id, value] of Object.entries(nodes)) {
-            const t = value?.type || 'unknown';
-            types[t] = (types[t] || 0) + 1;
-          }
-          console.log(`[buildNotebooks${label ? ' ' + label : ''}] Nodes:`, Object.keys(nodes).length, 'Types:', types);
-          const notebooks = [];
-          const pageMap = {}; // pageId → page object
-          const nbPages = {}; // notebookId → [pages]
-
-          // Notebooks sammeln
-          for (const [id, value] of Object.entries(nodes)) {
-            if (!value || !value.type) {
-              if (value && Array.isArray(value.pages)) migrateBlob(id, value, rootDb);
-              continue;
-            }
-            if (value.type === 'notebook') {
-              nbPages[id] = [];
-              notebooks.push({ id, name: value.name || 'Notizbuch', pages: [] });
-            }
-          }
-          // Pages sammeln (Strokes optional — rootDb hat keine, Relay hat welche)
-          for (const [id, value] of Object.entries(nodes)) {
-            if (value?.type === 'page') {
-              const nbId = value.notebookId;
-              const strokes = (value.strokes || []).map(s => ({
-                id: String(s.id), points: s.points || [], color: s.color, size: s.size, tool: s.tool || 'pen'
-              })).sort((a, b) => Number(a.id) - Number(b.id));
-              const page = {
-                id, strokes, background: value.background || 'grid',
-                order: value.order ?? 0, clearedAt: value.clearedAt || 0,
-                pageRoom: value.pageRoom || (roomKey + '_p_' + id)
-              };
-              if (nbPages[nbId]) nbPages[nbId].push(page);
-            }
-          }
-          for (const nb of notebooks) {
-            nb.pages = (nbPages[nb.id] || []).sort((a, b) => a.order - b.order);
-          }
-          return notebooks;
-        }
-
-        // Sync-Indikator + Redraw für aktuelle Seite
-        function flashSyncAndRedraw() {
-          if (!app) return;
-          app.peerSync = true;
-          clearTimeout(app._peerSyncTimer);
-          app._peerSyncTimer = setTimeout(() => { app.peerSync = false; }, 1500);
-          if (app.currentPage) {
-            app.redrawStrokes();
-          }
-        }
-
-        const { unsubscribe } = rootDb ? rootDb.map(function({ id, value, action }) {
-          if (id === 'settings') return;
-
-          if (!dbInitialized) {
-            if (action === 'initial' || action === 'added' || action === 'updated') {
-              initNodes[id] = value;
-              if (earlyResolve) { earlyResolve(); earlyResolve = null; }
-            }
-            if (action === 'added' || action === 'updated') {
-              clearTimeout(p2pDebounceTimer);
-              p2pDebounceTimer = setTimeout(triggerP2PDone, 400);
-            }
-          } else {
-            if (!value || !value.type) return;
-
-            if (value.type === 'notebook') {
-              if (action === 'removed') {
-                const deletedNb = app.notebooks.find(nb => String(nb.id) === String(id));
-                // Pages des gelöschten Notebooks aus rootDb entfernen
-                if (deletedNb) {
-                  for (const page of (deletedNb.pages || [])) {
-                    if (rootDb) rootDb.remove(String(page.id));
-                  }
-                }
-                app.notebooks = app.notebooks.filter(nb => String(nb.id) !== String(id));
-                delete app.currentPages[String(id)];
-                if (String(id) === String(app.currentNotebookId) && app.notebooks.length > 0) {
-                  app.currentNotebookId = app.notebooks[0].id;
-                  if (!(app.currentNotebookId in app.currentPages)) app.currentPages[app.currentNotebookId] = 0;
-                  const targetPageId = String(app.currentPage?.id);
-                  app.drawBackground();
-                  openPageDb(targetPageId, true).then(() => { app.redrawStrokes(); app.fitToContent(); });
-                }
-                return;
-              }
-              const existing = app.notebooks.find(nb => String(nb.id) === String(id));
-              if (existing) {
-                existing.name = value.name || existing.name;
-              } else {
-                app.notebooks.push({ id: String(id), name: value.name || 'Notizbuch', pages: [] });
-                if (!(String(id) in app.currentPages)) app.currentPages[String(id)] = 0;
-              }
-            }
-
-            else if (value.type === 'page') {
-              if (action === 'removed') {
-                for (const nb of app.notebooks) {
-                  if (!nb.pages) continue;
-                  const idx = nb.pages.findIndex(p => String(p.id) === String(id));
-                  if (idx >= 0) { nb.pages.splice(idx, 1); break; }
-                }
-                return;
-              }
-              const nb = app.notebooks.find(n => String(n.id) === String(value.notebookId));
-              if (nb) {
-                if (!nb.pages) nb.pages = [];
-                const existing = nb.pages.find(p => String(p.id) === String(id));
-                if (existing) {
-                  existing.background = value.background || existing.background;
-                  existing.order = value.order ?? existing.order;
-                  existing.clearedAt = Math.max(value.clearedAt || 0, existing.clearedAt || 0);
-                  if (value.pageRoom) existing.pageRoom = value.pageRoom;
-                } else {
-                  nb.pages.push({
-                    id: String(id), strokes: [], background: value.background || 'grid',
-                    order: value.order ?? nb.pages.length, clearedAt: value.clearedAt || 0,
-                    pageRoom: value.pageRoom || (roomKey + '_p_' + id)
-                  });
-                  nb.pages.sort((a, b) => a.order - b.order);
-                }
-              }
-            }
-          }
-        }) : { unsubscribe: () => {} };
-
-        // ── Sync-Reihenfolge: 1. Relay (schnell), 2. P2P (Fallback), 3. Default ──
-
-        // Phase 1: Lokale Daten aus GenosDB (OPFS/IDB, instant)
-        await Promise.race([earlyPromise, new Promise(r => setTimeout(r, 600))]);
-        let existingNotebooks = buildNotebooksFromNodes(initNodes, 'Phase1-GenosDB');
-
-        // Phase 2: Relay (immer wenn sync aktiv — merged in lokale Daten)
-        const relayNodes = {};
-        if (this.syncEnabled && RELAY_URL) {
-          console.log('[Sync] Phase 2: Relay-Sync...');
-          this.syncing = true;
-          const self = this;
-          let relayGotData = false;
-          connectRelay(roomKey,
-            (nodes) => {
-              for (const [id, data] of Object.entries(nodes)) {
-                if (id === '_nav' && data && data._nav) {
-                  if (data.currentNotebookId) self._relayNav = data;
-                  continue;
-                }
-                if (data && data.type) {
-                  relayNodes[id] = data;
-                  relayGotData = true;
-                }
-              }
-              console.log('[Relay] Sync:', Object.keys(nodes).length, 'Nodes');
-            },
-            (id, data) => {
-              if (data && data.type) {
-                relayNodes[id] = data;
-                relayGotData = true;
-              }
-            },
-            (id) => { delete relayNodes[id]; }
-          );
-          await new Promise(resolve => {
-            let done = false;
-            const finish = () => { if (!done) { done = true; resolve(); } };
-            const check = setInterval(() => {
-              if (relayGotData) { clearInterval(check); finish(); }
-            }, 200);
-            setTimeout(() => { clearInterval(check); finish(); }, 3000);
-          });
-          // Relay-Nodes in lokale Daten mergen
-          if (Object.keys(relayNodes).length > 0) {
-            const relayNotebooks = buildNotebooksFromNodes(relayNodes, 'Phase2-Relay');
-            if (existingNotebooks.length === 0) {
-              existingNotebooks = relayNotebooks;
-            } else {
-              // Merge: fehlende Notebooks/Pages aus Relay ergänzen
-              for (const rnb of relayNotebooks) {
-                const local = existingNotebooks.find(nb => String(nb.id) === String(rnb.id));
-                if (!local) {
-                  existingNotebooks.push(rnb);
-                } else {
-                  for (const rp of rnb.pages) {
-                    if (!local.pages.find(p => String(p.id) === String(rp.id))) {
-                      local.pages.push(rp);
-                    }
-                  }
-                  local.pages.sort((a, b) => a.order - b.order);
-                }
-              }
-            }
-            // Nur NEUE Nodes (die lokal fehlen) in rootDb speichern, damit Delta-Sync sie verteilt.
-            // Bestehende Nodes NICHT überschreiben — lokaler Stand ist neuer als Relay-Snapshot.
-            // Strokes gehören in pageDb, nicht in rootDb.
-            for (const [id, data] of Object.entries(relayNodes)) {
-              if (rootDb && !initNodes[id]) {
-                const metaOnly = { ...data };
-                delete metaOnly.strokes;
-                rootDb.put(metaOnly, id);
-              }
-            }
-            console.log('[Sync] Relay erfolgreich:', relayNotebooks.length, 'Notebooks, merged in', existingNotebooks.length, 'lokale');
-          }
-        }
-
-        // Phase 3: P2P-Fallback (nur wenn Relay nichts geliefert hat)
-        if (existingNotebooks.length === 0 && this.notebooks.length === 0 && isSharedUrl) {
-          console.log('[Sync] Phase 3: P2P-Fallback...');
-          await Promise.race([
-            new Promise(resolve => {
-              p2pResolve = resolve;
-              if (p2pSettled) resolve();
-            }),
-            new Promise(resolve => setTimeout(resolve, 5000))
+          const [yMod, wrtcMod, idbMod] = await Promise.all([
+            import('https://cdn.jsdelivr.net/npm/yjs/+esm'),
+            import('https://cdn.jsdelivr.net/npm/y-webrtc/+esm'),
+            import('https://cdn.jsdelivr.net/npm/y-indexeddb/+esm')
           ]);
-          existingNotebooks = buildNotebooksFromNodes(initNodes, 'Phase3-P2P');
+          Y = yMod;
+          WebrtcProvider = wrtcMod.WebrtcProvider;
+          IndexeddbPersistence = idbMod.IndexeddbPersistence;
+          console.log('[Yjs] Module geladen');
+        } catch (e) {
+          console.error('[Yjs] Import fehlgeschlagen:', e);
         }
-        this.syncing = false;
 
-        // Ergebnis anwenden
-        console.log('[Sync] existingNotebooks:', existingNotebooks.length, 'this.notebooks:', this.notebooks.length);
-        if (existingNotebooks.length > 0 && this.notebooks.length === 0) {
-          this.notebooks = existingNotebooks.sort((a, b) => String(a.id) < String(b.id) ? -1 : 1);
-          console.log('[Sync] Geladen:', this.notebooks.map(nb => ({ id: nb.id.slice(0,8), name: nb.name, pages: nb.pages?.length, strokes: nb.pages?.reduce((s,p) => s + (p.strokes?.length||0), 0) })));
+        // rootDoc: Notebook-Liste (alle Peers teilen dieses Doc)
+        if (Y) {
+          rootDoc = new Y.Doc();
+          rootPersistence = new IndexeddbPersistence(roomKey + '_root', rootDoc);
+          if (syncEnabled) {
+            rootProvider = new WebrtcProvider(roomKey, rootDoc, {
+              password: roomKey,
+              signaling: ['wss://signaling.yjs.dev', 'wss://y-webrtc-signaling-eu.herokuapp.com']
+            });
+          }
+
+          // Warte auf IndexedDB-Load
+          await new Promise(resolve => {
+            rootPersistence.once('synced', resolve);
+            setTimeout(resolve, 2000); // Timeout falls IDB leer
+          });
+
+          // Notebooks aus rootDoc laden
+          const nbMap = rootDoc.getMap('notebooks');
+          const pageIndex = rootDoc.getMap('pageIndex');
+
+          // In-Memory-Modell aus Yjs aufbauen
+          const buildNotebooksFromYjs = () => {
+            const notebooks = [];
+            nbMap.forEach((value, nbId) => {
+              const pagesArr = pageIndex.get(nbId);
+              const pages = pagesArr ? pagesArr.toArray().map(p => ({
+                id: String(p.id), strokes: [], background: p.background || 'grid', order: p.order ?? 0
+              })) : [];
+              pages.sort((a, b) => a.order - b.order);
+              notebooks.push({ id: String(nbId), name: value?.name || 'Notizbuch', pages });
+            });
+            return notebooks.sort((a, b) => String(a.id) < String(b.id) ? -1 : 1);
+          };
+
+          this.notebooks = buildNotebooksFromYjs();
+          console.log('[Yjs] Notebooks geladen:', this.notebooks.length);
+
+          // Live-Observer für Notebook-Änderungen von Peers
+          nbMap.observe(() => {
+            if (!dbInitialized) return;
+            this.notebooks = buildNotebooksFromYjs();
+            // Strokes der aktuellen Seite erhalten (nicht aus rootDoc)
+            if (this.currentPage && currentStrokeArray) {
+              this.currentPage.strokes = readStrokesFromYArray(currentStrokeArray);
+            }
+          });
+          pageIndex.observeDeep(() => {
+            if (!dbInitialized) return;
+            this.notebooks = buildNotebooksFromYjs();
+            if (this.currentPage && currentStrokeArray) {
+              this.currentPage.strokes = readStrokesFromYArray(currentStrokeArray);
+            }
+          });
+
+          // Peer-Tracking via Awareness
+          if (rootProvider) {
+            const awareness = rootProvider.awareness;
+            awareness.setLocalStateField('user', { name: getClientName() });
+            const updatePeers = () => {
+              const states = Array.from(awareness.getStates().keys());
+              this.connectedPeers = states.filter(id => id !== awareness.clientID).map(String);
+              if (this.connectedPeers.length > 0) this.hadPeers = true;
+            };
+            awareness.on('change', updatePeers);
+            updatePeers();
+
+            // WebRTC-Fähigkeit prüfen
+            checkWebRTCCapability().then(ok => { if (!ok) this.webrtcWarning = true; });
+          }
+
+          // Wenn P2P aktiv: kurz auf Peers warten
+          if (syncEnabled && isSharedUrl && this.notebooks.length === 0) {
+            this.syncing = true;
+            await new Promise(r => setTimeout(r, 3000));
+            this.notebooks = buildNotebooksFromYjs();
+            this.syncing = false;
+          }
         }
+
+        // Nav-State wiederherstellen
         if (this.notebooks.length > 0) {
-          // Nav-State: 1. Lokal (IDB), 2. Relay (_relayNav), 3. Fallback (erstes Notebook)
           const pagePositions = await idbGet(roomKey + ':pagePositions') || {};
           if (savedCurrentId && this.notebooks.find(nb => nb.id === savedCurrentId)) {
-            // Lokaler State vorhanden (kein Cache-Clear)
             this.currentNotebookId = savedCurrentId;
             for (const nb of this.notebooks) {
               this.currentPages[String(nb.id)] = pagePositions[String(nb.id)] ?? 0;
             }
-          } else if (this._relayNav) {
-            // Nav vom Relay (nach Cache-Clear)
-            const nav = this._relayNav;
-            const navNb = this.notebooks.find(nb => String(nb.id) === String(nav.currentNotebookId));
-            this.currentNotebookId = navNb ? nav.currentNotebookId : this.notebooks[0].id;
-            if (nav.currentPages) {
-              for (const [nbId, pageIdx] of Object.entries(nav.currentPages)) {
-                this.currentPages[nbId] = pageIdx;
-              }
-            }
-            console.log('[Sync] Nav vom Relay wiederhergestellt');
           } else {
             this.currentNotebookId = this.notebooks[0].id;
           }
-          // Sicherstellen dass alle Notebooks einen Page-Eintrag haben
           for (const nb of this.notebooks) {
             if (!(String(nb.id) in this.currentPages)) this.currentPages[String(nb.id)] = 0;
           }
         } else {
-          console.log('[Sync] Keine Daten, erstelle Default-Notebook');
+          console.log('[Yjs] Keine Daten, erstelle Default-Notebook');
           this.createDefaultNotebook();
         }
 
-        // Auto-Snapshot vor Sync-Freigabe erstellen (Schutz vor Datenverlust)
+        // Auto-Snapshot
         if (this.notebooks.length > 0) {
           await this.createSnapshot('Auto');
         }
         await this.loadSnapshots();
 
-        // Finale Merge: P2P-Nodes die nach Phase 1 eingetroffen sind (z.B. neue Seiten von Peers)
-        if (this.notebooks.length > 0) {
-          const lateNodes = buildNotebooksFromNodes(initNodes, 'Final-Merge');
-          for (const lnb of lateNodes) {
-            const existing = this.notebooks.find(nb => String(nb.id) === String(lnb.id));
-            if (!existing) {
-              this.notebooks.push(lnb);
-              if (!(String(lnb.id) in this.currentPages)) this.currentPages[String(lnb.id)] = 0;
-            } else {
-              for (const lp of lnb.pages) {
-                if (!existing.pages.find(p => String(p.id) === String(lp.id))) {
-                  existing.pages.push(lp);
-                }
-              }
-              existing.pages.sort((a, b) => a.order - b.order);
-            }
+        dbInitialized = true;
+
+        // Notebook-Doc für aktuelles Notebook öffnen + Strokes laden
+        if (this.currentNotebook) {
+          openNotebookDoc(this.currentNotebookId);
+          // Warte auf IndexedDB-Load des Notebook-Docs
+          if (nbPersistence) {
+            await new Promise(resolve => {
+              nbPersistence.once('synced', resolve);
+              setTimeout(resolve, 2000);
+            });
           }
         }
 
-        dbInitialized = true;
-
-        // Bei Reconnect: GenosDB Delta-Sync übernimmt automatisch (Graph-Nodes bereits gespeichert)
-
-        // WebSocket Relay als Snapshot-Store (Backup für Peers die später online kommen)
-        // GenosDB P2P übernimmt den Live-Sync zwischen aktiven Peers
-        console.log('[Relay] syncEnabled:', this.syncEnabled, 'RELAY_URL:', RELAY_URL);
-        if (this.syncEnabled && RELAY_URL) {
-          connectRelay(roomKey,
-            // onSync: ignorieren — Relay-Daten wurden in Phase 2 geladen
-            () => {},
-            // onPut: ignorieren — Live-Sync nur über GenosDB P2P
-            () => {},
-            // onDelete: ignorieren
-            () => {}
-          );
-
-          // Snapshot an Relay pushen (einmalig nach Init)
-          // Metadaten für alle Seiten, Strokes nur für die aktuelle Seite (verhindert Überschreiben mit leeren Strokes)
-          const currentPageId = String(this.currentPage?.id || '');
-          const pushSnapshotToRelay = () => {
-            for (const nb of this.notebooks) {
-              relaySend({ type: 'node-put', id: String(nb.id), data: { type: 'notebook', name: nb.name } });
-              for (const page of (nb.pages || [])) {
-                const pid = String(page.id);
-                const pgRoom = page.pageRoom || (roomKey + '_p_' + pid);
-                const data = {
-                  type: 'page', notebookId: String(nb.id), background: page.background,
-                  order: page.order ?? 0, clearedAt: page.clearedAt || 0, pageRoom: pgRoom
-                };
-                // Strokes nur für aktuelle Seite (die einzige mit geladenen Strokes)
-                if (pid === currentPageId && page.strokes?.length > 0) {
-                  data.strokes = page.strokes.map(s => ({
-                    id: String(s.id), points: s.points, color: s.color, size: s.size, tool: s.tool
-                  }));
-                }
-                relaySend({ type: 'node-put', id: pid, data });
-              }
-            }
-            relayPushNav(this.currentNotebookId, { ...this.currentPages });
-            console.log('[Relay] Snapshot gepusht');
-          };
-          // Warten bis WebSocket offen, dann einmalig pushen
-          let pushAttempts = 0;
-          const pushInterval = setInterval(() => {
-            pushAttempts++;
-            if (relayWs && relayWs.readyState === 1) {
-              clearInterval(pushInterval);
-              pushSnapshotToRelay();
-            } else if (pushAttempts > 20) {
-              clearInterval(pushInterval);
-            }
-          }, 500);
-        }
-
         this.setupCanvases();
-        // PageDb für aktuelle Seite öffnen (Strokes laden)
+        // Strokes der aktuellen Seite laden
         if (this.currentPage) {
-          await openPageDb(String(this.currentPage.id));
+          loadCurrentPageStrokes();
         }
         this.fitToContent();
         window.addEventListener('resize', () => {
@@ -2697,9 +2161,8 @@
           this.updateFitReference();
         });
 
-        // Vor dem Schließen: alle Daten sofort speichern
+        // Vor dem Schließen: lokale Settings speichern
         window.addEventListener('beforeunload', () => {
-          _flushPageSave(); // Ausstehende Strokes sofort speichern
           this._saveLocalSettings();
         });
 
@@ -2761,7 +2224,7 @@
 
       toggleSync() {
         this.syncEnabled = !this.syncEnabled;
-        idbSet(roomKey + ':syncEnabled', this.syncEnabled);
+        idbPut(roomKey + ':syncEnabled', this.syncEnabled);
         location.reload();
       },
 
@@ -2788,12 +2251,8 @@
         await idbPut(roomKey + ':penSizeIndex', this.penSizeIndex);
         await idbPut(roomKey + ':customColors', [...this.customColors]);
         await idbPut(roomKey + ':penDetected', this.penDetected);
-        // Nav-State an Relay senden (überlebt Cache-Clear)
-        relayPushNav(this.currentNotebookId, { ...this.currentPages });
       },
 
-      // Notizbuch-Inhalte via GenosDB (P2P-Sync) + lokale Settings in IndexedDB speichern
-      // Graph-Nodes werden direkt gespeichert — kein Batch-Save nötig
       async _saveAll() { await this._saveLocalSettings(); },
       async _saveCurrentNotebook() { await this._saveLocalSettings(); },
       
@@ -2844,11 +2303,12 @@
             if (!(String(nb.id) in this.currentPages)) this.currentPages[String(nb.id)] = 0;
           }
         }
-        // Tombstones für Notebooks die im Snapshot nicht mehr existieren (Sync an Peers)
-        if (rootDb) {
+        // Gelöschte Notebooks aus rootDoc entfernen (Sync an Peers)
+        if (rootDoc) {
           for (const oldId of oldIds) {
             if (!newIds.has(oldId)) {
-              await rootDb.put({ _deleted: true, id: oldId }, oldId);
+              rootDoc.getMap('notebooks').delete(String(oldId));
+              rootDoc.getMap('pageIndex').delete(String(oldId));
             }
           }
         }
@@ -2877,10 +2337,13 @@
         this.currentNotebookId = nbId;
         this.currentPages[nbId] = 0;
 
-        // Graph-Nodes erstellen
-        if (rootDb) {
-          rootDb.put({ type: 'notebook', name }, nbId);
-          rootDb.put({ type: 'page', notebookId: nbId, background: 'grid', order: 0, pageRoom: roomKey + '_p_' + pageId }, pageId);
+        // In rootDoc registrieren
+        if (rootDoc && Y) {
+          rootDoc.getMap('notebooks').set(nbId, { name });
+          const pageIndex = rootDoc.getMap('pageIndex');
+          const pagesArr = new Y.Array();
+          pagesArr.push([{ id: pageId, background: 'grid', order: 0 }]);
+          pageIndex.set(nbId, pagesArr);
         }
       },
 
@@ -3158,9 +2621,21 @@
         if (!this.currentPage) return;
         this.currentPage.background = bg;
         this.drawBackground();
-        savePageNode(this.currentPage, this.currentNotebookId);
+        // Page-Metadaten in rootDoc aktualisieren
+        if (rootDoc) {
+          const pageIndex = rootDoc.getMap('pageIndex');
+          const pagesArr = pageIndex.get(String(this.currentNotebookId));
+          if (pagesArr) {
+            const idx = this.currentPageIndex;
+            if (idx >= 0 && idx < pagesArr.length) {
+              const old = pagesArr.get(idx);
+              pagesArr.delete(idx, 1);
+              pagesArr.insert(idx, [{ ...old, background: bg }]);
+            }
+          }
+        }
       },
-      
+
       // Page navigation
       nextPage() {
         if (!this.currentNotebook) return;
@@ -3180,17 +2655,18 @@
           };
           this.currentNotebook.pages.push(newPage);
 
-          // Graph-Node erstellen
-          const pageRoom = roomKey + '_p_' + pageId;
-          if (rootDb) {
-            rootDb.put({ type: 'page', notebookId: nbId, background: newPage.background, order: nextIndex, pageRoom }, pageId);
+          // Page in rootDoc registrieren
+          if (rootDoc) {
+            const pageIndex = rootDoc.getMap('pageIndex');
+            let pagesArr = pageIndex.get(nbId);
+            if (!pagesArr) { pagesArr = new Y.Array(); pageIndex.set(nbId, pagesArr); }
+            pagesArr.push([{ id: pageId, background: newPage.background, order: nextIndex }]);
           }
-          relaySend({ type: 'node-put', id: pageId, data: { type: 'page', notebookId: nbId, background: newPage.background, order: nextIndex, pageRoom } });
         }
         this.currentPages[nbId] = nextIndex;
-        const targetPageId = String(this.currentPage?.id);
         this.drawBackground();
-        openPageDb(targetPageId, !isNewPage).then(() => { this.redrawStrokes(); this.fitToContent(); });
+        loadCurrentPageStrokes();
+        this.fitToContent();
         this._saveLocalSettings();
       },
 
@@ -3199,9 +2675,9 @@
 
         const nbId = this.currentNotebookId;
         this.currentPages[nbId] = (this.currentPages[nbId] ?? 0) - 1;
-        const targetPageId = String(this.currentPage?.id);
         this.drawBackground();
-        openPageDb(targetPageId, true).then(() => { this.redrawStrokes(); this.fitToContent(); });
+        loadCurrentPageStrokes();
+        this.fitToContent();
         this._saveLocalSettings();
       },
 
@@ -3210,9 +2686,16 @@
         this.currentNotebookId = id;
         if (!(id in this.currentPages)) this.currentPages[id] = 0;
         this.showNotebookMenu = false;
-        const targetPageId = String(this.currentPage?.id);
+        // Neues Notebook-Doc öffnen
+        openNotebookDoc(id);
+        if (nbPersistence) {
+          nbPersistence.once('synced', () => {
+            loadCurrentPageStrokes();
+            this.fitToContent();
+          });
+          setTimeout(() => { loadCurrentPageStrokes(); this.fitToContent(); }, 2000);
+        }
         this.drawBackground();
-        openPageDb(targetPageId, true).then(() => { this.redrawStrokes(); this.fitToContent(); });
         this._saveLocalSettings();
       },
 
@@ -3229,19 +2712,19 @@
         this.currentPages[nbId] = 0;
         this.showNotebookMenu = false;
 
-        // Graph-Nodes erstellen
-        const pageRoom = roomKey + '_p_' + pageId;
-        if (rootDb) {
-          rootDb.put({ type: 'notebook', name: newNb.name }, nbId);
-          rootDb.put({ type: 'page', notebookId: nbId, background: 'grid', order: 0, pageRoom }, pageId);
+        // In rootDoc registrieren
+        if (rootDoc) {
+          rootDoc.getMap('notebooks').set(nbId, { name: newNb.name });
+          const pageIndex = rootDoc.getMap('pageIndex');
+          const pagesArr = new Y.Array();
+          pagesArr.push([{ id: pageId, background: 'grid', order: 0 }]);
+          pageIndex.set(nbId, pagesArr);
         }
-        relaySend({ type: 'node-put', id: nbId, data: { type: 'notebook', name: newNb.name } });
-        relaySend({ type: 'node-put', id: pageId, data: { type: 'page', notebookId: nbId, background: 'grid', order: 0, pageRoom } });
 
-        openPageDb(pageId).then(() => {
-          this.drawBackground();
-          this.redrawStrokes();
-        });
+        // Notebook-Doc öffnen
+        openNotebookDoc(nbId);
+        this.drawBackground();
+        this.redrawStrokes();
         this._saveLocalSettings();
       },
 
@@ -3258,38 +2741,39 @@
           }
           strokes.push({ id: String(Date.now() + i + 2), points: roundPoints(points), color: '#000000', size: 2, tool: 'pen' });
         }
-        const page = { id: pageId, strokes, background: 'grid', order: 0 };
-        const newNb = { id: nbId, name: `Testbuch (${strokes.length} Strokes)`, pages: [page] };
+        const newNb = { id: nbId, name: `Testbuch (${strokes.length} Strokes)`, pages: [{ id: pageId, strokes, background: 'grid', order: 0 }] };
         this.notebooks.push(newNb);
         this.currentNotebookId = nbId;
         this.currentPages[nbId] = 0;
         this.showNotebookMenu = false;
-        const pageRoom = roomKey + '_p_' + pageId;
-        if (rootDb) {
-          rootDb.put({ type: 'notebook', name: newNb.name }, nbId);
-          rootDb.put({ type: 'page', notebookId: nbId, background: 'grid', order: 0, pageRoom }, pageId);
+
+        // In rootDoc registrieren
+        if (rootDoc) {
+          rootDoc.getMap('notebooks').set(nbId, { name: newNb.name });
+          const pageIndex = rootDoc.getMap('pageIndex');
+          const pagesArr = new Y.Array();
+          pagesArr.push([{ id: pageId, background: 'grid', order: 0 }]);
+          pageIndex.set(nbId, pagesArr);
         }
-        openPageDb(pageId).then(() => {
-          this.drawBackground(); this.redrawStrokes(); this.fitToContent();
-          savePageNode(page, nbId); // Strokes in pageDb + Relay persistieren
-        });
+
+        // Notebook-Doc öffnen + Strokes einfügen
+        openNotebookDoc(nbId);
+        const yArray = getPageStrokes(pageId);
+        if (yArray) {
+          yArray.push(strokes.map(s => ({ id: s.id, points: s.points, color: s.color, size: s.size, tool: s.tool })));
+        }
+        this.drawBackground(); this.redrawStrokes(); this.fitToContent();
         this._saveLocalSettings();
       },
 
       deleteNotebook(id) {
         if (this.notebooks.length <= 1) return;
-        const nb = this.notebooks.find(n => String(n.id) === String(id));
 
-        // Pages + Notebook aus rootDb und Relay entfernen
-        if (nb) {
-          for (const page of (nb.pages || [])) {
-            const pid = String(page.id);
-            if (rootDb) rootDb.remove(pid);
-            relaySend({ type: 'node-remove', id: pid });
-          }
+        // Aus rootDoc entfernen
+        if (rootDoc) {
+          rootDoc.getMap('notebooks').delete(String(id));
+          rootDoc.getMap('pageIndex').delete(String(id));
         }
-        if (rootDb) rootDb.remove(String(id));
-        relaySend({ type: 'node-remove', id: String(id) });
 
         this.notebooks = this.notebooks.filter(nb => nb.id !== id);
         delete this.currentPages[id];
@@ -3298,9 +2782,10 @@
           if (!(this.currentNotebookId in this.currentPages)) {
             this.currentPages[this.currentNotebookId] = 0;
           }
-          const targetPageId = String(this.currentPage?.id);
+          openNotebookDoc(this.currentNotebookId);
           this.drawBackground();
-          openPageDb(targetPageId, true).then(() => { this.redrawStrokes(); this.fitToContent(); });
+          loadCurrentPageStrokes();
+          this.fitToContent();
         }
         this._saveLocalSettings();
       },
@@ -3483,32 +2968,25 @@
         const nbId = String(this.currentNotebookId);
         this.currentNotebook.name = name;
         this.editingName = false;
-        if (rootDb) rootDb.put({ type: 'notebook', name }, nbId);
-        relaySend({ type: 'node-put', id: nbId, data: { type: 'notebook', name } });
+        if (rootDoc) rootDoc.getMap('notebooks').set(nbId, { name });
       },
-      
+
       undo() {
-        if (!this.currentPage || this.currentPage.strokes.length === 0) return;
-        const pageId = String(this.currentPage.id);
-        const removed = this.currentPage.strokes.pop();
-        if (removed) {
-          if (!this.currentPage.deletedStrokes) this.currentPage.deletedStrokes = [];
-          this.currentPage.deletedStrokes.push(Number(removed.id));
-          if (strokeChannel) strokeChannel.send({ action: 'undo', pageId, strokeId: removed.id });
+        if (!undoManager || !this.currentPage || this.currentPage.strokes.length === 0) return;
+        undoManager.undo();
+        // In-Memory-Model aktualisieren
+        if (currentStrokeArray) {
+          this.currentPage.strokes = readStrokesFromYArray(currentStrokeArray);
         }
-        savePageNode(this.currentPage, this.currentNotebookId);
         this.redrawStrokes();
       },
 
       clearPage() {
-        if (!this.currentPage) return;
-        const pageId = String(this.currentPage.id);
-        const now = Date.now();
+        if (!this.currentPage || !currentStrokeArray) return;
+        if (currentStrokeArray.length > 0) {
+          currentStrokeArray.delete(0, currentStrokeArray.length);
+        }
         this.currentPage.strokes = [];
-        this.currentPage.deletedStrokes = []; // clearedAt macht Tombstones überflüssig
-        this.currentPage.clearedAt = now;
-        if (strokeChannel) strokeChannel.send({ action: 'clear', pageId, clearedAt: now });
-        savePageNode(this.currentPage, this.currentNotebookId);
         this.redrawStrokes();
       },
       
@@ -3846,7 +3324,7 @@
         this.isDrawing = false;
         this.activePointerId = null;
 
-        // Keine deferred Page-Updates nötig — rootDb hat nur Metadaten, pageDb hat eigenen Channel
+        // Stroke wird bei Pointer-Up finalisiert und in Yjs Y.Array eingefügt
         this.activePointerType = null;
         
         if (this.currentPoints.length > 0 && this.currentPage) {
@@ -3885,11 +3363,13 @@
             }
           }
 
-          // Live an Peers senden (sofort, kein db.put)
-          if (strokeChannel) strokeChannel.send({ action: 'add', pageId, stroke: newStroke });
-
-          // Persistenz (debounced)
-          savePageNode(this.currentPage, this.currentNotebookId);
+          // In Yjs Y.Array einfügen (auto-sync + auto-persist)
+          if (currentStrokeArray) {
+            currentStrokeArray.push([{
+              id: newStroke.id, points: newStroke.points.map(p => ({ x: p.x, y: p.y })),
+              color: newStroke.color, size: newStroke.size, tool: newStroke.tool
+            }]);
+          }
 
           this.updateFitReference();
           this._saveLocalSettings();
