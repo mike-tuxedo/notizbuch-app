@@ -4,7 +4,7 @@
 
 import { initStorage, savePageData, loadPageData, deletePageData, deleteNotebookData, saveMeta, loadMeta, clearAll } from './storage.js';
 import { roundPoints, drawStrokeToCanvas, drawBackground } from './canvas.js';
-import { initP2P, send as p2pSend, leaveRoom } from './p2p-sync.js';
+import { initP2P, send as p2pSend, leaveRoom, isConnected } from './p2p-sync.js';
 import { generateKey, exportKey, importKey, encrypt, decrypt, deriveKeyFromPassphrase } from './encryption.js';
 import { exportAppBundle, importAppBundle } from './share.js';
 
@@ -1849,6 +1849,30 @@ async function init() {
   console.log('[App] Bereit.', state.notebooks.length, 'Notebooks');
 }
 
+/**
+ * Tab/Fenster wird wieder aktiv: Full-Sync senden OHNE Room neu aufzubauen.
+ * Trystero hält WebRTC-Verbindungen am Leben, Room.leave() zerstört sie.
+ * Nur reconnecten wenn Room wirklich tot ist (isConnected() === false).
+ */
+function handleActivityChange() {
+  if (!state.syncEnabled) return;
+  // Nur auf "visible" reagieren (nicht auf blur/hidden)
+  if (document.visibilityState === 'hidden') return;
+
+  if (isConnected()) {
+    // Room lebt → nur Full-Sync senden
+    const payload = buildFullSyncPayload();
+    if (payload.notebooks.length > 0) {
+      p2pSend('full-sync', payload);
+      console.log('[App] Tab aktiv — Full-Sync über bestehende Verbindung');
+    }
+  } else {
+    // Room tot → neu verbinden
+    console.log('[App] Tab aktiv — Room tot, reconnecte...');
+    startP2P().catch(e => console.error('[App] P2P Reconnect Fehler:', e));
+  }
+}
+
 function setupEvents() {
   const container = document.getElementById('canvas-container');
   if (container) {
@@ -1862,19 +1886,9 @@ function setupEvents() {
   window.addEventListener('resize', () => setupCanvases());
   window.addEventListener('beforeunload', () => { flushSave(); saveLocalSettings(); });
 
-  // Bei Tab-Fokus: P2P-Verbindung prüfen und ggf. neu verbinden
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && state.syncEnabled) {
-      console.log('[App] Tab aktiv — P2P Reconnect + Full-Sync');
-      startP2P().then(() => {
-        // Nach Reconnect: Full-Sync an alle Peers (lokale Änderungen die im Hintergrund passiert sind)
-        setTimeout(() => {
-          const payload = buildFullSyncPayload();
-          if (payload.notebooks.length > 0) p2pSend('full-sync', payload);
-        }, 2000); // 2s warten bis Peers verbunden
-      }).catch(e => console.error('[App] P2P Reconnect Fehler:', e));
-    }
-  });
+  // Bei Tab/Fenster-Fokus: Full-Sync senden (ohne Room-Reconnect)
+  document.addEventListener('visibilitychange', handleActivityChange);
+  window.addEventListener('focus', handleActivityChange);
 
   // Toolbar-Buttons
   document.getElementById('btn-prev')?.addEventListener('click', prevPage);
