@@ -97,8 +97,67 @@ Drawing pipeline: raw points → Catmull-Rom smoothing → polygon with perpendi
 
 ## Branches
 
-- **`main`** — GenosDB + WebSocket Relay (P2P + Relay hybrid)
+- **`main`** — GenosDB + WebSocket Relay (P2P + Relay hybrid). Alte monolithische Architektur (alles in app.html).
 - **`experiment/evolu-sync`** — Custom sync layer inspired by Evolu (Relay-only, E2E-verschlüsselt, Delta-Sync)
+- **`experiment/yjs-sync`** — **Aktive Entwicklung.** Komplett neue modulare Architektur (DrawPad-inspiriert). Siehe unten.
+
+## App v2 — Modulare Architektur (experiment/yjs-sync)
+
+Trotz Branch-Name wird **nicht** Yjs verwendet. Die Architektur basiert auf dem DrawPad-Proof-of-Concept.
+
+### Dateistruktur
+
+```
+app-v2.html           — UI (Dark Theme, Sidebar links, 3-Layer Canvas)
+js/
+├── app.js            — State, Init, Canvas, Input, UI, Navigation, P2P-Integration
+├── canvas.js         — Drawing Engine (Catmull-Rom, Polygon, Background)
+├── storage.js        — OPFS + IndexedDB Fallback (automatische Feature-Detection)
+├── p2p-sync.js       — Trystero P2P (Nostr Signaling, WebRTC DataChannel)
+├── encryption.js     — AES-GCM 256 (Web Crypto API, PBKDF2 Key-Derivation)
+└── share.js          — Invite-Links, QR, Export/Import (.enc Bundle)
+```
+
+### Schlüssel-Hierarchie
+
+```
+MasterKey (AES-GCM 256, aus Passphrase via PBKDF2, 600k Iterationen)
+    ├── NotebookKey NB-1 (AES-GCM 256, zufällig generiert)
+    ├── NotebookKey NB-2
+    └── NotebookKey NB-3
+```
+
+- **MasterKey**: Gleiche Passphrase = gleicher Room = automatischer Sync zwischen eigenen Geräten
+- **NotebookKey**: Pro Notebook. Wird beim Teilen im URL-Fragment übergeben (`#nb={id}&k={base64}`)
+- Keys in localStorage (raw bytes als JSON-Array). Produktions-Upgrade: IndexedDB non-extractable CryptoKey.
+
+### P2P-Sync (Trystero)
+
+- **Library:** Trystero via `esm.sh/trystero/nostr` (kein eigener Signaling-Server)
+- **Room-ID:** Hash des MasterKeys (alle Geräte mit gleicher Passphrase im selben Room)
+- **Actions:** stroke, undo, clear, full-sync, nb-created, nb-deleted, nb-renamed, page-created, page-deleted
+- **Full-Sync:** Bei Peer-Join wird kompletter State gesendet (alle Notebooks, Pages, Strokes). Union-Merge by ID.
+- **Kein Room-Wechsel bei Seitennavigation** — alle Pages eines Notebooks über denselben Room
+
+### OPFS-Verschlüsselung
+
+- Strokes: `JSON → AES-GCM encrypt(NotebookKey) → OPFS (notebooks/{nbId}/pages/{pageId}.bin)`
+- Meta: `JSON → AES-GCM encrypt(MasterKey) → OPFS (meta.bin)`
+- Fallback: Plain-JSON wird beim Lesen erkannt (Migration bestehender Daten)
+
+### Notebook-Sharing
+
+- Invite-Link: `#nb={notebookId}&k={base64(notebookKey)}&name={name}`
+- Key ist nur im URL-Fragment — Browser sendet ihn nie an den Server
+- Empfänger: NotebookKey wird installiert, Notebook erstellt, Full-Sync über P2P
+
+### Canvas / View Transform
+
+- 3-Layer: bgCanvas (Hintergrund), staticCanvas (committed Strokes), activeCanvas (Live-Preview)
+- **Bitmap-Cache** (`strokeCacheCanvas`): `redrawStrokes()` rendert in Cache, `compositeStrokes()` transformiert Cache für Pan/Zoom
+- **compositeStrokes Delta:** `scaleRatio = viewScale / cacheViewScale`, `tx = (viewX - cacheViewX * scaleRatio) * DPR`
+- **fitToContent:** Berechnet Bounding-Box aller Strokes, skaliert (max 1:1), zentriert mit 40px Padding
+- **Aktuell kein inkrementelles Zeichnen** — Full-Redraw nach jedem Stroke (korrekt aber langsam bei >500 Strokes)
 
 ## Relay Server (`relay/`)
 
@@ -189,9 +248,20 @@ Für mobile Tests: `rootCA.pem` auf dem Gerät installieren (aus `mkcert -CAROOT
 - **Relay-Daten blind in metaDb/rootDb schreiben:** Relay hat oft ältere Snapshots als lokale OPFS-Daten. Blindes `rootDb.put()` für alle Relay-Nodes überschrieb neuere lokale Daten und propagierte alten Stand an Peers. Fix: Nur neue Nodes (die lokal fehlen) in rootDb, Strokes nie in rootDb.
 - **Snapshot-Push mit leeren Strokes:** Beim Init-Snapshot-Push hatten nur die aktuelle Seite Strokes im Memory, alle anderen `strokes: []`. Das überschrieb gültige Relay-Daten. Fix: Strokes nur für aktuelle Seite pushen, Relay-Server merged statt überschreibt.
 
+### Erkenntnisse Session 2026-03-26/27 (App v2 / experiment/yjs-sync)
+
+- **GenosDB map() feuert nach FULL SYNC nicht:** Der interne `requestAnimationFrame`-Debounce in `t()` verschluckt Benachrichtigungen. Workaround war Poll via `pageDb.get()` — letztlich Grund für den Umstieg auf Trystero.
+- **GenosDB Node-per-Page mit Array-Strokes:** CRDT arbeitet auf Node-Ebene, nicht Array-Ebene. Zwei Peers die `put({strokes:[...]})` aufrufen → Last-Writer-Wins für gesamtes Array. Kein per-Stroke Merge möglich.
+- **Yjs wurde evaluiert aber nicht verwendet:** CDN-Import funktioniert, aber Yjs + GenosDB wäre doppeltes P2P. Yjs allein hätte GenosDB komplett ersetzt — zu großer Umbau für den Gewinn. Stattdessen: eigene Sync-Logik mit Trystero.
+- **Trystero Room bei Tab-Wechsel nicht zerstören:** `room.leave()` + `joinRoom()` bei jedem `visibilitychange` zerstörte WebRTC-Verbindungen. Nostr-Signaling braucht 5-15s zum Reconnect → Sync-Lücken. Fix: Bestehende Verbindung behalten, nur Full-Sync senden.
+- **Android Chrome `visibilitychange`/`focus` unzuverlässig:** Feuert nicht immer beim App-Wechsel. Workaround: Erster `pointerdown` nach >5s Inaktivität triggert Full-Sync.
+- **Inkrementelles Stroke-Rendering + DPR:** `staticCtx.save()/translate()/scale()/drawStroke()/restore()` führte zu Versatz bei unterschiedlichen Container-Größen (DevTools, Sidebar). Ursache: DPR-Transform blieb in `save/restore` erhalten, Delta-Berechnung stimmte nicht. Aktuell: Full-Redraw nach jedem Stroke (korrekt, aber langsam). Inkrementell kann später mit explizitem `setTransform(DPR,...)` statt `save/restore` wieder eingebaut werden.
+- **Duplikat-Notebooks nach Cache-Clear:** Jeder Browser erstellt ein Default-Notebook. Nach Full-Sync existieren Duplikate mit gleichem Namen. Fix: Nach Full-Sync Duplikate by Name deduplizieren (ältestes behalten, Strokes mergen).
+
 ### Service Worker
 - `sw.js` nutzt **Network-first für HTML** (Änderungen sofort sichtbar) und Stale-while-revalidate für Libs
 - Vorher Cache-first → Firefox zeigte alte Versionen nach Code-Änderungen
+- CDN-Requests (jsdelivr, esm.sh) werden per Stale-while-revalidate gecacht (Offline-Support für Trystero)
 
 ## Commit Convention
 

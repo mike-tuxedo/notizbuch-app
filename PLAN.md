@@ -78,9 +78,30 @@ Relay-Fallback bei Navigation: `node-get` Request holt Strokes wenn lokal keine 
 - [x] **Relay-Fallback bei Navigation:** node-get Request holt Strokes wenn kein P2P-Peer im Room
 - [x] **Zoom-Reset-Button:** Immer sichtbar (v-if entfernt)
 
+### Erledigt (Session 2026-03-26/27) — App v2 auf experiment/yjs-sync
+
+- [x] **Modulare Architektur:** app-v2.html + js/ (app.js, canvas.js, storage.js, p2p-sync.js, encryption.js, share.js)
+- [x] **Storage:** OPFS + IndexedDB Fallback mit automatischer Feature-Detection
+- [x] **Canvas Engine:** Catmull-Rom, Polygon, 3-Layer, Bitmap-Cache, drawBackground
+- [x] **UI:** Dark Theme, Sidebar mit Notebook-Liste, Zen-Modus, iro.js Farbwähler
+- [x] **Zoom/Pan:** Hand-Tool, Mausrad-Zoom, Pinch-Zoom, fitToContent (Home-Button)
+- [x] **Mobile UI:** Burger-Sidebar, Farb-/Größen-Popup unter Toolbar, Notebook-Name in Pagebar
+- [x] **Phase 1 — MasterKey + Meta-Sync:** Passphrase → PBKDF2 → Room-ID, Full-Sync bei Peer-Join, CRUD-Broadcast
+- [x] **Phase 2 — OPFS-Verschlüsselung:** Strokes mit NotebookKey, Meta mit MasterKey (AES-GCM 256)
+- [x] **Phase 3 — Notebook-Sharing:** Invite-Link mit NotebookKey im Fragment, parseInviteLink bei Start
+- [x] **Phase 4 — Export/Import:** Passphrase-wrapped .enc Bundle, Download/Upload UI
+- [x] **Phase 5 — Touch/Palm-Rejection:** Touch nur bei Hand-Tool, Pen-Erkennung → Touch ignorieren
+- [x] **P2P-Sync Stabilität:** Kein Room-Destroy bei Tab-Fokus, Android pointerdown Fallback (>5s)
+- [x] **Bugfixes:** Stroke-Versatz (DPR), Canvas-Clear bei Navigation, Duplikat-Notebooks, compositeStrokes Delta
+
 ### Nächste Schritte
 
+- [ ] **Relay-Server v2:** WebSocket Relay als Backup für Offline-Peers (speichert nur Ciphertext)
 - [ ] **Mobile-Testing:** Brave Android, Safari iOS, Firefox Android
-- [ ] **Firefox Stable:** OPFS `GetDirectory` SecurityError — Fallback-Strategie klären
+- [ ] **Firefox Stable:** OPFS `GetDirectory` SecurityError — Fallback auf IndexedDB testen
+- [ ] **Seite löschen:** Einzelne Seite aus Notebook entfernen
+- [ ] **Hintergrund-Auswahl:** grid/lined/blank UI in app-v2
+- [ ] **Snapshots:** Backup/Restore Feature aus alter App übernehmen
+- [ ] **Inkrementelles Stroke-Rendering:** Performance-Optimierung (setTransform statt save/restore)
 - [ ] **experiment/evolu-sync archivieren:** Branch als abgeschlossen markieren
-- [ ] **Edge-Case:** Bei extremer gleichzeitiger Zeichenaktivität (2 Peers zeichnen schnell gleichzeitig) können vereinzelt Strokes durch Merge-Timing verloren gehen. Kein realer Usecase, aber für Game-artige Szenarien relevant.
+- [ ] **app-v2.html → app.html:** Wenn stabil, alte app.html ersetzen
