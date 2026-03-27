@@ -1889,6 +1889,19 @@ function setupEvents() {
   // Bei Tab/Fenster-Fokus: Full-Sync senden (ohne Room-Reconnect)
   document.addEventListener('visibilitychange', handleActivityChange);
   window.addEventListener('focus', handleActivityChange);
+  window.addEventListener('pageshow', handleActivityChange);
+
+  // Mobile Fallback: Erster Touch nach Inaktivität triggert Sync
+  // Android Chrome feuert visibilitychange/focus nicht zuverlässig beim App-Wechsel
+  let _lastSyncCheck = Date.now();
+  document.addEventListener('pointerdown', () => {
+    const now = Date.now();
+    if (now - _lastSyncCheck > 5000 && state.syncEnabled) {
+      _lastSyncCheck = now;
+      handleActivityChange();
+    }
+    _lastSyncCheck = now;
+  }, true);
 
   // Toolbar-Buttons
   document.getElementById('btn-prev')?.addEventListener('click', prevPage);
