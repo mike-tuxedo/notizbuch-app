@@ -7,6 +7,7 @@ import { roundPoints, drawStrokeToCanvas, drawBackground } from './canvas.js';
 import { initP2P, send as p2pSend, leaveRoom, isConnected } from './p2p-sync.js';
 import { generateKey, exportKey, importKey, encrypt, decrypt, deriveKeyFromPassphrase } from './encryption.js';
 import { exportAppBundle, importAppBundle } from './share.js';
+import { initRelay, putBlob as relayPut, deleteBlob as relayDelete, isRelayConnected } from './relay.js';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -250,6 +251,7 @@ async function _flushSave() {
   const nbId = state.currentNotebookId;
   const data = await serializeStrokes(page.strokes || [], nbId);
   await savePageData(nbId, String(page.id), data);
+  relayPut(`p:${nbId}/${page.id}`, data);
 }
 
 /**
@@ -266,19 +268,33 @@ async function loadPage(notebookId, pageId, page) {
   const merged = new Map();
   for (const s of diskStrokes) merged.set(s.id, s);
   for (const s of (page.strokes || [])) merged.set(s.id, s);
-  page.strokes = [...merged.values()].sort((a, b) => Number(a.id) - Number(b.id));
+  // Strokes vor clearedAt filtern (Clear wurde evtl. von anderem Peer gesetzt)
+  const clearedAt = page.clearedAt || 0;
+  page.strokes = [...merged.values()]
+    .filter(s => Number(s.id) > clearedAt)
+    .sort((a, b) => Number(a.id) - Number(b.id));
 }
 
 // ─── Meta Persistence ───────────────────────────────────────────────────────
 
-/** App-Metadaten speichern (Notebook-Struktur ohne Strokes). */
+/** App-Metadaten speichern (Notebook-Struktur + NotebookKeys, ohne Strokes). */
 async function saveAppMeta() {
+  // NotebookKeys sammeln (raw bytes als Array)
+  const nbKeys = {};
+  for (const nb of state.notebooks) {
+    try {
+      const key = await getNotebookKey(nb.id);
+      const raw = await exportKey(key);
+      nbKeys[nb.id] = Array.from(raw);
+    } catch {}
+  }
   const meta = {
     notebooks: state.notebooks.map(nb => ({
       id: nb.id,
       name: nb.name,
-      pages: nb.pages.map(p => ({ id: p.id, background: p.background || 'grid', order: p.order ?? 0 }))
-    }))
+      pages: nb.pages.map(p => ({ id: p.id, background: p.background || 'grid', order: p.order ?? 0, clearedAt: p.clearedAt || 0 }))
+    })),
+    notebookKeys: nbKeys
   };
   // Meta mit MasterKey verschlüsseln
   const plain = new TextEncoder().encode(JSON.stringify(meta));
@@ -287,6 +303,7 @@ async function saveAppMeta() {
     if (masterKey) {
       const encrypted = await encrypt(masterKey, plain);
       await saveMeta(encrypted);
+      relayPut('meta', encrypted);
     } else {
       await saveMeta(meta); // Fallback: plain
     }
@@ -320,9 +337,28 @@ async function loadAppMeta() {
     id: nb.id,
     name: nb.name,
     pages: (nb.pages || []).map(p => ({
-      id: p.id, strokes: [], background: p.background || 'grid', order: p.order ?? 0
+      id: p.id, strokes: [], background: p.background || 'grid', order: p.order ?? 0, clearedAt: p.clearedAt || 0
     }))
   }));
+  // NotebookKeys aus Meta installieren (fehlende)
+  await installNotebookKeys(meta.notebookKeys);
+}
+
+/**
+ * NotebookKeys aus Meta-Objekt in State + localStorage installieren.
+ * Überschreibt keine bereits vorhandenen Keys.
+ * @param {Object<string, number[]>} keys - { notebookId: [raw bytes] }
+ */
+async function installNotebookKeys(keys) {
+  if (!keys) return;
+  for (const [nbId, rawArr] of Object.entries(keys)) {
+    if (state.notebookKeys[nbId] || !rawArr?.length) continue;
+    try {
+      const key = await importKey(new Uint8Array(rawArr), true);
+      state.notebookKeys[nbId] = key;
+      localStorage.setItem(`notizbuch:nbKey:${nbId}`, JSON.stringify(rawArr));
+    } catch {}
+  }
 }
 
 // ─── Canvas Management ──────────────────────────────────────────────────────
@@ -366,6 +402,17 @@ function redrawBackground() {
   const h = bgCanvas.height / DPR;
   const bg = currentPage()?.background || 'grid';
   drawBackground(bgCtx, w, h, bg, state.viewX, state.viewY, state.viewScale);
+}
+
+/** Hintergrund der aktuellen Seite ändern. */
+async function setBackground(bg) {
+  const page = currentPage();
+  if (!page || page.background === bg) return;
+  page.background = bg;
+  redrawBackground();
+  await saveAppMeta();
+  p2pSend('page-bg', { notebookId: state.currentNotebookId, pageId: page.id, background: bg });
+  renderUI();
 }
 
 /**
@@ -536,6 +583,27 @@ async function prevPage() {
   if (idx > 0) await goToPage(idx - 1);
 }
 
+/** Aktuelle Seite löschen (min. 1 Seite muss bleiben). */
+async function deletePage() {
+  const nb = currentNotebook();
+  if (!nb || nb.pages.length <= 1) return;
+  const idx = currentPageIndex();
+  const pageId = nb.pages[idx].id;
+  flushSave();
+  // Storage + Memory + Relay
+  await deletePageData(state.currentNotebookId, pageId);
+  relayDelete(`p:${state.currentNotebookId}/${pageId}`);
+  nb.pages.splice(idx, 1);
+  // Order neu nummerieren
+  nb.pages.forEach((p, i) => p.order = i);
+  // Index anpassen
+  const newIdx = Math.min(idx, nb.pages.length - 1);
+  state.currentPages[state.currentNotebookId] = newIdx;
+  await saveAppMeta();
+  p2pSend('page-deleted', { notebookId: state.currentNotebookId, pageId });
+  await goToPage(newIdx);
+}
+
 /**
  * Notebook wechseln.
  * @param {string} nbId
@@ -576,6 +644,9 @@ async function createNotebook() {
  */
 async function deleteNotebook(nbId) {
   if (state.notebooks.length <= 1) return;
+  // Relay: alle Pages des Notebooks löschen
+  const nb = state.notebooks.find(n => n.id === nbId);
+  if (nb) nb.pages.forEach(p => relayDelete(`p:${nbId}/${p.id}`));
   await deleteNotebookData(nbId);
   state.notebooks = state.notebooks.filter(n => n.id !== nbId);
   delete state.currentPages[nbId];
@@ -662,9 +733,10 @@ function clearPage() {
   const page = currentPage();
   if (!page) return;
   page.strokes = [];
+  page.clearedAt = Date.now();
   redrawStrokes();
   saveCurrentPage();
-  p2pSend('clear', { notebookId: state.currentNotebookId, pageId: page.id });
+  p2pSend('clear', { notebookId: state.currentNotebookId, pageId: page.id, clearedAt: page.clearedAt });
 }
 
 // ─── Tool Selection ─────────────────────────────────────────────────────────
@@ -918,6 +990,70 @@ async function getMasterCryptoKey() {
   return importKey(masterKeyRaw, true);
 }
 
+// ─── Relay Sync ──────────────────────────────────────────────────────────────
+
+/**
+ * Relay-Daten entschlüsseln und in lokalen State mergen.
+ * Wandelt Relay-Blobs in Full-Sync-Format um und nutzt applyFullSync().
+ * @param {Object<string, Uint8Array>} nodes - Relay-Nodes (meta + page blobs)
+ */
+async function mergeRelayData(nodes) {
+  const metaBlob = nodes['meta'];
+  if (!metaBlob || !(metaBlob instanceof Uint8Array)) return;
+
+  let relayMeta;
+  try {
+    const masterKey = await getMasterCryptoKey();
+    if (!masterKey) return;
+    const plainBuf = await decrypt(masterKey, metaBlob);
+    relayMeta = JSON.parse(new TextDecoder().decode(plainBuf));
+  } catch {
+    console.warn('[Relay] Meta-Entschlüsselung fehlgeschlagen');
+    return;
+  }
+  if (!relayMeta?.notebooks?.length) return;
+
+  // NotebookKeys aus Relay-Meta installieren (bevor Page-Daten entschlüsselt werden)
+  await installNotebookKeys(relayMeta.notebookKeys);
+
+  // Relay-Daten in Full-Sync-Format umwandeln
+  const payload = { notebooks: [] };
+  for (const nb of relayMeta.notebooks) {
+    const syncNb = { id: nb.id, name: nb.name, pages: [] };
+    for (const p of nb.pages) {
+      const pageBlob = nodes[`p:${nb.id}/${p.id}`];
+      let strokes = [];
+      if (pageBlob instanceof Uint8Array) {
+        try { strokes = await deserializeStrokes(pageBlob, nb.id); } catch {}
+      }
+      syncNb.pages.push({
+        id: p.id, background: p.background || 'grid', order: p.order ?? 0,
+        clearedAt: p.clearedAt || 0, strokes
+      });
+    }
+    payload.notebooks.push(syncNb);
+  }
+
+  await applyFullSync(payload);
+  console.log('[Relay] Daten gemerged:', payload.notebooks.length, 'Notebooks');
+}
+
+/**
+ * Alle Pages an Relay pushen (nach Init, im Hintergrund).
+ */
+async function pushAllToRelay() {
+  if (!isRelayConnected()) return;
+  for (const nb of state.notebooks) {
+    for (const p of nb.pages) {
+      try {
+        const data = await serializeStrokes(p.strokes || [], nb.id);
+        relayPut(`p:${nb.id}/${p.id}`, data);
+      } catch {}
+    }
+  }
+  console.log('[Relay] Alle Pages gepusht');
+}
+
 // ─── P2P Sync Integration ───────────────────────────────────────────────────
 
 /**
@@ -933,6 +1069,7 @@ function buildFullSyncPayload() {
         id: p.id,
         background: p.background || 'grid',
         order: p.order ?? 0,
+        clearedAt: p.clearedAt || 0,
         strokes: (p.strokes || []).map(s => ({
           id: s.id, points: s.points, color: s.color, size: s.size, tool: s.tool
         }))
@@ -956,6 +1093,7 @@ async function applyFullSync(payload) {
         id: remoteNb.id, name: remoteNb.name,
         pages: remoteNb.pages.map(p => ({
           id: p.id, background: p.background || 'grid', order: p.order ?? 0,
+          clearedAt: p.clearedAt || 0,
           strokes: p.strokes || []
         }))
       });
@@ -967,15 +1105,24 @@ async function applyFullSync(payload) {
         if (!localPage) {
           localNb.pages.push({
             id: rp.id, background: rp.background || 'grid', order: rp.order ?? 0,
+            clearedAt: rp.clearedAt || 0,
             strokes: rp.strokes || []
           });
         } else {
-          // Strokes Union-Merge by ID
+          // clearedAt: höheren Wert übernehmen (= neuester Clear gewinnt)
+          const remoteClearedAt = rp.clearedAt || 0;
+          const localClearedAt = localPage.clearedAt || 0;
+          const effectiveClearedAt = Math.max(remoteClearedAt, localClearedAt);
+          localPage.clearedAt = effectiveClearedAt;
+
+          // Strokes Union-Merge by ID, dann Strokes vor clearedAt entfernen
           const existing = new Map(localPage.strokes.map(s => [s.id, s]));
           for (const s of (rp.strokes || [])) {
             if (!existing.has(s.id)) existing.set(s.id, s);
           }
-          localPage.strokes = [...existing.values()].sort((a, b) => Number(a.id) - Number(b.id));
+          localPage.strokes = [...existing.values()]
+            .filter(s => Number(s.id) > effectiveClearedAt)
+            .sort((a, b) => Number(a.id) - Number(b.id));
         }
       }
       localNb.pages.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
@@ -985,12 +1132,10 @@ async function applyFullSync(payload) {
   // Sortieren und persistieren
   state.notebooks.sort((a, b) => String(a.id) < String(b.id) ? -1 : 1);
   await saveAppMeta();
-  // Alle Pages speichern
+  // Alle Pages speichern (auch leere — damit Clear-Zustand persistiert wird)
   for (const nb of state.notebooks) {
     for (const p of nb.pages) {
-      if (p.strokes?.length > 0) {
-        await savePageData(nb.id, p.id, await serializeStrokes(p.strokes, nb.id));
-      }
+      await savePageData(nb.id, p.id, await serializeStrokes(p.strokes || [], nb.id));
     }
   }
 }
@@ -1021,11 +1166,12 @@ async function startP2P() {
       serializeStrokes(page.strokes, notebookId).then(d => savePageData(notebookId, pageId, d));
     },
 
-    onClear({ notebookId, pageId }, peerId) {
+    onClear({ notebookId, pageId, clearedAt }, peerId) {
       const nb = state.notebooks.find(n => n.id === notebookId);
       const page = nb?.pages.find(p => p.id === pageId);
       if (!page) return;
       page.strokes = [];
+      page.clearedAt = clearedAt || Date.now();
       if (notebookId === state.currentNotebookId && pageId === currentPage()?.id) redrawStrokes();
       serializeStrokes(page.strokes, notebookId).then(d => savePageData(notebookId, pageId, d));
     },
@@ -1097,6 +1243,8 @@ async function startP2P() {
     },
 
     onNbDeleted({ id }, peerId) {
+      const delNb = state.notebooks.find(n => n.id === id);
+      if (delNb) delNb.pages.forEach(p => relayDelete(`p:${id}/${p.id}`));
       state.notebooks = state.notebooks.filter(n => n.id !== id);
       delete state.currentPages[id];
       if (state.currentNotebookId === id && state.notebooks.length > 0) {
@@ -1133,9 +1281,35 @@ async function startP2P() {
       const nb = state.notebooks.find(n => n.id === notebookId);
       if (!nb) return;
       nb.pages = nb.pages.filter(p => p.id !== pageId);
+      nb.pages.forEach((p, i) => p.order = i);
       deletePageData(notebookId, pageId);
+      relayDelete(`p:${notebookId}/${pageId}`);
+      // Index anpassen falls aktive Seite betroffen
+      if (notebookId in state.currentPages) {
+        const idx = state.currentPages[notebookId];
+        if (idx >= nb.pages.length) state.currentPages[notebookId] = Math.max(0, nb.pages.length - 1);
+      }
       saveAppMeta();
-      if (notebookId === state.currentNotebookId) { redrawStrokes(); renderUI(); }
+      if (notebookId === state.currentNotebookId) {
+        const page = currentPage();
+        if (page) loadPage(notebookId, page.id, page).then(() => {
+          clearAllCanvases(); redrawBackground(); redrawStrokes();
+        });
+        renderUI();
+      }
+    },
+
+    onPageBg({ notebookId, pageId, background }, peerId) {
+      const nb = state.notebooks.find(n => n.id === notebookId);
+      if (!nb) return;
+      const page = nb.pages.find(p => p.id === pageId);
+      if (!page) return;
+      page.background = background;
+      saveAppMeta();
+      if (notebookId === state.currentNotebookId && page.id === currentPage()?.id) {
+        redrawBackground();
+      }
+      renderUI();
     },
 
     onPeerJoin(peerId) {
@@ -1689,6 +1863,16 @@ function renderUI() {
   if (prevBtn) prevBtn.disabled = currentPageIndex() === 0;
   if (nextBtn) nextBtn.disabled = false; // Immer erlaubt (erstellt neue Seite)
 
+  // Delete-Page Button (nur wenn >1 Seite)
+  const delPageBtn = document.getElementById('btn-delete-page');
+  if (delPageBtn) delPageBtn.disabled = totalPages() <= 1;
+
+  // Hintergrund-Buttons
+  const curBg = currentPage()?.background || 'grid';
+  document.querySelectorAll('.bg-btn[data-bg]').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.bg === curBg);
+  });
+
   // Tool-Buttons
   document.querySelectorAll('[data-tool]').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.tool === state.tool);
@@ -1791,8 +1975,16 @@ async function init() {
   // 5. Lokale Settings laden
   const savedCurrentId = await loadLocalSettings();
 
-  // 6. App-Metadaten laden
+  // 6. App-Metadaten laden (lokal)
   await loadAppMeta();
+
+  // 6b. Relay: verschlüsselte Snapshots laden und mergen
+  try {
+    const relayNodes = await initRelay(roomKey);
+    if (relayNodes) await mergeRelayData(relayNodes);
+  } catch (e) {
+    console.warn('[Relay] Init fehlgeschlagen:', e);
+  }
 
   // 7. Wenn keine Notebooks: Default erstellen
   if (state.notebooks.length === 0) {
@@ -1846,31 +2038,65 @@ async function init() {
     startP2P().then(() => console.log('[App] P2P gestartet')).catch(e => console.error('[App] P2P Fehler:', e));
   }
 
+  // 14. Alle Pages an Relay pushen (im Hintergrund)
+  pushAllToRelay();
+
   console.log('[App] Bereit.', state.notebooks.length, 'Notebooks');
 }
 
 /**
- * Tab/Fenster wird wieder aktiv: Full-Sync senden OHNE Room neu aufzubauen.
- * Trystero hält WebRTC-Verbindungen am Leben, Room.leave() zerstört sie.
- * Nur reconnecten wenn Room wirklich tot ist (isConnected() === false).
+ * Kompletter Resync: Relay + P2P neu verbinden, Daten mergen, pushen.
+ * Gleicher Ablauf wie beim Init (Schritte 6b, 13, 14), aber ohne Storage/UI/Canvas-Setup.
  */
-function handleActivityChange() {
-  if (!state.syncEnabled) return;
-  // Nur auf "visible" reagieren (nicht auf blur/hidden)
-  if (document.visibilityState === 'hidden') return;
+let _resyncRunning = false;
+async function resync() {
+  if (_resyncRunning) return;
+  _resyncRunning = true;
+  console.log('[App] Resync gestartet...');
+  try {
+    // 1. Lokale Änderungen sofort speichern
+    flushSave();
 
-  if (isConnected()) {
-    // Room lebt → nur Full-Sync senden
-    const payload = buildFullSyncPayload();
-    if (payload.notebooks.length > 0) {
-      p2pSend('full-sync', payload);
-      console.log('[App] Tab aktiv — Full-Sync über bestehende Verbindung');
+    // 2. Relay: neu verbinden + Daten mergen
+    try {
+      const relayNodes = await initRelay(roomKey);
+      if (relayNodes) {
+        await mergeRelayData(relayNodes);
+        console.log('[App] Relay-Daten gemerged');
+      }
+    } catch (e) {
+      console.warn('[App] Relay-Resync fehlgeschlagen:', e);
     }
-  } else {
-    // Room tot → neu verbinden
-    console.log('[App] Tab aktiv — Room tot, reconnecte...');
-    startP2P().catch(e => console.error('[App] P2P Reconnect Fehler:', e));
+
+    // 3. Aktuelle Seite neu laden (OPFS könnte durch Relay-Merge aktualisiert worden sein)
+    const page = currentPage();
+    if (page) await loadPage(state.currentNotebookId, page.id, page);
+    redrawStrokes();
+    renderUI();
+
+    // 4. P2P: Room neu aufbauen
+    await startP2P();
+
+    // 5. Alle Pages an Relay pushen
+    pushAllToRelay();
+
+    console.log('[App] Resync abgeschlossen');
+  } finally {
+    _resyncRunning = false;
   }
+}
+
+/**
+ * Tab/Fenster wird wieder aktiv: kompletten Resync starten.
+ * Mobile Browser (besonders Android Chrome) killen WebSocket + WebRTC im Hintergrund.
+ * Statt einzelne Verbindungen zu prüfen: einfach alles neu aufbauen.
+ */
+const consoleLog = document.getElementById('console');
+function handleActivityChange(event) {
+  consoleLog.innerText += '\n'+event.type;
+  if (!state.syncEnabled) return;
+  if (document.visibilityState === 'hidden') return;
+  resync();
 }
 
 function setupEvents() {
@@ -1887,18 +2113,18 @@ function setupEvents() {
   window.addEventListener('beforeunload', () => { flushSave(); saveLocalSettings(); });
 
   // Bei Tab/Fenster-Fokus: Full-Sync senden (ohne Room-Reconnect)
-  document.addEventListener('visibilitychange', handleActivityChange);
-  window.addEventListener('focus', handleActivityChange);
-  window.addEventListener('pageshow', handleActivityChange);
+  document.addEventListener('visibilitychange', e => handleActivityChange(e));
+  window.addEventListener('focus', e => handleActivityChange(e));
+  window.addEventListener('pageshow', e => handleActivityChange(e));
 
   // Mobile Fallback: Erster Touch nach Inaktivität triggert Sync
   // Android Chrome feuert visibilitychange/focus nicht zuverlässig beim App-Wechsel
   let _lastSyncCheck = Date.now();
-  document.addEventListener('pointerdown', () => {
+  document.addEventListener('pointerdown', e => {
     const now = Date.now();
     if (now - _lastSyncCheck > 5000 && state.syncEnabled) {
       _lastSyncCheck = now;
-      handleActivityChange();
+      handleActivityChange(e);
     }
     _lastSyncCheck = now;
   }, true);
@@ -1911,6 +2137,14 @@ function setupEvents() {
   document.getElementById('btn-undo')?.addEventListener('click', undo);
   document.getElementById('btn-clear')?.addEventListener('click', () => {
     if (confirm('Seite wirklich leeren?')) clearPage();
+  });
+  document.getElementById('btn-delete-page')?.addEventListener('click', () => {
+    if (confirm('Seite löschen?')) deletePage();
+  });
+
+  // Hintergrund-Auswahl
+  document.querySelectorAll('.bg-btn[data-bg]').forEach(btn => {
+    btn.addEventListener('click', () => setBackground(btn.dataset.bg));
   });
 
   // Tool-Buttons

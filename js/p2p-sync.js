@@ -16,6 +16,14 @@
 /** @type {string} App-ID für Trystero Room-Naming */
 const APP_ID = 'notizbuch-v2';
 
+/** Nostr-Relays für Signaling (Pool — Trystero verbindet zu allen) */
+const NOSTR_RELAYS = [
+  'wss://relay.damus.io',
+  'wss://nos.lol',
+  'wss://relay.snort.social',
+  'wss://relay.nostr.band',
+];
+
 let room = null;
 let _actions = {};
 
@@ -34,7 +42,7 @@ export async function initP2P(roomId, callbacks) {
 
   try {
     const { joinRoom } = await import('https://esm.sh/trystero/nostr');
-    room = joinRoom({ appId: APP_ID }, roomId);
+    room = joinRoom({ appId: APP_ID, relayUrls: NOSTR_RELAYS }, roomId);
   } catch (e) {
     console.error('[P2P] Trystero import/join fehlgeschlagen:', e);
     return;
@@ -44,7 +52,7 @@ export async function initP2P(roomId, callbacks) {
   const actionNames = [
     'stroke', 'undo', 'clear', 'full-sync',
     'nb-created', 'nb-deleted', 'nb-renamed',
-    'page-created', 'page-deleted'
+    'page-created', 'page-deleted', 'page-bg'
   ];
 
   for (const name of actionNames) {
@@ -102,7 +110,18 @@ export function leaveRoom() {
   }
 }
 
-/** Prüfen ob mit Peers verbunden. */
+/** Prüfen ob Room existiert (nicht ob Peers verbunden sind). */
 export function isConnected() {
   return room !== null;
+}
+
+/** Prüfen ob tatsächlich Peers im Room sind. */
+export function hasPeers() {
+  if (!room) return false;
+  try {
+    const peers = room.getPeers();
+    return Object.keys(peers).length > 0;
+  } catch {
+    return false;
+  }
 }
