@@ -94,13 +94,18 @@ Relay-Fallback bei Navigation: `node-get` Request holt Strokes wenn lokal keine 
 - [x] **P2P-Sync Stabilität:** Kein Room-Destroy bei Tab-Fokus, Android pointerdown Fallback (>5s)
 - [x] **Bugfixes:** Stroke-Versatz (DPR), Canvas-Clear bei Navigation, Duplikat-Notebooks, compositeStrokes Delta
 
+### Erledigt (Session 2026-03-27b) — Features + Relay v2
+
+- [x] **Seite löschen:** deletePage() mit Confirm-Dialog, P2P-Sync (page-deleted), Papierkorb-Button in Page-Bar
+- [x] **Hintergrund-Auswahl:** setBackground() mit 3 Icon-Buttons (Kariert/Liniert/Leer) in Page-Bar, P2P-Sync (page-bg), auf Mobile versteckt
+- [x] **Relay-Server v2:** js/relay.js Client-Modul, WebSocket Relay speichert nur Ciphertext (Base64). Push nach jedem Save, Pull bei Init, Reconnect bei Tab-Fokus
+- [x] **NotebookKey-Sharing:** Keys in verschlüsselter Meta eingebettet (MasterKey). installNotebookKeys() bei loadAppMeta + mergeRelayData. Ohne das konnte Relay-Sync keine Page-Daten entschlüsseln (Key-Mismatch zwischen Geräten)
+- [x] **Relay-Reconnect:** handleActivityChange() reconnectet WebSocket + pushAllToRelay() wenn Verbindung tot (Mobile-Browser schließen WS im Hintergrund)
+
 ### Nächste Schritte
 
-- [ ] **Relay-Server v2:** WebSocket Relay als Backup für Offline-Peers (speichert nur Ciphertext)
 - [ ] **Mobile-Testing:** Brave Android, Safari iOS, Firefox Android
 - [ ] **Firefox Stable:** OPFS `GetDirectory` SecurityError — Fallback auf IndexedDB testen
-- [ ] **Seite löschen:** Einzelne Seite aus Notebook entfernen
-- [ ] **Hintergrund-Auswahl:** grid/lined/blank UI in app-v2
 - [ ] **Snapshots:** Backup/Restore Feature aus alter App übernehmen
 - [ ] **Inkrementelles Stroke-Rendering:** Performance-Optimierung (setTransform statt save/restore)
 - [ ] **experiment/evolu-sync archivieren:** Branch als abgeschlossen markieren

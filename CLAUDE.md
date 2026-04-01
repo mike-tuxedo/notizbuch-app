@@ -110,10 +110,11 @@ Trotz Branch-Name wird **nicht** Yjs verwendet. Die Architektur basiert auf dem 
 ```
 app-v2.html           — UI (Dark Theme, Sidebar links, 3-Layer Canvas)
 js/
-├── app.js            — State, Init, Canvas, Input, UI, Navigation, P2P-Integration
+├── app.js            — State, Init, Canvas, Input, UI, Navigation, P2P/Relay-Integration
 ├── canvas.js         — Drawing Engine (Catmull-Rom, Polygon, Background)
 ├── storage.js        — OPFS + IndexedDB Fallback (automatische Feature-Detection)
 ├── p2p-sync.js       — Trystero P2P (Nostr Signaling, WebRTC DataChannel)
+├── relay.js          — WebSocket Relay Client (Ciphertext-Backup für Offline-Peers)
 ├── encryption.js     — AES-GCM 256 (Web Crypto API, PBKDF2 Key-Derivation)
 └── share.js          — Invite-Links, QR, Export/Import (.enc Bundle)
 ```
@@ -129,13 +130,14 @@ MasterKey (AES-GCM 256, aus Passphrase via PBKDF2, 600k Iterationen)
 
 - **MasterKey**: Gleiche Passphrase = gleicher Room = automatischer Sync zwischen eigenen Geräten
 - **NotebookKey**: Pro Notebook. Wird beim Teilen im URL-Fragment übergeben (`#nb={id}&k={base64}`)
+- **Key-Sharing**: NotebookKeys werden in der verschlüsselten Meta eingebettet (MasterKey-verschlüsselt). `installNotebookKeys()` installiert fehlende Keys bei `loadAppMeta()` + `mergeRelayData()`. Ohne das: Key-Mismatch zwischen Geräten → Relay-Sync kann Page-Daten nicht entschlüsseln.
 - Keys in localStorage (raw bytes als JSON-Array). Produktions-Upgrade: IndexedDB non-extractable CryptoKey.
 
 ### P2P-Sync (Trystero)
 
 - **Library:** Trystero via `esm.sh/trystero/nostr` (kein eigener Signaling-Server)
 - **Room-ID:** Hash des MasterKeys (alle Geräte mit gleicher Passphrase im selben Room)
-- **Actions:** stroke, undo, clear, full-sync, nb-created, nb-deleted, nb-renamed, page-created, page-deleted
+- **Actions:** stroke, undo, clear, full-sync, nb-created, nb-deleted, nb-renamed, page-created, page-deleted, page-bg
 - **Full-Sync:** Bei Peer-Join wird kompletter State gesendet (alle Notebooks, Pages, Strokes). Union-Merge by ID.
 - **Kein Room-Wechsel bei Seitennavigation** — alle Pages eines Notebooks über denselben Room
 
@@ -150,6 +152,16 @@ MasterKey (AES-GCM 256, aus Passphrase via PBKDF2, 600k Iterationen)
 - Invite-Link: `#nb={notebookId}&k={base64(notebookKey)}&name={name}`
 - Key ist nur im URL-Fragment — Browser sendet ihn nie an den Server
 - Empfänger: NotebookKey wird installiert, Notebook erstellt, Full-Sync über P2P
+
+### Relay-Sync (App v2)
+
+- **Client:** `js/relay.js` — WebSocket Client, verbindet zu `wss://${location.host}`
+- **Server:** `relay/server.js` — bestehender Server, speichert Base64-Strings via `node-put` (kein Object-Merge bei Strings)
+- **Key-Schema:** `meta` → MasterKey-verschlüsselte Notebook-Struktur + NotebookKeys. `p:{nbId}/{pageId}` → NotebookKey-verschlüsselte Strokes.
+- **Init-Flow:** `initRelay(roomKey)` → Join → `sync`-Response mit allen Blobs → `mergeRelayData()` entschlüsselt + `applyFullSync()` → `pushAllToRelay()` im Hintergrund
+- **Laufend:** `saveAppMeta()` pusht Meta, `_flushSave()` pusht aktuelle Page, Deletes werden propagiert
+- **Reconnect:** `handleActivityChange()` reconnectet WebSocket bei Tab-Fokus falls tot (Mobile-Browser schließen WS im Hintergrund)
+- **Server sieht nur Ciphertext** — keine Entschlüsselung möglich ohne Passphrase
 
 ### Canvas / View Transform
 
@@ -234,6 +246,7 @@ Für mobile Tests: `rootCA.pem` auf dem Gerät installieren (aus `mkcert -CAROOT
 - **Seiten-Verwechslung bei schnellem Blättern:** Späte Events vom alten pageDb schrieben Strokes der vorherigen Seite in die neue → Fix: Stale-Guard (`pageDb !== thisDb`) in pageDb.map und strokeChannel Callbacks
 - **OPFS-Write bei Seitenwechsel nicht fertig:** `saveDelay:1000` + sofortiges `room.leave()` → OPFS-Write nie fertig → Fix: saveDelay auf 0
 - **Notebook-Löschung nicht synchronisiert:** Pages wurden nicht vom Relay gelöscht, rootDb.map Handler löschte keine Pages bei Notebook-Removal → Fix: beides ergänzt
+- **NotebookKey-Mismatch bei Relay-Sync (Session 2026-03-27):** Jedes Gerät generierte eigene NotebookKeys. Relay-Daten mit Android's Key verschlüsselt → Laptop konnte nicht entschlüsseln (anderer Key) → Strokes lautlos `[]`. Fix: NotebookKeys in verschlüsselter Meta einbetten, `installNotebookKeys()` bei loadAppMeta + mergeRelayData
 
 ### Was nicht funktioniert hat
 - **Evolu (echtes Paket):** Braucht Build-Step (WASM + Web Workers). Kein CDN-Import möglich wegen `new URL("file", import.meta.url)` Pattern.
@@ -257,6 +270,13 @@ Für mobile Tests: `rootCA.pem` auf dem Gerät installieren (aus `mkcert -CAROOT
 - **Android Chrome `visibilitychange`/`focus` unzuverlässig:** Feuert nicht immer beim App-Wechsel. Workaround: Erster `pointerdown` nach >5s Inaktivität triggert Full-Sync.
 - **Inkrementelles Stroke-Rendering + DPR:** `staticCtx.save()/translate()/scale()/drawStroke()/restore()` führte zu Versatz bei unterschiedlichen Container-Größen (DevTools, Sidebar). Ursache: DPR-Transform blieb in `save/restore` erhalten, Delta-Berechnung stimmte nicht. Aktuell: Full-Redraw nach jedem Stroke (korrekt, aber langsam). Inkrementell kann später mit explizitem `setTransform(DPR,...)` statt `save/restore` wieder eingebaut werden.
 - **Duplikat-Notebooks nach Cache-Clear:** Jeder Browser erstellt ein Default-Notebook. Nach Full-Sync existieren Duplikate mit gleichem Namen. Fix: Nach Full-Sync Duplikate by Name deduplizieren (ältestes behalten, Strokes mergen).
+
+### Erkenntnisse Session 2026-03-27b (Relay v2 + Features)
+
+- **NotebookKeys müssen in Meta reisen:** Ohne Key-Sharing über die verschlüsselte Meta kann kein Gerät die Relay-Daten eines anderen entschlüsseln. P2P-Sync war davon nicht betroffen (Strokes werden dort unverschlüsselt über den verschlüsselten WebRTC-Kanal gesendet), aber Relay speichert die OPFS-verschlüsselten Blobs → braucht identische Keys.
+- **Relay nutzt bestehenden Server unverändert:** `node-put` mit Base64-String (statt Object) löst keinen Object-Merge auf dem Server aus → Ciphertext wird 1:1 gespeichert. Kein neues Server-Protokoll nötig.
+- **Mobile WebSocket-Verbindungen sterben im Hintergrund:** Browser schließen WebSockets aggressiv wenn die App nicht aktiv ist. `relayPut()` in `_flushSave()` geht dann ins Leere. Fix: `handleActivityChange()` reconnectet Relay bei Tab-Fokus und pusht alle Pages erneut.
+- **Relay-Merge via applyFullSync():** Statt eigene Merge-Logik zu schreiben, werden Relay-Daten in ein Full-Sync-Payload-Format umgewandelt und durch die bestehende `applyFullSync()`-Funktion gemerged. Weniger Code, gleiche Merge-Semantik.
 
 ### Service Worker
 - `sw.js` nutzt **Network-first für HTML** (Änderungen sofort sichtbar) und Stale-while-revalidate für Libs
