@@ -21,7 +21,9 @@ const NOSTR_RELAYS = [
   'wss://relay.damus.io',
   'wss://nos.lol',
   'wss://relay.snort.social',
-  'wss://relay.nostr.band',
+  'wss://nostr.wine',
+  'wss://relay.primal.net',
+  'wss://purplepag.es',
 ];
 
 let room = null;

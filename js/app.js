@@ -4,7 +4,7 @@
 
 import { initStorage, savePageData, loadPageData, deletePageData, deleteNotebookData, saveMeta, loadMeta, clearAll } from './storage.js';
 import { roundPoints, drawStrokeToCanvas, drawBackground } from './canvas.js';
-import { initP2P, send as p2pSend, leaveRoom, isConnected } from './p2p-sync.js';
+import { initP2P, send as p2pSend, leaveRoom, isConnected, hasPeers } from './p2p-sync.js';
 import { generateKey, exportKey, importKey, encrypt, decrypt, deriveKeyFromPassphrase } from './encryption.js';
 import { exportAppBundle, importAppBundle } from './share.js';
 import { initRelay, putBlob as relayPut, deleteBlob as relayDelete, isRelayConnected } from './relay.js';
@@ -553,7 +553,7 @@ async function goToPage(index) {
   // Alle Canvas-Layer komplett leeren vor dem Neuzeichnen
   clearAllCanvases();
   redrawBackground();
-  redrawStrokes();
+  fitToContent();
   renderUI();
   saveLocalSettings();
 }
@@ -617,7 +617,7 @@ async function selectNotebook(nbId) {
   if (page) await loadPage(nbId, page.id, page);
   clearAllCanvases();
   redrawBackground();
-  redrawStrokes();
+  fitToContent();
   renderUI();
   saveLocalSettings();
 }
@@ -659,7 +659,7 @@ async function deleteNotebook(nbId) {
   const page = currentPage();
   if (page) await loadPage(state.currentNotebookId, page.id, page);
   redrawBackground();
-  redrawStrokes();
+  fitToContent();
   renderUI();
   saveLocalSettings();
 }
@@ -2074,8 +2074,14 @@ async function resync() {
     redrawStrokes();
     renderUI();
 
-    // 4. P2P: Room neu aufbauen
-    await startP2P();
+    // 4. P2P: nur neu aufbauen wenn keine Peers verbunden (Signaling ist teuer + fragil)
+    if (hasPeers()) {
+      const payload = buildFullSyncPayload();
+      if (payload.notebooks.length > 0) p2pSend('full-sync', payload);
+      console.log('[App] P2P lebt — Full-Sync gesendet');
+    } else {
+      await startP2P();
+    }
 
     // 5. Alle Pages an Relay pushen
     pushAllToRelay();
