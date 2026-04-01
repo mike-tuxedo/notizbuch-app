@@ -38,7 +38,8 @@ export function initRelay(roomKey) {
       try { ws.close(); } catch {}
       ws = null;
     }
-    const wsUrl = `wss://${location.host}`;
+    const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+    const wsUrl = isLocal ? `wss://${location.host}` : 'wss://notes.mike.fm-media-staging.at';
     try {
       ws = new WebSocket(wsUrl);
     } catch {
