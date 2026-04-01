@@ -369,6 +369,7 @@ function setupCanvases() {
   if (!container) return;
   const w = container.clientWidth;
   const h = container.clientHeight;
+  if (w === 0 || h === 0) return;
 
   for (const c of [bgCanvas, staticCanvas, activeCanvas]) {
     if (!c) continue;
@@ -423,6 +424,7 @@ function redrawStrokes() {
   if (!staticCanvas) return;
   const w = staticCanvas.width;
   const h = staticCanvas.height;
+  if (w === 0 || h === 0) return;
 
   // Bitmap-Cache erstellen/aktualisieren
   if (!strokeCacheCanvas || strokeCacheCanvas.width !== w || strokeCacheCanvas.height !== h) {
@@ -2025,7 +2027,7 @@ async function init() {
 
   // 10. Canvas aufsetzen (mit kurzer Verzögerung damit Layout stabil ist)
   setupCanvases();
-  requestAnimationFrame(() => setupCanvases());
+  requestAnimationFrame(() => { setupCanvases(); fitToContent(); });
 
   // 11. Event-Listener
   setupEvents();
@@ -2071,7 +2073,7 @@ async function resync() {
     // 3. Aktuelle Seite neu laden (OPFS könnte durch Relay-Merge aktualisiert worden sein)
     const page = currentPage();
     if (page) await loadPage(state.currentNotebookId, page.id, page);
-    redrawStrokes();
+    fitToContent();
     renderUI();
 
     // 4. P2P: nur neu aufbauen wenn keine Peers verbunden (Signaling ist teuer + fragil)

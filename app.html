@@ -1,9 +1,10 @@
 <!DOCTYPE html>
 <html lang="de">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <meta name="theme-color" content="#2d3436">
+  <meta name="theme-color" content="#0e0d15">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -11,3393 +12,1208 @@
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="img/favicon.ico">
   <link rel="apple-touch-icon" href="img/apple-touch-icon.png">
-  <link rel="apple-touch-icon" sizes="180x180" href="img/apple-touch-icon-180x180.png">
-  <link rel="apple-touch-icon" sizes="152x152" href="img/apple-touch-icon-152x152.png">
-  <link rel="apple-touch-icon" sizes="144x144" href="img/apple-touch-icon-144x144.png">
   <title>Notizbuch App</title>
-  <script src="libs/petite-vue.iife.js"></script>
-  <script src="libs/qrcode.min.js"></script>
   <script src="libs/iro.min.js"></script>
+  <script src="libs/qrcode.min.js"></script>
   <style>
-    * {
+    /* ─── Variables ──────────────────────────────────────────────────────── */
+    :root {
+      --bg: #0e0d15;
+      --surface: #171622;
+      --surface-2: #1f1d30;
+      --border: #2b2840;
+      --border-2: #3a3658;
+      --accent: #4dabf7;
+      --accent-dim: #3a8fd4;
+      --accent-glow: rgba(77, 171, 247, 0.15);
+      --text: #eae8f5;
+      --text-dim: #7a7692;
+      --text-faint: #3e3b56;
+      --danger: #ff6b6b;
+      --paper: #f5f5f0;
+      --sidebar-w: 220px;
+      --toolbar-h: 48px;
+      --pagebar-h: 44px;
+    }
+
+    /* ─── Reset ──────────────────────────────────────────────────────────── */
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
       margin: 0;
       padding: 0;
-      box-sizing: border-box;
-      -webkit-tap-highlight-color: transparent;
     }
-    
-    html, body {
-      width: 100%;
+
+    html,
+    body {
       height: 100%;
       overflow: hidden;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      background: linear-gradient(135deg, #2d3436 0%, #636e72 100%);
       touch-action: none;
     }
-    
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    button {
+      font-family: inherit;
+      cursor: pointer;
+      border: none;
+      background: none;
+    }
+
+    /* ─── Layout ─────────────────────────────────────────────────────────── */
     .app {
+      display: grid;
+      grid-template-columns: var(--sidebar-w) 1fr;
+      height: 100vh;
+    }
+
+    /* ─── Sidebar ────────────────────────────────────────────────────────── */
+    .sidebar {
       display: flex;
       flex-direction: column;
-      height: 100%;
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      overflow: hidden;
     }
-    
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 16px 16px 14px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .brand-icon {
+      font-size: 18px;
+    }
+
+    .brand-name {
+      font-size: 16px;
+      font-weight: 700;
+    }
+
+    .notebook-section {
+      flex: 1;
+      padding: 12px 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      overflow-y: auto;
+    }
+
+    .section-label {
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--text-faint);
+      padding: 0 8px 8px;
+    }
+
+    .notebook-tab {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 9px 12px;
+      border-radius: 6px;
+      color: var(--text-dim);
+      font-size: 13px;
+      font-weight: 500;
+      transition: background 0.15s, color 0.15s;
+      text-align: left;
+      width: 100%;
+    }
+
+    .notebook-tab:hover {
+      background: var(--surface-2);
+      color: var(--text);
+    }
+
+    .notebook-tab.active {
+      background: var(--accent-glow);
+      color: var(--accent);
+      box-shadow: inset 0 0 0 1px rgba(77, 171, 247, 0.2);
+    }
+
+    .nb-name {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .nb-delete {
+      font-size: 16px;
+      color: var(--text-faint);
+      padding: 0 2px;
+      opacity: 0;
+      transition: opacity 0.15s;
+    }
+
+    .notebook-tab:hover .nb-delete {
+      opacity: 1;
+    }
+
+    .nb-delete:hover {
+      color: var(--danger);
+    }
+
+    .nb-add-btn {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 12px;
+      border-radius: 6px;
+      color: var(--text-faint);
+      font-size: 13px;
+      transition: background 0.15s, color 0.15s;
+      width: 100%;
+    }
+
+    .nb-add-btn:hover {
+      background: var(--surface-2);
+      color: var(--text);
+    }
+
+    .sidebar-footer {
+      padding: 10px 8px 14px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .status-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 8px;
+    }
+
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--text-faint);
+      transition: background 0.3s;
+      flex-shrink: 0;
+    }
+
+    .status-dot.connected {
+      background: #5fb98a;
+      box-shadow: 0 0 5px rgba(95, 185, 138, 0.5);
+    }
+
+    .peer-label {
+      font-size: 11px;
+      color: var(--text-dim);
+    }
+
+    .footer-btn {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 12px;
+      border-radius: 6px;
+      color: var(--text-dim);
+      font-size: 12px;
+      font-weight: 500;
+      transition: background 0.15s, color 0.15s;
+      width: 100%;
+    }
+
+    .footer-btn:hover {
+      background: var(--surface-2);
+      color: var(--text);
+    }
+
+    .footer-btn svg {
+      flex-shrink: 0;
+      opacity: 0.7;
+    }
+
+    /* ─── Main ───────────────────────────────────────────────────────────── */
+    .main {
+      display: grid;
+      grid-template-rows: var(--toolbar-h) 1fr var(--pagebar-h);
+      overflow: hidden;
+    }
+
     /* Toolbar */
     .toolbar {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 10px 16px;
-      background: rgba(0,0,0,0.4);
-      border-bottom: 1px solid rgba(255,255,255,0.1);
-      gap: 12px;
-      flex-wrap: wrap;
+      padding: 0 12px;
+      gap: 8px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
     }
-    
-    .toolbar-group {
+
+    .toolbar-left,
+    .toolbar-center,
+    .toolbar-right {
       display: flex;
       align-items: center;
       gap: 6px;
     }
-    
+
+    .toolbar-center {
+      flex: 1;
+      justify-content: center;
+    }
+
+    #notebook-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text);
+    }
+
     .tool-btn {
-      width: 36px;
-      height: 36px;
-      border-radius: 8px;
-      border: none;
-      background: rgba(255,255,255,0.05);
-      color: rgba(255,255,255,0.6);
-      cursor: pointer;
+      width: 34px;
+      height: 34px;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--text-dim);
       display: flex;
       align-items: center;
       justify-content: center;
-      transition: all 0.15s ease;
+      transition: background 0.15s, color 0.15s;
     }
-    
+
     .tool-btn:hover {
-      background: rgba(255,255,255,0.1);
+      background: var(--surface-2);
+      color: var(--text);
     }
-    
+
     .tool-btn.active {
-      background: rgba(255,255,255,0.2);
-      color: #fff;
+      background: var(--accent-glow);
+      color: var(--accent);
     }
-    .eraser-btn { color: #ff6b6b; }
-    .eraser-btn.active { background: rgba(255,107,107,0.25); }
-    
+
     .tool-btn:disabled {
       opacity: 0.3;
       cursor: not-allowed;
     }
-    
+
     .divider {
       width: 1px;
       height: 20px;
-      background: rgba(255,255,255,0.15);
-      margin: 0 6px;
-    }
-    
-    /* Colors */
-    .color-btn {
-      width: 20px;
-      height: 20px;
-      border-radius: 50%;
-      border: 2px solid rgba(255,255,255,0.2);
-      cursor: pointer;
-      transition: all 0.15s ease;
-    }
-    
-    .color-btn.active {
-      width: 26px;
-      height: 26px;
-      border: 3px solid rgba(255,255,255,0.9);
-    }
-    
-    .color-btn.white {
-      border-color: rgba(0,0,0,0.2);
-    }
-    
-    .color-picker-btn {
-      width: 20px;
-      height: 20px;
-      border-radius: 50%;
-      border: 2px solid rgba(255,255,255,0.2);
-      cursor: pointer;
-      background: conic-gradient(red, yellow, lime, aqua, blue, magenta, red);
-      padding: 0;
+      background: var(--border);
+      margin: 0 4px;
     }
 
-    .iro-popup {
-      position: absolute;
-      top: 100%;
-      left: 50%;
-      transform: translateX(-50%);
-      margin-top: 8px;
-      background: #1e1e2e;
-      border: 1px solid rgba(255,255,255,0.12);
-      border-radius: 12px;
-      padding: 12px;
-      z-index: 300;
-      box-shadow: 0 12px 32px rgba(0,0,0,0.5);
-    }
-    .iro-custom-colors {
+    /* Color palette */
+    .color-palette {
       display: flex;
       gap: 4px;
-      flex-wrap: wrap;
-      margin-top: 8px;
-    }
-    .iro-confirm-btn {
-      display: block;
-      width: 100%;
-      margin-top: 8px;
-      padding: 6px;
-      background: rgba(77, 171, 247, 0.2);
-      border: 1px solid rgba(77, 171, 247, 0.3);
-      border-radius: 6px;
-      color: #4dabf7;
-      font-size: 12px;
-      cursor: pointer;
-    }
-    .iro-confirm-btn:hover { background: rgba(77, 171, 247, 0.3); }
-    
-    /* Size buttons */
-    .size-group-swatches { display: flex; gap: 4px; align-items: center; }
-    .size-trigger {
-      display: none;
-      width: 32px;
-      height: 32px;
-      border-radius: 6px;
-      background: rgba(255,255,255,0.05);
-      border: 1px solid rgba(255,255,255,0.1);
-      cursor: pointer;
       align-items: center;
-      justify-content: center;
     }
-    .size-menu {
-      position: absolute;
-      bottom: 100%;
-      left: 50%;
-      transform: translateX(-50%);
-      margin-bottom: 6px;
-      background: rgba(40,40,40,0.98);
-      border-radius: 8px;
-      border: 1px solid rgba(255,255,255,0.1);
-      padding: 6px;
+
+    .color-dot {
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      border: 2px solid transparent;
+      cursor: pointer;
+      transition: transform 0.15s, border-color 0.15s;
+    }
+
+    .color-dot.active {
+      border-color: var(--text);
+      transform: scale(1.2);
+    }
+
+    /* Size palette */
+    .size-palette {
       display: flex;
-      gap: 4px;
-      z-index: 100;
+      gap: 3px;
     }
+
     .size-btn {
-      width: 32px;
-      height: 32px;
-      border-radius: 6px;
-      background: rgba(255,255,255,0.05);
-      border: none;
+      padding: 3px 7px;
+      border-radius: 4px;
+      background: transparent;
+      color: var(--text-dim);
+      font-size: 10px;
+      font-weight: 600;
       cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    .size-btn.active {
+      background: var(--accent-glow);
+      color: var(--accent);
+    }
+
+    /* ─── Canvas Area ────────────────────────────────────────────────────── */
+    #canvas-container {
+      position: relative;
+      overflow: hidden;
+      background: var(--paper);
+      cursor: crosshair;
+    }
+
+    #canvas-container canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      touch-action: none;
+    }
+
+    /* ─── Page Bar ───────────────────────────────────────────────────────── */
+    .page-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 12px;
+      border-top: 1px solid var(--border);
+      background: var(--surface);
+    }
+
+    .pagebar-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .pagebar-right {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .bg-selector {
+      display: flex;
+      gap: 2px;
+    }
+
+    .bg-btn {
       display: flex;
       align-items: center;
       justify-content: center;
-    }
-    .size-btn.active {
-      background: rgba(255,255,255,0.2);
-    }
-    .size-dot {
-      border-radius: 50%;
-      background: rgba(255,255,255,0.5);
-    }
-    .size-btn.active .size-dot,
-    .size-trigger .size-dot {
-      background: white;
-    }
-    
-    /* Secondary bar */
-    .secondary-bar {
-      display: none;
-      position: fixed;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      z-index: 200;
-      flex-direction: column;
-      align-items: stretch;
-      background: rgba(40,40,40,0.98);
-      border-radius: 12px;
-      border: 1px solid rgba(255,255,255,0.1);
-      padding: 16px;
-      gap: 14px;
-      min-width: 280px;
-    }
-    .secondary-bar.open {
-      display: flex;
-    }
-    
-    .bg-btn {
-      padding: 4px 10px;
-      border-radius: 4px;
-      background: rgba(255,255,255,0.05);
-      border: none;
-      color: white;
-      font-size: 11px;
-      cursor: pointer;
-    }
-    
-    .bg-btn.active {
-      background: rgba(255,255,255,0.2);
-    }
-    
-    /* Toggle */
-    .toggle {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      cursor: pointer;
-      user-select: none;
-    }
-    
-    .toggle-track {
-      width: 38px;
-      height: 20px;
-      border-radius: 10px;
-      background: rgba(255,255,255,0.15);
-      position: relative;
-      transition: all 0.2s ease;
-    }
-    
-    .toggle-track.active {
-      background: #4dabf7;
-    }
-    
-    .toggle-thumb {
-      width: 16px;
-      height: 16px;
-      border-radius: 50%;
-      background: #fff;
-      position: absolute;
-      top: 2px;
-      left: 2px;
-      transition: all 0.2s ease;
-    }
-    
-    .toggle-track.active .toggle-thumb {
-      left: 20px;
-    }
-    
-    .toggle-label {
-      color: rgba(255,255,255,0.5);
-      font-size: 12px;
-      font-weight: 500;
-    }
-    
-    .toggle-track.active + .toggle-label {
-      color: rgba(255,255,255,0.9);
-    }
-    
-    .peer-info {
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      color: rgba(255,255,255,0.6);
-      font-size: 11px;
-      padding: 2px 6px;
+      width: 28px;
+      height: 28px;
+      border-radius: 5px;
+      color: var(--text-dim);
+      transition: background 0.15s, color 0.15s;
     }
 
-    /* Page nav */
-    .page-nav {
+    .bg-btn:hover {
+      background: var(--surface-2);
+      color: var(--text);
+    }
+
+    .bg-btn.active {
+      background: var(--accent-glow);
+      color: var(--accent);
+    }
+
+    .pagebar-title {
+      font-size: 12px;
+      color: var(--text-dim);
+      display: none;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 40%;
+    }
+
+    .page-btn {
       display: flex;
       align-items: center;
-      gap: 8px;
-    }
-    
-    .page-btn {
-      padding: 6px 12px;
-      background: rgba(255,255,255,0.1);
-      border: none;
+      justify-content: center;
+      width: 30px;
+      height: 30px;
       border-radius: 6px;
-      color: white;
-      font-size: 12px;
-      cursor: pointer;
+      color: var(--text-dim);
+      transition: background 0.15s, color 0.15s;
     }
-    
+
+    .page-btn:hover:not(:disabled) {
+      background: var(--surface-2);
+      color: var(--text);
+    }
+
     .page-btn:disabled {
       opacity: 0.3;
       cursor: not-allowed;
     }
-    
-    .page-btn.primary {
-      background: rgba(77, 171, 247, 0.3);
-    }
-    
-    .page-info {
-      color: rgba(255,255,255,0.7);
+
+    #page-indicator {
       font-size: 12px;
-      min-width: 80px;
+      color: var(--text-dim);
+      min-width: 50px;
       text-align: center;
     }
-    .page-loading-dot {
-      display: inline-block;
-      width: 6px; height: 6px;
-      margin-left: 5px;
-      border-radius: 50%;
-      background: #4dabf7;
-      animation: page-dot-pulse 1s ease-in-out infinite;
-      vertical-align: middle;
-    }
-    @keyframes page-dot-pulse {
-      0%, 100% { opacity: 0.3; transform: scale(0.8); }
-      50% { opacity: 1; transform: scale(1.2); }
-    }
-    
-    .burger-actions {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-    }
-    .burger-actions .share-btn {
-      flex: 1;
-      white-space: nowrap;
-    }
-    .burger-info {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      color: rgba(255,255,255,0.5);
-      font-size: 12px;
-    }
-    .burger-snapshots {
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-    }
-    .snapshot-entry {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      padding: 4px 0;
-    }
-    .snapshot-info {
-      font-size: 12px;
-      color: rgba(255,255,255,0.7);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    .snapshot-restore-btn {
-      background: rgba(255,255,255,0.1);
-      border: 1px solid rgba(255,255,255,0.2);
-      color: #fff;
-      font-size: 11px;
-      padding: 3px 8px;
-      border-radius: 4px;
-      cursor: pointer;
-      white-space: nowrap;
-      flex-shrink: 0;
-    }
-    .snapshot-restore-btn:hover {
-      background: rgba(255,255,255,0.2);
-    }
-    .snapshot-confirm-overlay {
+
+    /* ─── Color Picker Popup ────────────────────────────────────────────── */
+    .color-picker-popup {
       position: fixed;
-      inset: 0;
-      background: rgba(0,0,0,0.5);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      z-index: 9999;
-    }
-    .snapshot-confirm-dialog {
-      background: #2a2a2a;
-      border-radius: 12px;
-      padding: 20px;
-      max-width: 340px;
-      color: #fff;
-      font-size: 14px;
-    }
-    .snapshot-confirm-dialog p { margin: 0 0 12px; }
-    .snapshot-cancel-btn {
-      background: rgba(255,255,255,0.1);
-      border: 1px solid rgba(255,255,255,0.2);
-      color: #fff;
-      padding: 6px 14px;
-      border-radius: 6px;
-      cursor: pointer;
-      font-size: 13px;
-    }
-    .snapshot-confirm-btn {
-      background: #4dabf7;
-      border: none;
-      color: #fff;
-      padding: 6px 14px;
-      border-radius: 6px;
-      cursor: pointer;
-      font-size: 13px;
-      font-weight: 500;
-    }
-    .snapshot-confirm-btn:hover { background: #339af0; }
-    .floating-page-nav {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 12px;
-      position: absolute;
-      top: 8px;
+      top: 50%;
       left: 50%;
-      transform: translateX(-50%);
-      z-index: 10;
-      background: rgba(30,30,30,0.85);
-      backdrop-filter: blur(8px);
-      border-radius: 20px;
-      padding: 4px 12px;
-      border: 1px solid rgba(255,255,255,0.1);
+      transform: translate(-50%, -50%);
+      background: var(--surface);
+      border: 1px solid var(--border-2);
+      border-radius: 12px;
+      padding: 16px;
+      z-index: 300;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
     }
-    .secondary-bar .desktop-only { display: none !important; }
-    .desktop-only { display: flex; }
-    .mobile-only { display: flex !important; }
 
-    .home-link {
+    .color-picker-popup.hidden {
+      display: none;
+    }
+
+    .iro-confirm-btn {
+      display: block;
+      width: 100%;
+      margin-top: 12px;
+      padding: 8px;
+      background: var(--accent-glow);
+      border: 1px solid rgba(77, 171, 247, 0.3);
+      border-radius: 6px;
+      color: var(--accent);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .iro-confirm-btn:hover {
+      background: rgba(77, 171, 247, 0.25);
+    }
+
+    .color-picker-btn {
+      background: conic-gradient(red, yellow, lime, aqua, blue, magenta, red) !important;
+      border: 2px solid var(--border) !important;
+    }
+
+    /* ─── Zen Mode Icon Toggle ──────────────────────────────────────────── */
+    #btn-zen .zen-collapse { display: none; }
+    body.zen-mode #btn-zen .zen-expand { display: none; }
+    body.zen-mode #btn-zen .zen-collapse { display: block; }
+
+    /* ─── Zen Mode ───────────────────────────────────────────────────────── */
+    body.zen-mode .sidebar {
+      display: none;
+    }
+
+    body.zen-mode .toolbar {
+      max-height: none;
+      height: auto;
+      overflow: visible;
+      background: transparent;
+      position: fixed;
+      z-index: 999;
+      width: 100%;
+      border: none;
+      flex-wrap: nowrap;
+      justify-content: center;
+    }
+
+    /* Links: nur Stift, Radierer, Home */
+    body.zen-mode .toolbar-left .tool-btn {
+      display: none;
+    }
+
+    body.zen-mode .toolbar-left [data-tool="pen"],
+    body.zen-mode .toolbar-left [data-tool="eraser"],
+    body.zen-mode .toolbar-left #btn-reset-view,
+    body.zen-mode .toolbar-left #btn-zen {
       display: flex;
-      align-items: center;
-      margin-right: 4px;
-      border-radius: 8px;
-      opacity: 0.7;
-      transition: opacity 0.2s;
-    }
-    .home-link:hover { opacity: 1; }
-    .home-link img { border-radius: 6px; }
-
-    /* Canvas container */
-    .canvas-container {
-      flex: 1;
-      position: relative;
-      overflow: hidden;
-      margin: 12px;
-      border-radius: 12px;
-      box-shadow: 0 4px 24px rgba(0,0,0,0.4);
-      background: #fafafa;
-    }
-    
-    .canvas-wrapper {
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-    }
-    
-    canvas {
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      border-radius: 12px;
-    }
-    
-    #activeCanvas {
-      cursor: crosshair;
-      touch-action: none;
-    }
-    
-    #activeCanvas.eraser {
-      cursor: cell;
     }
 
-    #activeCanvas.hand {
+    body.zen-mode .toolbar-left .divider {
+      display: none;
+    }
+
+    /* Mitte: ausblenden */
+    body.zen-mode .toolbar-center {
+      display: none;
+    }
+
+    /* Rechts: Desktop-Paletten ausblenden, Mobile-Trigger zeigen */
+    body.zen-mode .toolbar-right .color-palette,
+    body.zen-mode .toolbar-right .size-palette,
+    body.zen-mode .toolbar-right .desktop-only {
+      display: none !important;
+    }
+
+    body.zen-mode .toolbar-right .mobile-color-trigger,
+    body.zen-mode .toolbar-right .mobile-size-trigger {
+      display: flex;
+    }
+
+    body.zen-mode .page-bar {
+      display: none;
+    }
+
+    body.zen-mode .app {
+      grid-template-columns: 1fr;
+    }
+
+    body.zen-mode .main {
+      grid-template-rows: 1fr;
+    }
+
+    body.zen-mode {
+      .mobile-popup {
+        background: transparent;
+        border: none;
+        box-shadow: none;
+      }
+    }
+
+    /* ─── Rename Input ───────────────────────────────────────────────────── */
+    .rename-input {
+      background: transparent;
+      border: none;
+      border-bottom: 1px solid var(--accent);
+      color: var(--text);
+      font-size: 14px;
+      font-weight: 600;
+      outline: none;
+      padding: 2px 4px;
+      width: 200px;
+      font-family: inherit;
+    }
+
+    /* ─── Hand-Tool Cursor ──────────────────────────────────────────────── */
+    #canvas-container.hand-cursor {
       cursor: grab;
     }
 
-    #activeCanvas.hand.grabbing {
+    #canvas-container.hand-cursor:active {
       cursor: grabbing;
     }
 
-    #activeCanvas.loading {
-      cursor: wait;
+    /* ─── Sidebar Overlay (mobil) ────────────────────────────────────────── */
+    .sidebar-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.5);
+      z-index: 49;
     }
-    
-    /* Notebook menu */
-    .notebook-selector {
-      position: relative;
+
+    .sidebar-overlay.active {
+      display: block;
     }
-    
-    .notebook-btn {
-      padding: 8px 12px;
-      background: rgba(255,255,255,0.1);
-      border: 1px solid rgba(255,255,255,0.2);
-      border-radius: 8px;
-      color: white;
-      font-size: 13px;
-      cursor: pointer;
+
+    /* ─── Burger Button ──────────────────────────────────────────────────── */
+    .burger-btn {
+      display: none;
+    }
+
+    /* ─── Share Modal ────────────────────────────────────────────────────── */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(10, 9, 18, 0.8);
+      backdrop-filter: blur(6px);
       display: flex;
       align-items: center;
-      gap: 8px;
+      justify-content: center;
+      z-index: 200;
+      animation: fadeIn 0.2s ease;
     }
-    
-    .notebook-menu {
-      position: absolute;
-      top: 100%;
-      left: 0;
-      margin-top: 4px;
-      background: rgba(40,40,40,0.98);
-      border-radius: 8px;
-      border: 1px solid rgba(255,255,255,0.1);
-      min-width: 220px;
-      z-index: 100;
+
+    .modal-overlay.hidden {
+      display: none;
+    }
+
+    @keyframes fadeIn {
+      from {
+        opacity: 0;
+      }
+
+      to {
+        opacity: 1;
+      }
+    }
+
+    .modal {
+      background: var(--surface);
+      border: 1px solid var(--border-2);
+      border-radius: 12px;
+      width: 380px;
+      max-width: calc(100vw - 32px);
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
       overflow: hidden;
     }
-    
-    .notebook-item {
+
+    .modal-header {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 10px 12px;
-      cursor: pointer;
-      color: white;
-      font-size: 13px;
-    }
-    
-    .notebook-item:hover {
-      background: rgba(255,255,255,0.05);
-    }
-    
-    .notebook-item.active {
-      background: rgba(255,255,255,0.1);
-    }
-    
-    .notebook-item-delete {
-      background: none;
-      border: none;
-      color: #ff6b6b;
-      cursor: pointer;
-      padding: 2px;
-    }
-    
-    .notebook-menu-footer {
-      border-top: 1px solid rgba(255,255,255,0.1);
-      padding: 8px;
-    }
-    .rename-menu-btn {
-      display: none;
-      margin-top: 4px;
-    }
-    
-    .new-notebook-btn {
-      width: 100%;
-      padding: 8px;
-      background: rgba(77, 171, 247, 0.2);
-      border: none;
-      border-radius: 6px;
-      color: #4dabf7;
-      font-size: 12px;
-      cursor: pointer;
-    }
-    
-    .rename-input {
-      padding: 6px 10px;
-      background: rgba(255,255,255,0.1);
-      border: 1px solid rgba(255,255,255,0.3);
-      border-radius: 6px;
-      color: white;
-      font-size: 12px;
-      width: 120px;
-    }
-    
-    .rename-ok {
-      padding: 6px 10px;
-      background: #4dabf7;
-      border: none;
-      border-radius: 6px;
-      color: white;
-      font-size: 12px;
-      cursor: pointer;
-    }
-    
-    .edit-btn {
-      background: none;
-      border: none;
-      color: rgba(255,255,255,0.5);
-      cursor: pointer;
-      padding: 4px;
-    }
-    
-    .save-status {
-      color: rgba(255,255,255,0.5);
-      font-size: 11px;
-      padding: 4px 8px;
-    }
-    
-    .save-status.saving {
-      color: #ffd43b;
-    }
-    
-    .save-status.saved {
-      color: #69db7c;
+      padding: 16px 18px;
+      border-bottom: 1px solid var(--border);
     }
 
-    /* P2P Sync-Indikator (kleines drehendes Icon in der Toolbar) */
-    .sync-toggle {
-      color: rgba(255,255,255,0.35);
-    }
-    .sync-toggle.active {
-      color: #51cf66;
-    }
-    .sync-toggle.syncing svg {
-      animation: spin 0.9s linear infinite;
+    .modal-header h2 {
+      font-size: 15px;
+      font-weight: 700;
     }
 
-    /* Sync overlay (waiting for P2P data) */
-    .sync-overlay {
-      position: fixed;
-      inset: 0;
-      background: rgba(15,15,25,0.88);
+    .modal-close {
       display: flex;
       align-items: center;
       justify-content: center;
-      z-index: 900;
-      backdrop-filter: blur(6px);
+      width: 30px;
+      height: 30px;
+      border-radius: 6px;
+      color: var(--text-dim);
+      transition: background 0.15s;
     }
 
-    .sync-box {
+    .modal-close:hover {
+      background: var(--surface-2);
+      color: var(--text);
+    }
+
+    .modal-body {
+      padding: 18px;
       display: flex;
       flex-direction: column;
       align-items: center;
-      gap: 16px;
-      color: rgba(255,255,255,0.85);
-      font-size: 15px;
+      gap: 14px;
     }
 
-    .sync-spinner {
-      width: 36px;
-      height: 36px;
-      border: 3px solid rgba(255,255,255,0.12);
-      border-top-color: #4dabf7;
-      border-radius: 50%;
-      animation: spin 0.75s linear infinite;
-    }
-
-    @keyframes spin { to { transform: rotate(360deg); } }
-
-    .confirm-overlay {
-      position: fixed;
-      inset: 0;
-      background: rgba(0,0,0,0.5);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      z-index: 900;
-    }
-    .confirm-box {
-      background: rgba(40,40,40,0.98);
-      border: 1px solid rgba(255,255,255,0.1);
-      border-radius: 12px;
-      padding: 20px 24px;
-      text-align: center;
-      color: white;
-      font-size: 14px;
-    }
-    .confirm-box p { margin: 0 0 16px; }
-    .confirm-actions {
-      display: flex;
-      gap: 10px;
-      justify-content: center;
-    }
-    .confirm-btn {
-      padding: 8px 18px;
-      border-radius: 6px;
-      border: none;
-      font-size: 13px;
-      cursor: pointer;
-    }
-    .confirm-btn.cancel {
-      background: rgba(255,255,255,0.1);
-      color: rgba(255,255,255,0.7);
-    }
-    .confirm-btn.danger {
-      background: #ff6b6b;
-      color: white;
-    }
-
-    /* Share Modal */
-    .share-overlay {
-      position: fixed;
-      inset: 0;
-      background: rgba(0,0,0,0.75);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      z-index: 1000;
-      backdrop-filter: blur(4px);
-    }
-
-    .share-modal {
-      background: #1e1e2e;
-      border: 1px solid rgba(255,255,255,0.12);
-      border-radius: 16px;
-      padding: 28px 24px 24px;
-      width: 360px;
-      max-width: 92vw;
-      box-shadow: 0 24px 64px rgba(0,0,0,0.6);
-    }
-
-    .share-modal h2 {
-      color: #fff;
-      font-size: 17px;
-      font-weight: 600;
-      margin-bottom: 6px;
-    }
-
-    .share-modal p {
-      color: rgba(255,255,255,0.5);
-      font-size: 13px;
-      margin-bottom: 20px;
-      line-height: 1.5;
-    }
-
-    .share-url-row {
-      display: flex;
-      gap: 8px;
-      margin-bottom: 20px;
-    }
-
-    .share-url-input {
-      flex: 1;
-      background: rgba(255,255,255,0.07);
-      border: 1px solid rgba(255,255,255,0.15);
+    .qr-wrap {
+      background: var(--paper);
       border-radius: 8px;
-      color: rgba(255,255,255,0.9);
-      padding: 8px 12px;
-      font-size: 12px;
-      font-family: 'Courier New', monospace;
-      min-width: 0;
-    }
-
-    .share-copy-btn {
-      background: #4dabf7;
-      color: #fff;
-      border: none;
-      border-radius: 8px;
-      padding: 8px 14px;
-      font-size: 13px;
-      font-weight: 600;
-      cursor: pointer;
-      white-space: nowrap;
-      transition: background 0.15s;
-    }
-
-    .share-copy-btn:hover { background: #339af0; }
-    .share-copy-btn.copied { background: #69db7c; color: #1a1a2e; }
-
-    .share-qr-wrap {
-      display: flex;
-      justify-content: center;
-      margin-bottom: 20px;
-      background: #fff;
-      border-radius: 10px;
-      padding: 14px;
-      overflow: hidden;
-    }
-
-    .share-qr-wrap img,
-    .share-qr-wrap canvas {
-      display: block;
-      max-width: 100%;
-      height: auto;
-    }
-
-    .share-close-btn {
-      width: 100%;
-      background: rgba(255,255,255,0.08);
-      border: 1px solid rgba(255,255,255,0.1);
-      color: rgba(255,255,255,0.7);
       padding: 10px;
-      border-radius: 8px;
-      cursor: pointer;
-      font-size: 14px;
-      transition: background 0.15s;
+      line-height: 0;
     }
 
-    .share-close-btn:hover { background: rgba(255,255,255,0.14); }
-
-    .scanner-container {
-      position: relative;
-      width: 100%;
-      margin-bottom: 12px;
-      border-radius: 10px;
-      overflow: hidden;
-    }
-    .scanner-container video {
-      width: 100%;
-      height: auto;
+    .qr-wrap canvas {
       display: block;
-    }
-    .scanner-overlay-box {
-      position: absolute;
-      top: 50%;
-      left: 50%;
-      width: 60%;
-      height: 60%;
-      transform: translate(-50%, -50%);
-      border: 2px solid #4dabf7;
-      border-radius: 8px;
-      pointer-events: none;
+      border-radius: 4px;
     }
 
-    /* Zen Mode */
-    .app.zen-mode .secondary-bar { display: none; }
-    .app.zen-mode .toolbar {
-      padding: 6px 12px;
-      background: rgba(0,0,0,0.15);
-      border-bottom: none;
-    }
-    .app.zen-mode .notebook-selector,
-    .app.zen-mode .edit-btn,
-    .app.zen-mode .save-status,
-    .app.zen-mode .sync-toggle,
-    .app.zen-mode .home-link,
-    .app.zen-mode .burger-btn,
-    .app.zen-mode .divider:not(.zen-keep) {
-      display: none;
-    }
-    .app.zen-mode .canvas-container {
-      border-radius: 0;
+    .modal-hint {
+      font-size: 12px;
+      color: var(--text-dim);
+      text-align: center;
+      line-height: 1.6;
     }
 
-    /* WebRTC-Warnung */
-    .webrtc-warning {
-      background: rgba(255, 190, 0, 0.12);
-      border-bottom: 1px solid rgba(255, 190, 0, 0.25);
-      padding: 10px 16px;
+    .link-row {
       display: flex;
-      align-items: flex-start;
-      gap: 12px;
-      animation: slideDown 0.3s ease;
+      gap: 8px;
+      width: 100%;
     }
-    @keyframes slideDown {
-      from { opacity: 0; transform: translateY(-8px); }
-      to   { opacity: 1; transform: translateY(0); }
-    }
-    .webrtc-warning-icon {
-      color: #ffd43b;
-      flex-shrink: 0;
-      margin-top: 1px;
-    }
-    .webrtc-warning-body {
+
+    .link-input {
       flex: 1;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text-dim);
+      font-size: 11px;
+      padding: 8px 10px;
+      outline: none;
       min-width: 0;
+      font-family: monospace;
     }
-    .webrtc-warning-title {
-      color: #ffd43b;
+
+    .copy-btn {
+      padding: 8px 14px;
+      background: var(--accent-glow);
+      border: 1px solid rgba(77, 171, 247, 0.3);
+      border-radius: 6px;
+      color: var(--accent);
       font-size: 13px;
       font-weight: 600;
-      margin-bottom: 4px;
-    }
-    .webrtc-warning-text {
-      color: rgba(255,255,255,0.7);
-      font-size: 12px;
-      line-height: 1.5;
-    }
-    .webrtc-warning-steps {
-      margin: 6px 0 0 0;
-      padding-left: 16px;
-      color: rgba(255,255,255,0.65);
-      font-size: 12px;
-      line-height: 1.7;
-    }
-    .webrtc-warning-steps code {
-      background: rgba(255,255,255,0.1);
-      border-radius: 3px;
-      padding: 1px 5px;
-      font-family: 'Courier New', monospace;
-      font-size: 11px;
-      color: rgba(255,255,255,0.9);
-    }
-    .webrtc-warning-dismiss {
-      background: none;
-      border: 1px solid rgba(255,190,0,0.35);
-      color: rgba(255,190,0,0.8);
-      border-radius: 6px;
-      padding: 4px 10px;
-      font-size: 11px;
-      cursor: pointer;
-      white-space: nowrap;
-      flex-shrink: 0;
-      align-self: center;
       transition: background 0.15s;
-    }
-    .webrtc-warning-dismiss:hover { background: rgba(255,190,0,0.1); }
-
-    .disconnected-banner {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      background: rgba(255, 160, 50, 0.15);
-      border-bottom: 1px solid rgba(255, 160, 50, 0.3);
-      padding: 6px 16px;
-      color: #ffb347;
-      font-size: 13px;
-      font-weight: 500;
-    }
-    .disconnected-banner svg {
       flex-shrink: 0;
-      color: #ffb347;
-    }
-    .disconnected-banner span {
-      flex: 1;
-    }
-    .disconnected-reconnect {
-      background: rgba(255, 160, 50, 0.2);
-      border: 1px solid rgba(255, 160, 50, 0.4);
-      color: #ffb347;
-      border-radius: 4px;
-      padding: 3px 10px;
-      font-size: 12px;
-      cursor: pointer;
-      white-space: nowrap;
-    }
-    .disconnected-reconnect:hover {
-      background: rgba(255, 160, 50, 0.3);
     }
 
-    /* Pinch-Zoom Wrapper */
-    .canvas-zoom-wrapper {
-      position: absolute;
-      top: 0;
+    .copy-btn:hover {
+      background: rgba(77, 171, 247, 0.25);
+    }
+
+    /* ─── Mobile Color/Size Triggers ─────────────────────────────────────── */
+    .mobile-color-trigger,
+    .mobile-size-trigger {
+      display: none;
+    }
+
+    .mobile-color-dot {
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      border: 2px solid var(--border);
+    }
+
+    .mobile-size-label {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--text-dim);
+    }
+
+    .mobile-popup {
+      position: fixed;
+      top: var(--toolbar-h);
       left: 0;
-      width: 100%;
-      height: 100%;
-      transform-origin: 0 0;
-      transform-style: preserve-3d;
+      right: 0;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 12px;
+      z-index: 150;
+      animation: slideDown 0.15s ease;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
     }
 
-    /* Zoom-Reset Button (erscheint nur wenn gezoomt) */
-    .zoom-reset-btn {
-      position: absolute;
-      bottom: 12px;
-      right: 12px;
-      z-index: 10;
-      background: rgba(0,0,0,0.55);
-      color: rgba(255,255,255,0.85);
-      border: 1px solid rgba(255,255,255,0.15);
-      border-radius: 6px;
-      padding: 4px 10px;
-      font-size: 11px;
-      cursor: pointer;
-      backdrop-filter: blur(4px);
-      transition: background 0.15s;
+    .mobile-popup.hidden {
+      display: none;
     }
-    .zoom-reset-btn:hover { background: rgba(0,0,0,0.75); }
 
-    .zoom-lock-btn {
+    @keyframes slideDown {
+      from {
+        transform: translateY(-100%);
+        opacity: 0;
+      }
+
+      to {
+        transform: translateY(0);
+        opacity: 1;
+      }
+    }
+
+    .mobile-popup-content {
       display: flex;
-      position: absolute;
-      bottom: 12px;
-      left: 12px;
-      z-index: 10;
-      background: rgba(0,0,0,0.55);
-      color: rgba(255,255,255,0.85);
-      border: 1px solid rgba(255,255,255,0.15);
-      border-radius: 6px;
-      padding: 6px;
-      cursor: pointer;
-      backdrop-filter: blur(4px);
-      transition: background 0.15s, color 0.15s;
-      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
       justify-content: center;
     }
-    .zoom-lock-btn:hover { background: rgba(0,0,0,0.75); }
-    .zoom-lock-btn.locked { color: #00b894; border-color: rgba(0,184,148,0.3); }
-    .zoom-lock-btn:not(.locked) { color: #ffa94d; border-color: rgba(255,169,77,0.3); }
 
-    /* Color trigger & swatches wrapper */
-    .color-trigger {
-      display: none;
-      width: 26px; height: 26px;
-      border-radius: 50%;
-      border: 2px solid rgba(255,255,255,0.5);
-      cursor: pointer;
-    }
-    .color-group-swatches { display: flex; gap: 6px; align-items: center; }
-
-    .burger-btn { display: flex; min-width: 36px; }
-    .zen-group { margin-left: auto; }
-    .share-btn {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      padding: 8px 12px;
-      background: rgba(77, 171, 247, 0.15);
-      border: 1px solid rgba(77, 171, 247, 0.25);
-      border-radius: 6px;
-      color: #4dabf7;
-      font-size: 12px;
-      cursor: pointer;
+    .mobile-popup-content .color-dot {
+      width: 32px;
+      height: 32px;
     }
 
+    .mobile-popup-content .size-btn {
+      padding: 8px 14px;
+      font-size: 14px;
+    }
+
+    /* ─── Responsive: Sidebar auf mobil verstecken ───────────────────────── */
     @media (max-width: 768px) {
-      .notebook-btn .nb-label,
-      .notebook-btn .nb-chevron { display: none; }
-      .notebook-btn { padding: 8px; }
+      .app {
+        grid-template-columns: 1fr;
+      }
 
-      .color-group-swatches { display: none; }
-      .color-trigger { display: flex; }
-      .size-group-swatches { display: none; }
-      .size-trigger { display: flex; }
-      .edit-btn { display: none; }
-      .rename-menu-btn { display: block; }
-
-      .popup-backdrop {
-        display: block;
-        position: fixed;
-        inset: 0;
-        background: rgba(0,0,0,0.5);
-        z-index: 199;
-      }
-      .notebook-menu,
-      .color-menu,
-      .size-menu,
-      .iro-popup {
-        position: fixed;
-        top: 50%;
-        left: 50%;
-        transform: translate(-50%, -50%);
-        bottom: auto;
-        right: auto;
-        margin: 0;
-        z-index: 200;
-      }
-      .color-menu {
-        padding: 12px;
-        display: grid;
-        grid-template-columns: repeat(5, 1fr);
-        gap: 10px;
-      }
-      .size-menu {
-        padding: 8px;
+      .sidebar {
         display: flex;
-        gap: 6px;
+        position: fixed;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        width: var(--sidebar-w);
+        z-index: 50;
+        transform: translateX(-100%);
+        transition: transform 0.25s ease;
       }
-      .notebook-menu {
-        min-width: 260px;
+
+      .sidebar.sidebar-open {
+        transform: translateX(0);
       }
-      .zen-group { margin-left: 0; }
-      .toolbar {
-        flex-wrap: nowrap;
-        overflow-x: auto;
+
+      .burger-btn {
+        display: flex;
       }
-      .floating-page-nav .page-info {
-        min-width: auto;
-        font-size: 11px;
+
+      .color-palette,
+      .size-palette,
+      .desktop-only,
+      .bg-selector {
+        display: none !important;
       }
-      .floating-page-nav .page-btn {
-        padding: 4px 10px;
-        font-size: 12px;
+
+      .mobile-color-trigger,
+      .mobile-size-trigger {
+        display: flex;
       }
+
+      .toolbar-center {
+        display: none;
+      }
+
+      .pagebar-title {
+        display: block;
+      }
+
+      /* Portrait: Toolbar zweizeilig */
+      @media (orientation: portrait) {
+        .toolbar {
+          flex-wrap: wrap;
+          padding: 4px 8px;
+          gap: 2px 6px;
+          height: calc(var(--toolbar-h) * 2);
+        }
+        .toolbar-left,
+        .toolbar-right {
+          gap: 4px;
+        }
+        .toolbar-left {
+          flex-basis: 100%;
+          justify-content: center;
+        }
+        .toolbar-right {
+          flex-basis: 100%;
+          justify-content: center;
+        }
+        .main {
+          grid-template-rows: calc(var(--toolbar-h) * 2) 1fr var(--pagebar-h);
+        }
+        /* Zen-Mode: einzeilig, wenige Buttons passen in eine Zeile */
+        body.zen-mode .toolbar {
+          flex-wrap: nowrap;
+          height: auto;
+        }
+        body.zen-mode .toolbar-left,
+        body.zen-mode .toolbar-right {
+          flex-basis: auto;
+        }
+      }
+    }
+
+    /* ─── Scrollbar ──────────────────────────────────────────────────────── */
+    ::-webkit-scrollbar {
+      width: 4px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: var(--border-2);
+      border-radius: 2px;
     }
   </style>
 </head>
+
 <body>
-  <div id="app" class="app" @vue:mounted="init()">
-    <!-- Toolbar -->
-    <div class="toolbar">
-      <!-- Home link (Desktop) -->
-      <a href="index.html" class="home-link desktop-only" title="Startseite">
-        <img src="img/apple-touch-icon-72x72.png" alt="Notizbuch" width="26" height="26">
-      </a>
-      <!-- Notebook selector -->
-      <div class="toolbar-group">
-        <div class="notebook-selector">
-          <button class="notebook-btn" @click="showNotebookMenu = !showNotebookMenu">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
-              <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
-            </svg>
-            <span class="nb-label">{{ currentNotebook?.name || 'Notizbuch' }}</span>
-            <svg class="nb-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M6 9l6 6 6-6"/>
-            </svg>
-          </button>
-          
-          <div class="notebook-menu" v-if="showNotebookMenu">
-            <div v-for="nb in notebooks" :key="nb.id" 
-                 class="notebook-item" 
-                 :class="{ active: nb.id === currentNotebookId }"
-                 @click="selectNotebook(nb.id)">
-              <span>{{ nb.name }}</span>
-              <button v-if="notebooks.length > 1" class="notebook-item-delete" @click.stop="deleteNotebook(nb.id)">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M18 6L6 18"/><path d="M6 6l12 12"/>
-                </svg>
-              </button>
-            </div>
-            <div class="notebook-menu-footer">
-              <button class="new-notebook-btn" @click="createNotebook()">+ Neues Notizbuch</button>
-              <button class="new-notebook-btn" @click="createTestNotebook()" style="opacity:0.5;font-size:0.85em">🧪 Testbuch (1000 Strokes)</button>
-              <button class="new-notebook-btn rename-menu-btn" @click="showNotebookMenu = false; startRename()">✎ Umbenennen</button>
-            </div>
-          </div>
-        </div>
-        
-        <!-- Rename -->
-        <template v-if="editingName">
-          <input class="rename-input" v-model="newName" @keydown.enter="renameNotebook()" autofocus>
-          <button class="rename-ok" @click="renameNotebook()">OK</button>
-        </template>
-        <button v-else class="edit-btn" @click="startRename()">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-          </svg>
-        </button>
-        
-        <!-- Save status -->
-        <span class="save-status" :class="saveStatus">{{ saveStatusText }}</span>
+  <div class="app">
 
-        <!-- P2P Sync Toggle -->
-        <button class="tool-btn sync-toggle" :class="{ active: syncEnabled, syncing: syncing || peerSync }"
-                @click="toggleSync()" :title="syncEnabled ? 'Sync aktiv – klicken zum Deaktivieren' : 'Sync deaktiviert – klicken zum Aktivieren'">
-          <svg v-if="syncEnabled" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M23 4v6h-6"/><path d="M1 20v-6h6"/>
-            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
-          </svg>
-          <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <line x1="1" y1="1" x2="23" y2="23"/>
-            <path d="M23 4v6h-6"/><path d="M1 20v-6h6"/>
-            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
-          </svg>
-        </button>
-
+    <!-- ── Sidebar ─────────────────────────────────────────────────────── -->
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-icon">📒</span>
+        <span class="brand-name">Notizbuch</span>
       </div>
 
-      <!-- Zen -->
-      <div class="toolbar-group zen-group">
-        <button class="tool-btn" :class="{ active: zenMode }" @click="toggleZenMode()" title="Zen-Modus">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="10"/>
-            <path d="M8 12a4 4 0 0 0 8 0"/>
-            <line x1="12" y1="8" x2="12" y2="8.01"/>
-          </svg>
-        </button>
+      <div class="notebook-section">
+        <div class="section-label">Notizbücher</div>
+        <div id="notebook-list">
+          <!-- Dynamisch via renderUI() -->
+        </div>
+        <button class="nb-add-btn" id="btn-add-notebook">+ Neues Notizbuch</button>
+        <button class="nb-add-btn" id="btn-add-testbook" style="opacity:0.4; font-size:11px">🧪 Testbuch</button>
       </div>
 
-      <!-- Colors -->
-      <div class="toolbar-group" style="position: relative;">
-        <div class="color-group-swatches">
-          <button v-for="c in colors" :key="c"
-                  class="color-btn"
-                  :class="{ active: color === c, white: c === '#ffffff' }"
-                  :style="{ background: c }"
-                  @click="setColor(c)">
-          </button>
-          <button class="color-picker-btn" @click.stop="toggleIroPicker()" title="Eigene Farbe"></button>
+      <div class="sidebar-footer">
+        <div class="status-row">
+          <span class="status-dot" id="status-dot"></span>
+          <span class="peer-label" id="peer-count"></span>
         </div>
-        <button class="color-trigger" @click.stop="showColorMenu = !showColorMenu"
-                :style="{ background: color }"></button>
-        <div class="color-menu" v-if="showColorMenu" @click.stop>
-          <button v-for="c in colors" :key="c" class="color-btn"
-                  :class="{ active: color === c, white: c === '#ffffff' }"
-                  :style="{ background: c }"
-                  @click="setColor(c); showColorMenu = false"></button>
-          <button class="color-picker-btn" @click.stop="toggleIroPicker()" title="Eigene Farbe"></button>
-        </div>
-        <div class="iro-popup" v-if="showIroPicker" @click.stop>
-          <div id="iro-picker-container"></div>
-          <div v-if="customColors.length" class="iro-custom-colors">
-            <button v-for="c in customColors" :key="'cc'+c" class="color-btn"
-                    :class="{ active: color === c }"
-                    :style="{ background: c }"
-                    @click="setColor(c)"></button>
-          </div>
-          <button class="iro-confirm-btn" @click="addCustomColor(color); showIroPicker = false">Übernehmen</button>
-        </div>
-      </div>
-
-      <!-- Pen sizes -->
-      <div class="toolbar-group" style="position: relative;">
-        <div class="size-group-swatches">
-          <button v-for="(ps, idx) in penSizes" :key="ps.name"
-                  class="size-btn" :class="{ active: penSizeIndex === idx }"
-                  @click="setPenSize(idx)">
-            <div class="size-dot" :style="{ width: Math.min(ps.size * 1.5, 16) + 'px', height: Math.min(ps.size * 1.5, 16) + 'px' }"></div>
-          </button>
-        </div>
-        <button class="size-trigger" @click.stop="showSizeMenu = !showSizeMenu">
-          <div class="size-dot" :style="{ width: Math.min(penSizes[penSizeIndex].size * 1.5, 16) + 'px', height: Math.min(penSizes[penSizeIndex].size * 1.5, 16) + 'px' }"></div>
-        </button>
-        <div class="size-menu" v-if="showSizeMenu" @click.stop>
-          <button v-for="(ps, idx) in penSizes" :key="ps.name"
-                  class="size-btn" :class="{ active: penSizeIndex === idx }"
-                  @click="setPenSize(idx); showSizeMenu = false">
-            <div class="size-dot" :style="{ width: Math.min(ps.size * 1.5, 16) + 'px', height: Math.min(ps.size * 1.5, 16) + 'px' }"></div>
-          </button>
-        </div>
-      </div>
-
-      <!-- Tools -->
-      <div class="toolbar-group">
-        <button class="tool-btn" :class="{ active: tool === 'pen' }" @click="tool = 'pen'" title="Stift">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/>
-          </svg>
-        </button>
-        <button class="tool-btn eraser-btn" :class="{ active: tool === 'eraser' }" @click="tool = 'eraser'" title="Radierer">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M20 20H7L3 16c-.6-.6-.6-1.5 0-2.1l10-10c.6-.6 1.5-.6 2.1 0l6 6c.6.6.6 1.5 0 2.1L13 20"/>
-          </svg>
-        </button>
-        <button class="tool-btn desktop-only" :class="{ active: tool === 'hand' }" @click="tool = 'hand'" title="Verschieben & Zoomen">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M18 11V6a2 2 0 0 0-4 0v1M14 10V4a2 2 0 0 0-4 0v6M10 10.5V5a2 2 0 0 0-4 0v9"/><path d="M18 11a2 2 0 0 1 4 0v5a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 17"/>
-          </svg>
-        </button>
-        <div class="divider"></div>
-        <button class="tool-btn" @click="undo()" :disabled="!currentPage || !currentPage.strokes || currentPage.strokes.length === 0" title="Rückgängig">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
-          </svg>
-        </button>
-        <button class="tool-btn" @click="showClearConfirm = true" title="Seite löschen">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
-          </svg>
-        </button>
-      </div>
-
-      <!-- Burger (ganz rechts, nur mobil) -->
-      <button class="tool-btn burger-btn" @click.stop="showBurgerMenu = !showBurgerMenu" title="Menü">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <line x1="3" y1="6" x2="21" y2="6"/>
-          <line x1="3" y1="12" x2="21" y2="12"/>
-          <line x1="3" y1="18" x2="21" y2="18"/>
-        </svg>
-      </button>
-    </div>
-
-    <!-- Secondary bar -->
-    <!-- Backdrop für Mobile Popups -->
-    <div class="popup-backdrop" v-if="showNotebookMenu || showColorMenu || showSizeMenu || showBurgerMenu || showIroPicker"
-         @click="if (!showSnapshotConfirm) { showNotebookMenu = false; showColorMenu = false; showSizeMenu = false; showBurgerMenu = false; showIroPicker = false; }"></div>
-
-    <div class="secondary-bar" :class="{ open: showBurgerMenu }">
-      <!-- Background -->
-      <div class="toolbar-group">
-        <span style="color: rgba(255,255,255,0.5); font-size: 11px;">Hintergrund:</span>
-        <button v-for="bg in backgrounds" :key="bg.id"
-                class="bg-btn" :class="{ active: currentBackground === bg.id }"
-                @click="setBackground(bg.id)">
-          {{ bg.name }}
-        </button>
-      </div>
-
-      <!-- Stifterkennung -->
-      <label class="toggle" @click="penDetected = !penDetected; _saveLocalSettings()">
-        <div class="toggle-track" :class="{ active: penDetected }">
-          <div class="toggle-thumb"></div>
-        </div>
-        <span class="toggle-label">Stiftmodus (Touch ignorieren)</span>
-      </label>
-
-      <!-- Aktionen -->
-      <div class="burger-actions">
-        <button class="share-btn" @click="openShare(); showBurgerMenu = false">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
-            <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/>
-            <line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+        <button class="footer-btn" id="btn-share" title="Notebook teilen">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="18" cy="5" r="3" />
+            <circle cx="6" cy="12" r="3" />
+            <circle cx="18" cy="19" r="3" />
+            <line x1="8.59" y1="13.51" x2="15.42" y2="17.49" />
+            <line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
           </svg>
           Teilen
         </button>
-        <button class="share-btn" @click="showConnectModal = true; showBurgerMenu = false">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/>
-            <polyline points="10 17 15 12 10 7"/>
-            <line x1="15" y1="12" x2="3" y2="12"/>
+        <button class="footer-btn" id="btn-export" title="Export">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <polyline points="7 10 12 15 17 10" />
+            <line x1="12" y1="15" x2="12" y2="3" />
           </svg>
-          Verbinden
+          Export
         </button>
-        <button class="share-btn" @click="clearCache()">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <polyline points="23 4 23 10 17 10"/>
-            <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+        <button class="footer-btn" id="btn-import" title="Import">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <polyline points="17 8 12 3 7 8" />
+            <line x1="12" y1="3" x2="12" y2="15" />
           </svg>
-          Cache leeren
+          Import
         </button>
       </div>
+    </aside>
 
-      <!-- Sicherungen -->
-      <div class="burger-snapshots">
-        <span style="color: rgba(255,255,255,0.5); font-size: 11px;">Sicherungen:</span>
-        <button class="share-btn" @click="createSnapshot('Manuell')">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
-            <polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>
-          </svg>
-          Sicherung erstellen
-        </button>
-        <div v-if="snapshots.length === 0" style="color: rgba(255,255,255,0.35); font-size: 11px; padding: 2px 0;">
-          Keine Sicherungen vorhanden
-        </div>
-        <div v-for="snap in [...snapshots].reverse()" :key="snap.timestamp" class="snapshot-entry">
-          <span class="snapshot-info">{{ formatSnapshotDate(snap.timestamp) }} — {{ snap.count }} Notizbuch{{ snap.count !== 1 ? 'er' : '' }}<span v-if="snap.label" style="opacity:0.5"> ({{ snap.label }})</span></span>
-          <button class="snapshot-restore-btn" @click="pendingRestore = snap; showSnapshotConfirm = true">
-            Wiederherstellen
-          </button>
-        </div>
-      </div>
+    <!-- ── Main ────────────────────────────────────────────────────────── -->
+    <main class="main">
 
-      <!-- Peer-Info -->
-      <div class="burger-info" v-if="syncEnabled">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
-          <circle cx="9" cy="7" r="4"/>
-          <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
-          <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
-        </svg>
-        {{ connectedPeers.length }} Peer{{ connectedPeers.length !== 1 ? 's' : '' }} verbunden
-      </div>
-
-      <!-- Page navigation (Desktop) -->
-      <div class="page-nav desktop-only">
-        <button class="page-btn" :disabled="!canGoPrev" @click="prevPage()">← Zurück</button>
-        <span class="page-info">Seite {{ currentPageIndex + 1 }} / {{ totalPages }}<span v-if="pageLoading" class="page-loading-dot"></span></span>
-        <button class="page-btn primary"  @click="nextPage()">Weiter →</button>
-      </div>
-    </div>
-
-    <!-- Snapshot-Bestätigung (außerhalb secondary-bar, damit Burger-Menü offen bleibt) -->
-    <div class="snapshot-confirm-overlay" v-if="showSnapshotConfirm" @click.self="showSnapshotConfirm = false; pendingRestore = null">
-      <div class="snapshot-confirm-dialog">
-        <p>Sicherung vom <strong>{{ pendingRestore ? formatSnapshotDate(pendingRestore.timestamp) : '' }}</strong> wiederherstellen?</p>
-        <p style="font-size: 12px; opacity: 0.7;">Alle aktuellen Notizbücher werden durch die Sicherung ersetzt.</p>
-        <div style="display: flex; gap: 8px; justify-content: flex-end;">
-          <button class="snapshot-cancel-btn" @click="showSnapshotConfirm = false; pendingRestore = null">Abbrechen</button>
-          <button class="snapshot-confirm-btn" @click="restoreSnapshot(pendingRestore)">Wiederherstellen</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- WebRTC-Warnung (erscheint nach Sync-Timeout auf geteiltem Link) -->
-    <div class="webrtc-warning" v-if="webrtcWarning">
-      <span class="webrtc-warning-icon">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
-          <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
-        </svg>
-      </span>
-      <div class="webrtc-warning-body">
-        <div class="webrtc-warning-title">WebRTC / UDP ist in diesem Browser blockiert</div>
-        <div class="webrtc-warning-text">
-          Echtzeit-Sync funktioniert nicht. Ursache: UDP-Verbindungen werden durch Browser-Einstellungen verhindert. Häufig bei Chromium und Vivaldi auf Android.
-        </div>
-        <ol class="webrtc-warning-steps">
-          <li>Adresszeile: <code>chrome://flags</code> bzw. <code>vivaldi://flags</code> öffnen</li>
-          <li>Suche nach <code>WebRTC IP Handling Policy</code></li>
-          <li>Wert auf <code>Default</code> setzen (nicht „Disable non-proxied UDP")</li>
-          <li>Browser neu starten</li>
-        </ol>
-      </div>
-      <button class="webrtc-warning-dismiss" @click="webrtcWarning = false">Schließen</button>
-    </div>
-
-    <!-- Disconnected Banner -->
-    <div class="disconnected-banner" v-show="hadPeers && connectedPeers.length === 0 && !syncing" v-cloak>
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <line x1="1" y1="1" x2="23" y2="23"></line>
-        <path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"></path>
-        <path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"></path>
-        <path d="M10.71 5.05A16 16 0 0 1 22.56 9"></path>
-        <path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88"></path>
-        <path d="M8.53 16.11a6 6 0 0 1 6.95 0"></path>
-        <line x1="12" y1="20" x2="12.01" y2="20"></line>
-      </svg>
-      <span>Verbindung verloren – Sync pausiert</span>
-      <button class="disconnected-reconnect" @click="location.reload()">Neu verbinden</button>
-    </div>
-
-    <!-- Canvas -->
-    <div class="canvas-container" ref="container">
-      <!-- Floating page nav (Mobil) -->
-      <div class="floating-page-nav">
-        <button class="page-btn" :disabled="!canGoPrev" @click="prevPage()">←</button>
-        <span class="page-info">{{ currentPageIndex + 1 }} / {{ totalPages }}<span v-if="pageLoading" class="page-loading-dot"></span></span>
-        <button class="page-btn primary"  @click="nextPage()">→</button>
-      </div>
-      <div class="canvas-zoom-wrapper">
-        <div class="canvas-wrapper">
-          <canvas id="bgCanvas" ref="bgCanvas"></canvas>
-          <canvas id="staticCanvas" ref="staticCanvas"></canvas>
-          <canvas id="activeCanvas" ref="activeCanvas"
-                  :class="{ eraser: tool === 'eraser', hand: tool === 'hand' || (hasTouchscreen && !zoomLocked), grabbing: isPanning, loading: pageLoading }"
-                  @pointerdown="startDrawing"
-                  @pointermove="draw"
-                  @pointerup="stopDrawing"
-                  @pointerleave="stopDrawing"
-                  @pointercancel="stopDrawing">
-          </canvas>
-        </div>
-      </div>
-      <button class="zoom-reset-btn"
-              @click="fitToContent()">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
-      </button>
-      <button v-if="hasTouchscreen" class="zoom-lock-btn" :class="{ locked: zoomLocked }" @click="zoomLocked = !zoomLocked" :title="zoomLocked ? 'Zeichenmodus (Zoom/Verschieben gesperrt)' : 'Zoom/Verschieben-Modus (Zeichnen gesperrt)'">
-        <svg v-if="zoomLocked" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/></svg>
-        <svg v-else width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 11V6a2 2 0 0 0-4 0v1M14 10V4a2 2 0 0 0-4 0v6M10 10.5V5a2 2 0 0 0-4 0v9"/><path d="M18 11a2 2 0 0 1 4 0v5a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 17"/></svg>
-      </button>
-    </div>
-
-    <!-- Sync overlay: shown while waiting for P2P data on a shared URL -->
-    <div class="sync-overlay" v-if="syncing">
-      <div class="sync-box">
-        <div class="sync-spinner"></div>
-        <span>Synchronisiere…</span>
-      </div>
-    </div>
-
-
-    <!-- Clear Confirm -->
-    <div class="confirm-overlay" v-if="showClearConfirm" @click.self="showClearConfirm = false">
-      <div class="confirm-box">
-        <p>Seite wirklich leeren?</p>
-        <div class="confirm-actions">
-          <button class="confirm-btn cancel" @click="showClearConfirm = false">Abbrechen</button>
-          <button class="confirm-btn danger" @click="clearPage(); showClearConfirm = false">Leeren</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Share Modal -->
-    <div class="share-overlay" v-if="showShareModal" @click.self="closeShare()">
-      <div class="share-modal">
-        <h2>Link teilen</h2>
-        <p>Wer diesen Link öffnet, kann in Echtzeit mitzeichnen. Kein Login nötig.</p>
-        <div class="share-url-row">
-          <input class="share-url-input" :value="shareUrl" readonly @click="$event.target.select()">
-          <button class="share-copy-btn" :class="{ copied: copySuccess }" @click="copyShareUrl()">
-            {{ copySuccess ? 'Kopiert ✓' : 'Kopieren' }}
-          </button>
-        </div>
-        <div class="share-qr-wrap">
-          <div id="share-qr-container"></div>
-        </div>
-        <button class="share-close-btn" @click="closeShare()">Schließen</button>
-      </div>
-    </div>
-
-    <!-- Connect Modal -->
-    <div class="share-overlay" v-if="showConnectModal" @click.self="closeConnect()">
-      <div class="share-modal">
-        <h2>Mit bestehendem Notizbuch verbinden</h2>
-        <p>Scanne den QR-Code eines geteilten Notizbuchs oder gib den Schlüssel manuell ein.</p>
-
-        <!-- Scanner -->
-        <div v-if="scannerActive" class="scanner-container">
-          <video id="qr-video" muted playsinline></video>
-          <div class="scanner-overlay-box"></div>
-        </div>
-        <div v-if="!scannerActive" style="display: flex; gap: 8px; margin-bottom: 12px;">
-          <button class="share-copy-btn" @click="startQRScanner()" style="flex: 1;">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: -2px; margin-right: 4px;">
-              <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
-              <circle cx="12" cy="13" r="4"/>
+      <!-- Toolbar -->
+      <div class="toolbar">
+        <div class="toolbar-left">
+          <!-- Burger (mobil) -->
+          <button class="tool-btn burger-btn" id="btn-burger" title="Menü">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round">
+              <line x1="3" y1="6" x2="21" y2="6" />
+              <line x1="3" y1="12" x2="21" y2="12" />
+              <line x1="3" y1="18" x2="21" y2="18" />
             </svg>
-            QR-Code scannen
+          </button>
+          <!-- Pen -->
+          <button class="tool-btn" data-tool="pen" title="Stift">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 19l7-7 3 3-7 7-3-3z" />
+              <path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z" />
+            </svg>
+          </button>
+          <!-- Eraser -->
+          <button class="tool-btn" data-tool="eraser" title="Radierer">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round">
+              <path d="M20 20H7L3 16l9-9 8 8-4 4z" />
+              <path d="M6.5 13.5L12 8" />
+            </svg>
+          </button>
+          <span class="divider"></span>
+          <!-- Undo -->
+          <button class="tool-btn" id="btn-undo" title="Rückgängig">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="1 4 1 10 7 10" />
+              <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
+            </svg>
+          </button>
+          <!-- Clear -->
+          <button class="tool-btn" id="btn-clear" title="Seite leeren" style="color: var(--danger)">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="3 6 5 6 21 6" />
+              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+            </svg>
+          </button>
+          <span class="divider"></span>
+          <!-- Hand (Pan/Zoom) -->
+          <button class="tool-btn" data-tool="hand" title="Verschieben/Zoom">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round">
+              <path d="M18 11V6a2 2 0 0 0-4 0v1M14 10V4a2 2 0 0 0-4 0v6M10 10.5V5a2 2 0 0 0-4 0v9" />
+              <path
+                d="M18 11a2 2 0 0 1 4 0v5a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 17" />
+            </svg>
+          </button>
+          <!-- View Reset -->
+          <button class="tool-btn" id="btn-reset-view" title="Ansicht zurücksetzen">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+              <polyline points="9 22 9 12 15 12 15 22" />
+            </svg>
+          </button>
+          <!-- Zen Mode -->
+          <button class="tool-btn" id="btn-zen" title="Zen-Modus (Vollbild)">
+            <svg class="zen-expand" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="15 3 21 3 21 9" />
+              <polyline points="9 21 3 21 3 15" />
+              <line x1="21" y1="3" x2="14" y2="10" />
+              <line x1="3" y1="21" x2="10" y2="14" />
+            </svg>
+            <svg class="zen-collapse" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="4 14 10 14 10 20" />
+              <polyline points="20 10 14 10 14 4" />
+              <line x1="14" y1="10" x2="21" y2="3" />
+              <line x1="3" y1="21" x2="10" y2="14" />
+            </svg>
           </button>
         </div>
-        <div v-if="scannerActive" style="margin-bottom: 12px;">
-          <button class="share-close-btn" @click="stopQRScanner()">Scanner beenden</button>
+
+        <div class="toolbar-center">
+          <span id="notebook-title"></span>
         </div>
 
-        <!-- Manual input -->
-        <div v-if="!scannerActive">
-          <div class="share-url-row">
-            <input class="share-url-input" v-model="connectKeyInput" placeholder="Schlüssel oder Link eingeben" @keydown.enter="applyConnectKey()">
-            <button class="share-copy-btn" @click="applyConnectKey()" :disabled="!connectKeyInput.trim()">Verbinden</button>
+        <div class="toolbar-right">
+          <!-- Mobile: Farb-Trigger -->
+          <button class="tool-btn mobile-color-trigger" id="btn-mobile-color" title="Farbe">
+            <span class="mobile-color-dot" id="mobile-color-dot"></span>
+          </button>
+          <!-- Mobile: Größen-Trigger -->
+          <button class="tool-btn mobile-size-trigger" id="btn-mobile-size" title="Größe">
+            <span class="mobile-size-label" id="mobile-size-label">M</span>
+          </button>
+          <div class="color-palette" id="color-palette">
+            <!-- Dynamisch via renderUI() -->
+          </div>
+          <span class="divider desktop-only"></span>
+          <div class="size-palette" id="size-palette">
+            <!-- Dynamisch via renderUI() -->
           </div>
         </div>
+      </div>
 
-        <div v-if="connectError" style="color: #ff6b6b; font-size: 12px; margin-bottom: 12px;">{{ connectError }}</div>
+      <!-- Canvas -->
+      <div id="canvas-container">
+        <canvas id="bg-canvas"></canvas>
+        <canvas id="static-canvas"></canvas>
+        <canvas id="active-canvas"></canvas>
+      </div>
 
-        <button class="share-close-btn" @click="closeConnect()">Abbrechen</button>
+      <!-- Page Bar -->
+      <div class="page-bar">
+        <div class="pagebar-left">
+          <button class="page-btn" id="btn-prev" disabled>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+              stroke-linecap="round">
+              <polyline points="15 18 9 12 15 6" />
+            </svg>
+          </button>
+          <span id="page-indicator">1 / 1</span>
+          <button class="page-btn" id="btn-next">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+              stroke-linecap="round">
+              <polyline points="9 18 15 12 9 6" />
+            </svg>
+          </button>
+        </div>
+        <div class="pagebar-right">
+          <div class="bg-selector" id="bg-selector">
+            <button class="bg-btn" data-bg="grid" title="Kariert">
+              <svg width="14" height="14" viewBox="0 0 14 14" stroke="currentColor" stroke-width="1.2" fill="none">
+                <line x1="0" y1="4.7" x2="14" y2="4.7" />
+                <line x1="0" y1="9.3" x2="14" y2="9.3" />
+                <line x1="4.7" y1="0" x2="4.7" y2="14" />
+                <line x1="9.3" y1="0" x2="9.3" y2="14" />
+              </svg>
+            </button>
+            <button class="bg-btn" data-bg="lined" title="Liniert">
+              <svg width="14" height="14" viewBox="0 0 14 14" stroke="currentColor" stroke-width="1.2" fill="none">
+                <line x1="0" y1="3.5" x2="14" y2="3.5" />
+                <line x1="0" y1="7" x2="14" y2="7" />
+                <line x1="0" y1="10.5" x2="14" y2="10.5" />
+              </svg>
+            </button>
+            <button class="bg-btn" data-bg="blank" title="Leer">
+              <svg width="14" height="14" viewBox="0 0 14 14" stroke="currentColor" stroke-width="1.2" fill="none">
+                <rect x="1" y="1" width="12" height="12" rx="1.5" />
+              </svg>
+            </button>
+          </div>
+          <button class="page-btn" id="btn-delete-page" title="Seite löschen">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round">
+              <polyline points="3 6 5 6 21 6" />
+              <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />
+            </svg>
+          </button>
+        </div>
+        <span class="pagebar-title" id="pagebar-title"></span>
+      </div>
+
+    </main>
+  </div>
+
+  <!-- Passphrase Modal -->
+  <div class="modal-overlay hidden" id="passphrase-modal">
+    <div class="modal" style="width: 340px;">
+      <div class="modal-header">
+        <h2>Notizbuch verbinden</h2>
+      </div>
+      <div class="modal-body" style="gap: 12px;">
+        <p class="modal-hint" style="text-align: left; width: 100%;">
+          Gib eine Passphrase ein. Alle Geräte mit der gleichen Passphrase synchronisieren automatisch.
+        </p>
+        <input class="link-input" type="text" id="passphrase-input" placeholder="Passphrase eingeben..."
+          style="width: 100%; font-size: 14px; padding: 10px 12px;">
+        <span id="passphrase-error" style="color: var(--danger); font-size: 12px; min-height: 16px;"></span>
+        <button class="copy-btn" id="passphrase-ok" style="width: 100%; text-align: center;">Verbinden</button>
       </div>
     </div>
   </div>
 
-  <script>
-    const { createApp } = PetiteVue;
+  <!-- Mobile Color Menu -->
+  <div class="mobile-popup hidden" id="mobile-color-menu">
+    <div class="mobile-popup-content" id="mobile-color-grid">
+      <!-- Dynamisch via renderUI() -->
+    </div>
+  </div>
 
-    // Yjs-Instanzen (initialized in init())
-    let app;          // petite-vue App-Referenz
-    let localDB;
-    let dbInitialized = false;
-    let roomKey = '';
-    let syncEnabled = false;
+  <!-- Mobile Size Menu -->
+  <div class="mobile-popup hidden" id="mobile-size-menu">
+    <div class="mobile-popup-content" id="mobile-size-grid">
+      <!-- Dynamisch via renderUI() -->
+    </div>
+  </div>
 
-    // Yjs Docs + Provider
-    let rootDoc = null;         // Y.Doc für Notebook-Liste (Room: roomKey)
-    let rootProvider = null;    // WebrtcProvider für rootDoc
-    let rootPersistence = null; // IndexeddbPersistence für rootDoc
-    let nbDoc = null;           // Y.Doc für aktuelles Notebook (Room: roomKey_nb_<nbId>)
-    let nbProvider = null;      // WebrtcProvider für nbDoc
-    let nbPersistence = null;   // IndexeddbPersistence für nbDoc
-    let undoManager = null;     // UndoManager für aktuelle Seite
-    let currentStrokeObserver = null; // Observer auf aktuellem Y.Array
-    let currentStrokeArray = null;    // Y.Array der aktuellen Seite
+  <!-- Sidebar Overlay (mobil) -->
+  <div class="sidebar-overlay" id="sidebar-overlay"></div>
 
-    // Yjs CDN imports (geladen in init)
-    let Y = null;
-    let WebrtcProvider = null;
-    let IndexeddbPersistence = null;
+  <!-- Color Picker Popup -->
+  <div class="color-picker-popup hidden" id="color-picker-popup">
+    <div id="iro-container"></div>
+    <button class="iro-confirm-btn" id="iro-confirm">Farbe übernehmen</button>
+  </div>
 
-    // Browser/Gerät-Name ermitteln
-    function getClientName() {
-      const ua = navigator.userAgent;
-      let browser = 'Browser';
-      if (ua.includes('Firefox')) browser = 'Firefox';
-      else if (ua.includes('Edg/')) browser = 'Edge';
-      else if (ua.includes('Chrome')) browser = 'Chrome';
-      else if (ua.includes('Safari')) browser = 'Safari';
-      let device = 'Desktop';
-      if (/Android/i.test(ua)) device = 'Android';
-      else if (/iPad/i.test(ua)) device = 'iPad';
-      else if (/iPhone/i.test(ua)) device = 'iPhone';
-      else if (/Mobile/i.test(ua)) device = 'Mobile';
-      return `${browser} ${device}`;
+  <!-- Share Modal -->
+  <div class="modal-overlay hidden" id="share-modal">
+    <div class="modal">
+      <div class="modal-header">
+        <h2>Notebook teilen</h2>
+        <button class="modal-close" id="btn-close-share">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+            stroke-linecap="round">
+            <line x1="18" y1="6" x2="6" y2="18" />
+            <line x1="6" y1="6" x2="18" y2="18" />
+          </svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <div class="qr-wrap" id="qr-container"></div>
+        <p class="modal-hint">Scanne den QR-Code oder kopiere den Link.<br>Gleicher Link = gleiches Notizbuch.</p>
+        <div class="link-row">
+          <input class="link-input" type="text" id="share-link" readonly>
+          <button class="copy-btn" id="btn-copy-link">Kopieren</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="console"></div>
+  <style>
+    #console {
+      display: none;
+      position: fixed;
+      z-index: 999;
+      bottom: 50px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #000;
+      color: #fff;
+      max-height: 200px;
+      overflow-y: auto;
+      width: 400px;
+      border-radius: 5px;
+      padding: 4px;
     }
+  </style>
 
-    // Notebook-Doc öffnen (Y.Doc + Provider + Persistence)
-    function openNotebookDoc(notebookId) {
-      closeNotebookDoc();
-      if (!Y) return;
-      const room = roomKey + '_nb_' + notebookId;
-      nbDoc = new Y.Doc();
-      nbPersistence = new IndexeddbPersistence(room, nbDoc);
-      if (syncEnabled) {
-        nbProvider = new WebrtcProvider(room, nbDoc, {
-          password: roomKey,
-          signaling: ['wss://signaling.yjs.dev', 'wss://y-webrtc-signaling-eu.herokuapp.com']
-        });
-      }
-      console.log('[Yjs] Notebook-Doc geöffnet:', room);
-    }
-
-    // Notebook-Doc schließen
-    function closeNotebookDoc() {
-      if (currentStrokeObserver && currentStrokeArray) {
-        currentStrokeArray.unobserve(currentStrokeObserver);
-      }
-      currentStrokeObserver = null;
-      currentStrokeArray = null;
-      if (undoManager) { undoManager.destroy(); undoManager = null; }
-      if (nbProvider) { nbProvider.destroy(); nbProvider = null; }
-      if (nbPersistence) { nbPersistence.destroy(); nbPersistence = null; }
-      if (nbDoc) { nbDoc.destroy(); nbDoc = null; }
-    }
-
-    // Y.Array für eine Seite holen (erstellt wenn nötig)
-    function getPageStrokes(pageId) {
-      if (!nbDoc) return null;
-      return nbDoc.getMap('strokes').get(String(pageId)) || _createPageStrokesArray(pageId);
-    }
-
-    function _createPageStrokesArray(pageId) {
-      if (!nbDoc) return null;
-      const strokesMap = nbDoc.getMap('strokes');
-      const arr = new Y.Array();
-      strokesMap.set(String(pageId), arr);
-      return arr;
-    }
-
-    // Strokes aus Y.Array in plain Objects konvertieren
-    function readStrokesFromYArray(yArray) {
-      if (!yArray) return [];
-      return yArray.toArray().map(s => ({
-        id: String(s.id), points: s.points || [], color: s.color, size: s.size, tool: s.tool || 'pen'
-      }));
-    }
-
-    // Observer auf aktuelle Seite setzen (für Live-Updates von Peers)
-    function observePageStrokes(pageId) {
-      // Alten Observer entfernen
-      if (currentStrokeObserver && currentStrokeArray) {
-        currentStrokeArray.unobserve(currentStrokeObserver);
-      }
-      if (undoManager) { undoManager.destroy(); undoManager = null; }
-
-      const yArray = getPageStrokes(pageId);
-      currentStrokeArray = yArray;
-      if (!yArray || !app) return;
-
-      // UndoManager für diese Seite
-      undoManager = new Y.UndoManager(yArray, { captureTimeout: 0 });
-
-      // Observer: bei Änderungen von Peers Canvas neu zeichnen
-      currentStrokeObserver = (event) => {
-        if (event.transaction.local) return; // Eigene Änderungen ignorieren
-        if (!app?.currentPage) return;
-        app.currentPage.strokes = readStrokesFromYArray(yArray);
-        app.redrawStrokes();
-        app.peerSync = true;
-        clearTimeout(app._peerSyncTimer);
-        app._peerSyncTimer = setTimeout(() => { app.peerSync = false; }, 1500);
-      };
-      yArray.observe(currentStrokeObserver);
-    }
-
-    // Aktuelle Seite aus Y.Array laden (synchron, kein Room-Wechsel)
-    function loadCurrentPageStrokes() {
-      if (!app?.currentPage) return;
-      const pageId = String(app.currentPage.id);
-      const yArray = getPageStrokes(pageId);
-      app.currentPage.strokes = readStrokesFromYArray(yArray);
-      observePageStrokes(pageId);
-      app.redrawStrokes();
-      console.log('[Yjs] Seite', pageId, 'geladen,', app.currentPage.strokes.length, 'Strokes');
-    }
-
-    // Pinch-Zoom-State (außerhalb PetiteVue für high-frequency updates)
-    const pinchState = {
-      touches: {}, active: false,
-      startViewX: 0, startViewY: 0, startScale: 1,
-      startMidX: 0, startMidY: 0, startDist: 1
-    };
-
-    // Swipe-State für Seitenwechsel (Touch bei aktivem Stiftmodus)
-    const swipeState = {
-      active: false, pointerId: null,
-      startX: 0, startY: 0, startTime: 0, currentX: 0
-    };
-
-    // IndexedDB für gerätespezifische Settings (nach roomKey isoliert)
-    function openLocalDB() {
-      return new Promise((resolve, reject) => {
-        const req = indexedDB.open('notes-app', 1);
-        req.onupgradeneeded = e => e.target.result.createObjectStore('settings');
-        req.onsuccess = e => resolve(e.target.result);
-        req.onerror = () => reject(req.error);
-      });
-    }
-    function idbGet(key) {
-      return new Promise(resolve => {
-        localDB.transaction('settings', 'readonly')
-          .objectStore('settings').get(key).onsuccess = e => resolve(e.target.result ?? null);
-      });
-    }
-    function idbPut(key, value) {
-      return new Promise(resolve => {
-        localDB.transaction('settings', 'readwrite')
-          .objectStore('settings').put(value, key).onsuccess = () => resolve();
-      });
-    }
-
-    // WebRTC-Fähigkeit prüfen: Versucht lokale ICE-Kandidaten zu sammeln (kein STUN nötig).
-    // Schlägt fehl wenn der Browser UDP blockiert (z.B. Chromium/Vivaldi "Disable non-proxied UDP").
-    function checkWebRTCCapability() {
-      return new Promise(resolve => {
-        try {
-          if (typeof RTCPeerConnection === 'undefined') return resolve(false);
-          const pc = new RTCPeerConnection({ iceServers: [] });
-          pc.createDataChannel('_probe');
-          const timeout = setTimeout(() => { try { pc.close(); } catch {} resolve(false); }, 4000);
-          pc.onicecandidate = ({ candidate }) => {
-            clearTimeout(timeout);
-            try { pc.close(); } catch {}
-            // candidate !== null → mindestens ein lokaler Kandidat gesammelt → UDP funktioniert
-            resolve(candidate !== null);
-          };
-          pc.createOffer().then(o => pc.setLocalDescription(o)).catch(() => {
-            clearTimeout(timeout);
-            try { pc.close(); } catch {}
-            resolve(false);
-          });
-        } catch {
-          resolve(false);
-        }
-      });
-    }
-
-    // Koordinaten auf 0.1 Präzision runden (für Speicherung)
-    function roundPoints(points) {
-      return points.map(p => ({
-        x: Math.round(p.x * 10) / 10,
-        y: Math.round(p.y * 10) / 10
-      }));
-    }
-
-    // (migrateBlob entfernt — alte GenosDB Migration nicht mehr nötig)
-
-    // (savePageNode/openPageDb entfernt — Yjs auto-persist via y-indexeddb)
-
-    // Stroke smoothing
-    function smoothPoints(points) {
-      if (points.length < 3) return points;
-      const result = [];
-      const numSegments = 4;
-      
-      for (let i = 0; i < points.length - 1; i++) {
-        const p0 = points[Math.max(0, i - 1)];
-        const p1 = points[i];
-        const p2 = points[i + 1];
-        const p3 = points[Math.min(points.length - 1, i + 2)];
-        
-        for (let t = 0; t < numSegments; t++) {
-          const s = t / numSegments;
-          const s2 = s * s;
-          const s3 = s2 * s;
-          
-          result.push({
-            x: 0.5 * ((2 * p1.x) + (-p0.x + p2.x) * s + (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * s2 + (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * s3),
-            y: 0.5 * ((2 * p1.y) + (-p0.y + p2.y) * s + (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * s2 + (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * s3)
-          });
-        }
-      }
-      result.push(points[points.length - 1]);
-      return result;
-    }
-
-    // Build stroke polygon
-    function buildStrokePolygon(points, width) {
-      if (points.length < 2) return null;
-      
-      const leftEdge = [];
-      const rightEdge = [];
-      const halfWidth = width / 2;
-      
-      for (let i = 0; i < points.length; i++) {
-        const curr = points[i];
-        
-        let dx, dy;
-        if (i === 0) {
-          dx = points[1].x - curr.x;
-          dy = points[1].y - curr.y;
-        } else if (i === points.length - 1) {
-          dx = curr.x - points[i - 1].x;
-          dy = curr.y - points[i - 1].y;
-        } else {
-          dx = points[i + 1].x - points[i - 1].x;
-          dy = points[i + 1].y - points[i - 1].y;
-        }
-        
-        const len = Math.sqrt(dx * dx + dy * dy) || 1;
-        const nx = -dy / len;
-        const ny = dx / len;
-        
-        leftEdge.push({ x: curr.x + nx * halfWidth, y: curr.y + ny * halfWidth });
-        rightEdge.push({ x: curr.x - nx * halfWidth, y: curr.y - ny * halfWidth });
-      }
-      
-      return [...leftEdge, ...rightEdge.reverse()];
-    }
-
-    // Merge remote notebook into local: union of strokes per page
-    function mergeNotebooks(local, remote) {
-      const merged = JSON.parse(JSON.stringify(remote));
-      if (!local || !local.pages) return merged;
-
-      // Index lokale Seiten nach ID
-      const localPageMap = {};
-      for (const page of local.pages) {
-        localPageMap[String(page.id)] = page;
-      }
-
-      // Remote-Seiten: Strokes mit lokalen vereinigen
-      for (const remotePage of merged.pages) {
-        const localPage = localPageMap[String(remotePage.id)];
-        if (!localPage) continue; // Neue Seite vom Peer → übernehmen
-        delete localPageMap[String(remotePage.id)]; // als verarbeitet markieren
-
-        // clearedAt: Der neueste Lösch-Zeitstempel gewinnt
-        const clearedAt = Math.max(localPage.clearedAt || 0, remotePage.clearedAt || 0);
-        if (clearedAt) remotePage.clearedAt = clearedAt;
-
-        // deletedStrokes beider Seiten vereinigen
-        const localDeleted = new Set(localPage.deletedStrokes || []);
-        const remoteDeleted = new Set(remotePage.deletedStrokes || []);
-        const allDeleted = new Set([...localDeleted, ...remoteDeleted]);
-        if (allDeleted.size > 0) remotePage.deletedStrokes = [...allDeleted];
-
-        // Alle Strokes sammeln die neuer als clearedAt sind und nicht gelöscht
-        const strokeMap = {};
-        for (const s of remotePage.strokes) {
-          if (Number(s.id) > clearedAt && !allDeleted.has(Number(s.id))) strokeMap[String(s.id)] = s;
-        }
-        for (const s of localPage.strokes) {
-          if (Number(s.id) > clearedAt && !allDeleted.has(Number(s.id)) && !strokeMap[String(s.id)]) {
-            strokeMap[String(s.id)] = JSON.parse(JSON.stringify(s));
-          }
-        }
-
-        // Strokes nach ID sortieren (chronologisch, da ID = timestamp)
-        remotePage.strokes = Object.values(strokeMap).sort((a, b) => Number(a.id) - Number(b.id));
-      }
-
-      // Lokale Seiten die Remote nicht kennt → anfügen
-      for (const pageId of Object.keys(localPageMap)) {
-        const page = localPageMap[pageId];
-        merged.pages.push(JSON.parse(JSON.stringify(page)));
-      }
-
-      return merged;
-    }
-
-    // Draw stroke to canvas
-    function drawStrokeToCanvas(ctx, stroke) {
-      if (!stroke.points || stroke.points.length < 2) return;
-      
-      const pts = stroke.points.length >= 3 ? smoothPoints(stroke.points) : stroke.points;
-      const size = stroke.tool === 'eraser' ? stroke.size * 3 : stroke.size;
-      
-      ctx.globalCompositeOperation = stroke.tool === 'eraser' ? 'destination-out' : 'source-over';
-      ctx.fillStyle = stroke.tool === 'eraser' ? 'rgba(0,0,0,1)' : stroke.color;
-      
-      // Draw circles at every point for smooth joins
-      for (let i = 0; i < pts.length; i++) {
-        ctx.beginPath();
-        ctx.arc(pts[i].x, pts[i].y, size / 2, 0, Math.PI * 2);
-        ctx.fill();
-      }
-      
-      // Draw polygon
-      const polygon = buildStrokePolygon(pts, size);
-      if (polygon && polygon.length >= 3) {
-        ctx.beginPath();
-        ctx.moveTo(polygon[0].x, polygon[0].y);
-        for (let i = 1; i < polygon.length; i++) {
-          ctx.lineTo(polygon[i].x, polygon[i].y);
-        }
-        ctx.closePath();
-        ctx.fill();
-      }
-    }
-
-    createApp({
-      // State
-      notebooks: [],
-      currentNotebookId: null,
-      showNotebookMenu: false,
-      showColorMenu: false,
-      showIroPicker: false,
-      showSizeMenu: false,
-      showBurgerMenu: false,
-      showClearConfirm: false,
-      editingName: false,
-      newName: '',
-      
-      tool: 'pen',
-      isPanning: false,
-      color: '#363636',
-      penSizeIndex: 2,
-      customColors: [],
-      penDetected: false,
-      penLastSeen: 0,
-      
-      colors: ['#363636', '#ffffff', '#ff6b6b', '#ffa94d', '#ffd43b', '#69db7c', '#38d9a9', '#4dabf7', '#748ffc', '#da77f2'],
-      penSizes: [
-        { name: 'XS', size: 1 },
-        { name: 'S', size: 2 },
-        { name: 'M', size: 4 },
-        { name: 'L', size: 8 },
-        { name: 'XL', size: 16 }
-      ],
-      backgrounds: [
-        { id: 'grid', name: 'Kariert' },
-        { id: 'lined', name: 'Liniert' },
-        { id: 'blank', name: 'Blank' }
-      ],
-      
-      isDrawing: false,
-      currentPoints: [],
-      lastPoint: null,
-      strokeId: 0,
-      activePointerId: null,
-      activePointerType: null,
-      
-      saveStatus: '',
-      saveStatusText: '',
-      saveTimeout: null,
-      undoStack: [], // Stack of removed stroke IDs per page for undo
-
-      showShareModal: false,
-      shareUrl: '',
-      copySuccess: false,
-      showConnectModal: false,
-      connectKeyInput: '',
-      connectError: '',
-      scannerActive: false,
-      syncEnabled: true,
-      syncing: false,
-      pageLoading: false,
-      peerSync: false,
-      _peerSyncTimer: null,
-      zenMode: false,
-      webrtcWarning: false,
-      hadPeers: false,
-      snapshots: [],
-      showSnapshotConfirm: false,
-      pendingRestore: null,
-      connectedPeers: [],
-      selfPeerId: null,
-      viewScale: 1,
-      viewX: 0,
-      viewY: 0,
-      hasTouchscreen: 'ontouchstart' in window || navigator.maxTouchPoints > 0,
-      zoomLocked: 'ontouchstart' in window || navigator.maxTouchPoints > 0,
-      fitScale: 1,
-      fitX: 0,
-      fitY: 0,
-
-      // Seitenpositionen – LOKAL, nie in GenosDB, nie synchronisiert
-      // { [notebookId]: pageIndex }
-      currentPages: {},
-
-      // Computed-like getters
-      get currentNotebook() {
-        return this.notebooks.find(n => n.id === this.currentNotebookId);
-      },
-
-      get currentPage() {
-        const idx = this.currentPages[this.currentNotebookId] ?? 0;
-        return this.currentNotebook?.pages?.[idx];
-      },
-
-      get strokes() {
-        return this.currentPage?.strokes || [];
-      },
-
-      get currentBackground() {
-        return this.currentPage?.background || 'grid';
-      },
-
-      get currentPageIndex() {
-        return this.currentPages[this.currentNotebookId] ?? 0;
-      },
-
-      get totalPages() {
-        return this.currentNotebook?.pages.length || 1;
-      },
-
-      get canGoPrev() {
-        return (this.currentPages[this.currentNotebookId] ?? 0) > 0;
-      },
-      
-      // Methods
-      async init() {
-        // IndexedDB für gerätespezifische Settings öffnen
-        localDB = await openLocalDB();
-
-        // Room-Key aus URL-Hash lesen oder neu generieren.
-        // isSharedUrl = true  → Hash war schon in der URL (geteilter Link)
-        // isSharedUrl = false → wir haben den Hash gerade erzeugt (neue Session)
-        roomKey = window.location.hash.slice(1);
-        const isSharedUrl = !!roomKey;
-        if (!roomKey) {
-          // PWA-Start ohne Hash: gespeicherten Key wiederherstellen
-          const savedKey = localStorage.getItem('lastRoomKey');
-          if (savedKey) {
-            roomKey = savedKey;
-          } else {
-            roomKey = Array.from(crypto.getRandomValues(new Uint8Array(16)))
-              .map(b => b.toString(16).padStart(2, '0')).join('');
-          }
-          window.location.hash = roomKey;
-        }
-        localStorage.setItem('lastRoomKey', roomKey);
-
-        // Gerätespezifische Settings aus IndexedDB laden (raumspezifisch geprefixxt)
-        const savedCurrentId    = await idbGet(roomKey + ':currentNotebookId');
-        const savedColor = await idbGet(roomKey + ':color');
-        if (savedColor) this.color = savedColor;
-        const savedPenSizeIndex = await idbGet(roomKey + ':penSizeIndex');
-        if (typeof savedPenSizeIndex === 'number') this.penSizeIndex = savedPenSizeIndex;
-        const savedCustomColors = await idbGet(roomKey + ':customColors');
-        if (Array.isArray(savedCustomColors)) this.customColors = savedCustomColors;
-        const savedPenDetected = await idbGet(roomKey + ':penDetected');
-        if (typeof savedPenDetected === 'boolean') this.penDetected = savedPenDetected;
-        const savedSyncEnabled = await idbGet(roomKey + ':syncEnabled');
-        if (typeof savedSyncEnabled === 'boolean') this.syncEnabled = savedSyncEnabled;
-
-        // ── Yjs laden + initialisieren ──
-        syncEnabled = this.syncEnabled;
-        app = this;
-
-        try {
-          const [yMod, wrtcMod, idbMod] = await Promise.all([
-            import('https://cdn.jsdelivr.net/npm/yjs/+esm'),
-            import('https://cdn.jsdelivr.net/npm/y-webrtc/+esm'),
-            import('https://cdn.jsdelivr.net/npm/y-indexeddb/+esm')
-          ]);
-          Y = yMod;
-          WebrtcProvider = wrtcMod.WebrtcProvider;
-          IndexeddbPersistence = idbMod.IndexeddbPersistence;
-          console.log('[Yjs] Module geladen');
-        } catch (e) {
-          console.error('[Yjs] Import fehlgeschlagen:', e);
-        }
-
-        // rootDoc: Notebook-Liste (alle Peers teilen dieses Doc)
-        if (Y) {
-          rootDoc = new Y.Doc();
-          rootPersistence = new IndexeddbPersistence(roomKey + '_root', rootDoc);
-          if (syncEnabled) {
-            rootProvider = new WebrtcProvider(roomKey, rootDoc, {
-              password: roomKey,
-              signaling: ['wss://signaling.yjs.dev', 'wss://y-webrtc-signaling-eu.herokuapp.com']
-            });
-          }
-
-          // Warte auf IndexedDB-Load
-          await new Promise(resolve => {
-            rootPersistence.once('synced', resolve);
-            setTimeout(resolve, 2000); // Timeout falls IDB leer
-          });
-
-          // Notebooks aus rootDoc laden
-          const nbMap = rootDoc.getMap('notebooks');
-          const pageIndex = rootDoc.getMap('pageIndex');
-
-          // In-Memory-Modell aus Yjs aufbauen
-          const buildNotebooksFromYjs = () => {
-            const notebooks = [];
-            nbMap.forEach((value, nbId) => {
-              const pagesArr = pageIndex.get(nbId);
-              const pages = pagesArr ? pagesArr.toArray().map(p => ({
-                id: String(p.id), strokes: [], background: p.background || 'grid', order: p.order ?? 0
-              })) : [];
-              pages.sort((a, b) => a.order - b.order);
-              notebooks.push({ id: String(nbId), name: value?.name || 'Notizbuch', pages });
-            });
-            return notebooks.sort((a, b) => String(a.id) < String(b.id) ? -1 : 1);
-          };
-
-          this.notebooks = buildNotebooksFromYjs();
-          console.log('[Yjs] Notebooks geladen:', this.notebooks.length);
-
-          // Live-Observer für Notebook-Änderungen von Peers
-          nbMap.observe(() => {
-            if (!dbInitialized) return;
-            this.notebooks = buildNotebooksFromYjs();
-            // Strokes der aktuellen Seite erhalten (nicht aus rootDoc)
-            if (this.currentPage && currentStrokeArray) {
-              this.currentPage.strokes = readStrokesFromYArray(currentStrokeArray);
-            }
-          });
-          pageIndex.observeDeep(() => {
-            if (!dbInitialized) return;
-            this.notebooks = buildNotebooksFromYjs();
-            if (this.currentPage && currentStrokeArray) {
-              this.currentPage.strokes = readStrokesFromYArray(currentStrokeArray);
-            }
-          });
-
-          // Peer-Tracking via Awareness
-          if (rootProvider) {
-            const awareness = rootProvider.awareness;
-            awareness.setLocalStateField('user', { name: getClientName() });
-            const updatePeers = () => {
-              const states = Array.from(awareness.getStates().keys());
-              this.connectedPeers = states.filter(id => id !== awareness.clientID).map(String);
-              if (this.connectedPeers.length > 0) this.hadPeers = true;
-            };
-            awareness.on('change', updatePeers);
-            updatePeers();
-
-            // WebRTC-Fähigkeit prüfen
-            checkWebRTCCapability().then(ok => { if (!ok) this.webrtcWarning = true; });
-          }
-
-          // Wenn P2P aktiv: kurz auf Peers warten
-          if (syncEnabled && isSharedUrl && this.notebooks.length === 0) {
-            this.syncing = true;
-            await new Promise(r => setTimeout(r, 3000));
-            this.notebooks = buildNotebooksFromYjs();
-            this.syncing = false;
-          }
-        }
-
-        // Nav-State wiederherstellen
-        if (this.notebooks.length > 0) {
-          const pagePositions = await idbGet(roomKey + ':pagePositions') || {};
-          if (savedCurrentId && this.notebooks.find(nb => nb.id === savedCurrentId)) {
-            this.currentNotebookId = savedCurrentId;
-            for (const nb of this.notebooks) {
-              this.currentPages[String(nb.id)] = pagePositions[String(nb.id)] ?? 0;
-            }
-          } else {
-            this.currentNotebookId = this.notebooks[0].id;
-          }
-          for (const nb of this.notebooks) {
-            if (!(String(nb.id) in this.currentPages)) this.currentPages[String(nb.id)] = 0;
-          }
-        } else {
-          console.log('[Yjs] Keine Daten, erstelle Default-Notebook');
-          this.createDefaultNotebook();
-        }
-
-        // Auto-Snapshot
-        if (this.notebooks.length > 0) {
-          await this.createSnapshot('Auto');
-        }
-        await this.loadSnapshots();
-
-        dbInitialized = true;
-
-        // Notebook-Doc für aktuelles Notebook öffnen + Strokes laden
-        if (this.currentNotebook) {
-          openNotebookDoc(this.currentNotebookId);
-          // Warte auf IndexedDB-Load des Notebook-Docs
-          if (nbPersistence) {
-            await new Promise(resolve => {
-              nbPersistence.once('synced', resolve);
-              setTimeout(resolve, 2000);
-            });
-          }
-        }
-
-        this.setupCanvases();
-        // Strokes der aktuellen Seite laden
-        if (this.currentPage) {
-          loadCurrentPageStrokes();
-        }
-        this.fitToContent();
-        window.addEventListener('resize', () => {
-          this.setupCanvases();
-          this.updateFitReference();
-        });
-
-        // Vor dem Schließen: lokale Settings speichern
-        window.addEventListener('beforeunload', () => {
-          this._saveLocalSettings();
-        });
-
-        // Mausrad-Zoom im Hand-Modus
-        const container = this.$refs.container;
-        if (container) {
-          container.addEventListener('wheel', (e) => {
-            if (this.tool !== 'hand') return;
-            e.preventDefault();
-            const cr = container.getBoundingClientRect();
-            const mouseX = e.clientX - cr.left;
-            const mouseY = e.clientY - cr.top;
-            const delta = e.deltaY > 0 ? 0.9 : 1.1;
-            const newScale = Math.min(8, Math.max(0.2, this.viewScale * delta));
-            const canvasX = (mouseX - this.viewX) / this.viewScale;
-            const canvasY = (mouseY - this.viewY) / this.viewScale;
-            this.viewX = mouseX - canvasX * newScale;
-            this.viewY = mouseY - canvasY * newScale;
-            this.viewScale = newScale;
-            this.drawBackground();
-            this.redrawStrokes();
-          }, { passive: false });
-        }
-
-        document.addEventListener('click', (e) => {
-          if (!e.target.closest('.notebook-selector')) {
-            this.showNotebookMenu = false;
-          }
-          this.showColorMenu = false;
-          this.showSizeMenu = false;
-          this.showBurgerMenu = false;
-          this.showIroPicker = false;
-        });
-
-        // Zen-Modus beenden wenn Fullscreen per ESC verlassen wird
-        document.addEventListener('fullscreenchange', () => {
-          if (!document.fullscreenElement && this.zenMode) {
-            this.zenMode = false;
-            setTimeout(() => { this.setupCanvases(); this.updateFitReference(); }, 100);
-          }
-        });
-
-        // Tab-Fokus: Canvases neu zeichnen und ggf. Reconnect
-        document.addEventListener('visibilitychange', async () => {
-          if (!document.hidden) {
-            this.drawBackground();
-            this.redrawStrokes();
-            // Nach Pause: wenn Peers verloren, alle Daten speichern und neu laden
-            if (this.syncEnabled && this.hadPeers && this.connectedPeers.length === 0) {
-              // Pending Save abbrechen und sofort alles speichern
-              if (this.saveTimeout) clearTimeout(this.saveTimeout);
-              await this._saveAll();
-              sessionStorage.setItem('reconnect', '1');
-              location.reload();
-            }
-          }
-        });
-      },
-
-      toggleSync() {
-        this.syncEnabled = !this.syncEnabled;
-        idbPut(roomKey + ':syncEnabled', this.syncEnabled);
-        location.reload();
-      },
-
-      toggleZenMode() {
-        this.zenMode = !this.zenMode;
-        if (this.zenMode) {
-          if (!document.fullscreenElement) {
-            document.documentElement.requestFullscreen().catch(() => {});
-          }
-        } else {
-          if (document.fullscreenElement) {
-            document.exitFullscreen().catch(() => {});
-          }
-        }
-        setTimeout(() => { this.setupCanvases(); this.updateFitReference(); }, 100);
-      },
-
-      // Nur gerätespezifische Einstellungen (Navigation) in IndexedDB speichern – kein P2P-Sync
-      async _saveLocalSettings() {
-        if (!localDB) return;
-        await idbPut(roomKey + ':currentNotebookId', this.currentNotebookId);
-        await idbPut(roomKey + ':pagePositions', { ...this.currentPages });
-        await idbPut(roomKey + ':color', this.color);
-        await idbPut(roomKey + ':penSizeIndex', this.penSizeIndex);
-        await idbPut(roomKey + ':customColors', [...this.customColors]);
-        await idbPut(roomKey + ':penDetected', this.penDetected);
-      },
-
-      async _saveAll() { await this._saveLocalSettings(); },
-      async _saveCurrentNotebook() { await this._saveLocalSettings(); },
-      
-      async loadSnapshots() {
-        const stored = await idbGet(roomKey + ':snapshots');
-        this.snapshots = Array.isArray(stored) ? stored : [];
-      },
-
-      async createSnapshot(label) {
-        if (!this.notebooks.length) return;
-        const snapshot = {
-          timestamp: Date.now(),
-          label: label || '',
-          notebooks: JSON.parse(JSON.stringify(this.notebooks)),
-          count: this.notebooks.length
-        };
-        const stored = await idbGet(roomKey + ':snapshots');
-        const list = Array.isArray(stored) ? stored : [];
-        list.push(snapshot);
-        // Max 5 Snapshots behalten
-        while (list.length > 5) list.shift();
-        await idbPut(roomKey + ':snapshots', list);
-        this.snapshots = list;
-      },
-
-      async restoreSnapshot(snapshot) {
-        const oldIds = this.notebooks.map(nb => String(nb.id));
-        this.notebooks = JSON.parse(JSON.stringify(snapshot.notebooks));
-        const newIds = new Set(this.notebooks.map(nb => String(nb.id)));
-
-        // clearedAt + neue Stroke-IDs: damit der Merge alte Remote-Strokes verwirft
-        const now = Date.now();
-        for (const nb of this.notebooks) {
-          if (!nb.pages) continue;
-          for (const page of nb.pages) {
-            page.clearedAt = now;
-            if (page.strokes) {
-              for (let i = 0; i < page.strokes.length; i++) {
-                page.strokes[i].id = now + 1 + i;
-              }
-            }
-          }
-        }
-
-        if (this.notebooks.length > 0) {
-          this.currentNotebookId = this.notebooks[0].id;
-          for (const nb of this.notebooks) {
-            if (!(String(nb.id) in this.currentPages)) this.currentPages[String(nb.id)] = 0;
-          }
-        }
-        // Gelöschte Notebooks aus rootDoc entfernen (Sync an Peers)
-        if (rootDoc) {
-          for (const oldId of oldIds) {
-            if (!newIds.has(oldId)) {
-              rootDoc.getMap('notebooks').delete(String(oldId));
-              rootDoc.getMap('pageIndex').delete(String(oldId));
-            }
-          }
-        }
-        await this._saveAll();
-        this.setupCanvases();
-        this.fitToContent();
-        this.showSnapshotConfirm = false;
-        this.pendingRestore = null;
-      },
-
-      formatSnapshotDate(ts) {
-        const d = new Date(ts);
-        return d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: '2-digit' }) +
-          ' ' + d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
-      },
-
-      createDefaultNotebook() {
-        const nbId = String(Date.now());
-        const pageId = String(Date.now() + 1);
-        const name = `Notizen ${getClientName()}`;
-        this.notebooks = [{
-          id: nbId,
-          name,
-          pages: [{ id: pageId, strokes: [], background: 'grid', order: 0 }]
-        }];
-        this.currentNotebookId = nbId;
-        this.currentPages[nbId] = 0;
-
-        // In rootDoc registrieren
-        if (rootDoc && Y) {
-          rootDoc.getMap('notebooks').set(nbId, { name });
-          const pageIndex = rootDoc.getMap('pageIndex');
-          const pagesArr = new Y.Array();
-          pagesArr.push([{ id: pageId, background: 'grid', order: 0 }]);
-          pageIndex.set(nbId, pagesArr);
-        }
-      },
-
-      setupCanvases() {
-        const container = this.$refs.container;
-        if (!container) return;
-
-        const rect = container.getBoundingClientRect();
-        const dpr = Math.min(window.devicePixelRatio || 1, 2);
-
-        ['bgCanvas', 'staticCanvas', 'activeCanvas'].forEach(name => {
-          const canvas = this.$refs[name];
-          if (canvas) {
-            // Setting width/height resets the context transform
-            canvas.width = rect.width * dpr;
-            canvas.height = rect.height * dpr;
-            canvas.getContext('2d').scale(dpr, dpr);
-          }
-        });
-
-        this.drawBackground();
-        this.redrawStrokes();
-      },
-      
-      drawBackground() {
-        const canvas = this.$refs.bgCanvas;
-        if (!canvas) return;
-
-        const ctx = canvas.getContext('2d');
-        const dpr = Math.min(window.devicePixelRatio || 1, 2);
-        const w = canvas.width / dpr;
-        const h = canvas.height / dpr;
-        const bg = this.currentBackground;
-
-        ctx.fillStyle = '#fafafa';
-        ctx.fillRect(0, 0, w, h);
-
-        if (bg === 'grid') {
-          const gridSize = 20;
-          const s = this.viewScale;
-          const vx = this.viewX;
-          const vy = this.viewY;
-
-          // Sichtbarer Weltbereich
-          const worldLeft = -vx / s;
-          const worldTop = -vy / s;
-          const worldRight = (w - vx) / s;
-          const worldBottom = (h - vy) / s;
-
-          // Kleine Linien
-          ctx.strokeStyle = '#c5d8f0';
-          ctx.lineWidth = 0.5;
-          const startX = Math.floor(worldLeft / gridSize) * gridSize;
-          const startY = Math.floor(worldTop / gridSize) * gridSize;
-          for (let wx = startX; wx <= worldRight; wx += gridSize) {
-            const sx = wx * s + vx;
-            ctx.beginPath(); ctx.moveTo(sx, 0); ctx.lineTo(sx, h); ctx.stroke();
-          }
-          for (let wy = startY; wy <= worldBottom; wy += gridSize) {
-            const sy = wy * s + vy;
-            ctx.beginPath(); ctx.moveTo(0, sy); ctx.lineTo(w, sy); ctx.stroke();
-          }
-
-          // Große Linien (alle 5)
-          const bigGrid = gridSize * 5;
-          ctx.strokeStyle = '#a3c2e8';
-          ctx.lineWidth = 1;
-          const startBX = Math.floor(worldLeft / bigGrid) * bigGrid;
-          const startBY = Math.floor(worldTop / bigGrid) * bigGrid;
-          for (let wx = startBX; wx <= worldRight; wx += bigGrid) {
-            const sx = wx * s + vx;
-            ctx.beginPath(); ctx.moveTo(sx, 0); ctx.lineTo(sx, h); ctx.stroke();
-          }
-          for (let wy = startBY; wy <= worldBottom; wy += bigGrid) {
-            const sy = wy * s + vy;
-            ctx.beginPath(); ctx.moveTo(0, sy); ctx.lineTo(w, sy); ctx.stroke();
-          }
-        } else if (bg === 'lined') {
-          const lineHeight = 28;
-          const marginTop = 60;
-          const s = this.viewScale;
-          const vx = this.viewX;
-          const vy = this.viewY;
-
-          const worldTop = -vy / s;
-          const worldBottom = (h - vy) / s;
-          const worldLeft = -vx / s;
-          const worldRight = (w - vx) / s;
-
-          ctx.strokeStyle = '#c5d8f0';
-          ctx.lineWidth = 1;
-          const startY = Math.floor((worldTop - marginTop) / lineHeight) * lineHeight + marginTop;
-          for (let wy = startY; wy <= worldBottom; wy += lineHeight) {
-            const sy = wy * s + vy;
-            ctx.beginPath(); ctx.moveTo(0, sy); ctx.lineTo(w, sy); ctx.stroke();
-          }
-
-          ctx.strokeStyle = '#ffaaaa';
-          ctx.lineWidth = 1;
-          const marginX = 60 * s + vx;
-          ctx.beginPath(); ctx.moveTo(marginX, 0); ctx.lineTo(marginX, h); ctx.stroke();
-        }
-      },
-      
-      // Bitmap-Cache: Strokes einmal rendern, bei Pan/Zoom nur verschieben
-      _strokeCacheCanvas: null,
-      _cacheViewX: 0,
-      _cacheViewY: 0,
-      _cacheViewScale: 1,
-
-      redrawStrokes() {
-        const canvas = this.$refs.staticCanvas;
-        if (!canvas) return;
-
-        const ctx = canvas.getContext('2d');
-        const dpr = Math.min(window.devicePixelRatio || 1, 2);
-        const w = canvas.width;
-        const h = canvas.height;
-
-        // Cache-Canvas erstellen/aktualisieren
-        if (!this._strokeCacheCanvas || this._strokeCacheCanvas.width !== w || this._strokeCacheCanvas.height !== h) {
-          this._strokeCacheCanvas = document.createElement('canvas');
-          this._strokeCacheCanvas.width = w;
-          this._strokeCacheCanvas.height = h;
-        }
-
-        // Strokes in Cache rendern (mit aktuellem Transform)
-        const cacheCtx = this._strokeCacheCanvas.getContext('2d');
-        cacheCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        cacheCtx.clearRect(0, 0, w / dpr, h / dpr);
-        cacheCtx.save();
-        cacheCtx.translate(this.viewX, this.viewY);
-        cacheCtx.scale(this.viewScale, this.viewScale);
-        this.strokes.forEach(stroke => drawStrokeToCanvas(cacheCtx, stroke));
-        cacheCtx.restore();
-
-        // Transform merken für spätere Pan/Zoom-Deltas
-        this._cacheViewX = this.viewX;
-        this._cacheViewY = this.viewY;
-        this._cacheViewScale = this.viewScale;
-
-        // Auf sichtbares Canvas kopieren
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
-        ctx.clearRect(0, 0, w, h);
-        ctx.drawImage(this._strokeCacheCanvas, 0, 0);
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      },
-
-      // Pan/Zoom: gecachtes Bild verschieben statt Strokes neu rendern
-      compositeStrokes() {
-        const canvas = this.$refs.staticCanvas;
-        if (!canvas || !this._strokeCacheCanvas) {
-          this.redrawStrokes();
-          return;
-        }
-
-        const dpr = Math.min(window.devicePixelRatio || 1, 2);
-        const w = canvas.width;
-        const h = canvas.height;
-        const ctx = canvas.getContext('2d');
-
-        // Delta zwischen Cache-Transform und aktuellem Transform berechnen
-        const scaleRatio = this.viewScale / this._cacheViewScale;
-        const tx = (this.viewX - this._cacheViewX * scaleRatio) * dpr;
-        const ty = (this.viewY - this._cacheViewY * scaleRatio) * dpr;
-
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
-        ctx.clearRect(0, 0, w, h);
-        ctx.translate(tx, ty);
-        ctx.scale(scaleRatio, scaleRatio);
-        ctx.drawImage(this._strokeCacheCanvas, 0, 0);
-
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      },
-      
-      computeStrokeBounds() {
-        const strokes = this.strokes;
-        if (!strokes || strokes.length === 0) return null;
-        // Grobe Bounds aller Nicht-Eraser-Strokes für Offscreen-Canvas-Größe
-        let rMinX = Infinity, rMinY = Infinity, rMaxX = -Infinity, rMaxY = -Infinity;
-        for (const stroke of strokes) {
-          if (!stroke.points || stroke.tool === 'eraser') continue;
-          const halfW = (stroke.size || 2) / 2;
-          for (const p of stroke.points) {
-            if (p.x - halfW < rMinX) rMinX = p.x - halfW;
-            if (p.y - halfW < rMinY) rMinY = p.y - halfW;
-            if (p.x + halfW > rMaxX) rMaxX = p.x + halfW;
-            if (p.y + halfW > rMaxY) rMaxY = p.y + halfW;
-          }
-        }
-        if (!isFinite(rMinX)) return null;
-        // Keine Eraser-Strokes? Schneller Pfad
-        if (!strokes.some(s => s.tool === 'eraser')) {
-          return { minX: rMinX, minY: rMinY, maxX: rMaxX, maxY: rMaxY };
-        }
-        // Pixel-basierte Bounds: Strokes auf Offscreen-Canvas rendern und scannen
-        const margin = 4;
-        const rawW = rMaxX - rMinX + margin * 2;
-        const rawH = rMaxY - rMinY + margin * 2;
-        const maxDim = 800;
-        const ds = Math.max(1, rawW / maxDim, rawH / maxDim);
-        const w = Math.ceil(rawW / ds);
-        const h = Math.ceil(rawH / ds);
-        if (w < 1 || h < 1) return null;
-        const offscreen = document.createElement('canvas');
-        offscreen.width = w;
-        offscreen.height = h;
-        const ctx = offscreen.getContext('2d');
-        ctx.scale(1 / ds, 1 / ds);
-        ctx.translate(-rMinX + margin, -rMinY + margin);
-        strokes.forEach(stroke => drawStrokeToCanvas(ctx, stroke));
-        const imgData = ctx.getImageData(0, 0, w, h).data;
-        let pMinX = w, pMinY = h, pMaxX = 0, pMaxY = 0;
-        for (let y = 0; y < h; y++) {
-          for (let x = 0; x < w; x++) {
-            if (imgData[(y * w + x) * 4 + 3] > 0) {
-              if (x < pMinX) pMinX = x;
-              if (x > pMaxX) pMaxX = x;
-              if (y < pMinY) pMinY = y;
-              if (y > pMaxY) pMaxY = y;
-            }
-          }
-        }
-        if (pMinX > pMaxX) return null;
-        return {
-          minX: rMinX - margin + pMinX * ds,
-          minY: rMinY - margin + pMinY * ds,
-          maxX: rMinX - margin + (pMaxX + 1) * ds,
-          maxY: rMinY - margin + (pMaxY + 1) * ds
-        };
-      },
-
-      computeFitView() {
-        const container = this.$refs.container;
-        if (!container) return { scale: 1, x: 0, y: 0 };
-        const cRect = container.getBoundingClientRect();
-        const cw = cRect.width;
-        const ch = cRect.height;
-        const bounds = this.computeStrokeBounds();
-        if (!bounds) {
-          // No strokes: 1:1, no offset
-          return { scale: 1, x: 0, y: 0 };
-        }
-        const pad = 40;
-        const bw = bounds.maxX - bounds.minX + pad * 2;
-        const bh = bounds.maxY - bounds.minY + pad * 2;
-        const scale = Math.min(cw / bw, ch / bh, 1);
-        const cx = bounds.minX - pad;
-        const cy = bounds.minY - pad;
-        const x = (cw - bw * scale) / 2 - cx * scale;
-        const y = (ch - bh * scale) / 2 - cy * scale;
-        return { scale, x, y };
-      },
-
-      fitToContent() {
-        const { scale, x, y } = this.computeFitView();
-        this.viewScale = scale;
-        this.viewX = x;
-        this.viewY = y;
-        this.fitScale = scale;
-        this.fitX = x;
-        this.fitY = y;
-        this.drawBackground();
-        this.redrawStrokes();
-      },
-
-      updateFitReference() {
-        const { scale, x, y } = this.computeFitView();
-        this.fitScale = scale;
-        this.fitX = x;
-        this.fitY = y;
-      },
-
-      setBackground(bg) {
-        if (!this.currentPage) return;
-        this.currentPage.background = bg;
-        this.drawBackground();
-        // Page-Metadaten in rootDoc aktualisieren
-        if (rootDoc) {
-          const pageIndex = rootDoc.getMap('pageIndex');
-          const pagesArr = pageIndex.get(String(this.currentNotebookId));
-          if (pagesArr) {
-            const idx = this.currentPageIndex;
-            if (idx >= 0 && idx < pagesArr.length) {
-              const old = pagesArr.get(idx);
-              pagesArr.delete(idx, 1);
-              pagesArr.insert(idx, [{ ...old, background: bg }]);
-            }
-          }
-        }
-      },
-
-      // Page navigation
-      nextPage() {
-        if (!this.currentNotebook) return;
-
-        const nbId = String(this.currentNotebookId);
-        const curIdx = this.currentPages[nbId] ?? 0;
-        const nextIndex = curIdx + 1;
-        const isNewPage = nextIndex >= this.currentNotebook.pages.length;
-
-        if (isNewPage) {
-          const pageId = String(Date.now());
-          const newPage = {
-            id: pageId,
-            strokes: [],
-            background: this.currentBackground,
-            order: nextIndex
-          };
-          this.currentNotebook.pages.push(newPage);
-
-          // Page in rootDoc registrieren
-          if (rootDoc) {
-            const pageIndex = rootDoc.getMap('pageIndex');
-            let pagesArr = pageIndex.get(nbId);
-            if (!pagesArr) { pagesArr = new Y.Array(); pageIndex.set(nbId, pagesArr); }
-            pagesArr.push([{ id: pageId, background: newPage.background, order: nextIndex }]);
-          }
-        }
-        this.currentPages[nbId] = nextIndex;
-        this.drawBackground();
-        loadCurrentPageStrokes();
-        this.fitToContent();
-        this._saveLocalSettings();
-      },
-
-      prevPage() {
-        if (!this.canGoPrev) return;
-
-        const nbId = this.currentNotebookId;
-        this.currentPages[nbId] = (this.currentPages[nbId] ?? 0) - 1;
-        this.drawBackground();
-        loadCurrentPageStrokes();
-        this.fitToContent();
-        this._saveLocalSettings();
-      },
-
-      // Notebook management
-      selectNotebook(id) {
-        this.currentNotebookId = id;
-        if (!(id in this.currentPages)) this.currentPages[id] = 0;
-        this.showNotebookMenu = false;
-        // Neues Notebook-Doc öffnen
-        openNotebookDoc(id);
-        if (nbPersistence) {
-          nbPersistence.once('synced', () => {
-            loadCurrentPageStrokes();
-            this.fitToContent();
-          });
-          setTimeout(() => { loadCurrentPageStrokes(); this.fitToContent(); }, 2000);
-        }
-        this.drawBackground();
-        this._saveLocalSettings();
-      },
-
-      createNotebook() {
-        const nbId = String(Date.now());
-        const pageId = String(Date.now() + 1);
-        const newNb = {
-          id: nbId,
-          name: 'Neues Notizbuch',
-          pages: [{ id: pageId, strokes: [], background: 'grid', order: 0 }]
-        };
-        this.notebooks.push(newNb);
-        this.currentNotebookId = nbId;
-        this.currentPages[nbId] = 0;
-        this.showNotebookMenu = false;
-
-        // In rootDoc registrieren
-        if (rootDoc) {
-          rootDoc.getMap('notebooks').set(nbId, { name: newNb.name });
-          const pageIndex = rootDoc.getMap('pageIndex');
-          const pagesArr = new Y.Array();
-          pagesArr.push([{ id: pageId, background: 'grid', order: 0 }]);
-          pageIndex.set(nbId, pagesArr);
-        }
-
-        // Notebook-Doc öffnen
-        openNotebookDoc(nbId);
-        this.drawBackground();
-        this.redrawStrokes();
-        this._saveLocalSettings();
-      },
-
-      createTestNotebook() {
-        const nbId = String(Date.now());
-        const pageId = String(Date.now() + 1);
-        const strokes = [];
-        for (let i = 0; i < 1000; i++) {
-          const y = 20 + (i % 50) * 30;
-          const x = 20 + Math.floor(i / 50) * 40;
-          const points = [];
-          for (let j = 0; j < 8; j++) {
-            points.push({ x: x + j * 4 + Math.random() * 2, y: y + Math.sin(j) * 10 + Math.random() * 2 });
-          }
-          strokes.push({ id: String(Date.now() + i + 2), points: roundPoints(points), color: '#000000', size: 2, tool: 'pen' });
-        }
-        const newNb = { id: nbId, name: `Testbuch (${strokes.length} Strokes)`, pages: [{ id: pageId, strokes, background: 'grid', order: 0 }] };
-        this.notebooks.push(newNb);
-        this.currentNotebookId = nbId;
-        this.currentPages[nbId] = 0;
-        this.showNotebookMenu = false;
-
-        // In rootDoc registrieren
-        if (rootDoc) {
-          rootDoc.getMap('notebooks').set(nbId, { name: newNb.name });
-          const pageIndex = rootDoc.getMap('pageIndex');
-          const pagesArr = new Y.Array();
-          pagesArr.push([{ id: pageId, background: 'grid', order: 0 }]);
-          pageIndex.set(nbId, pagesArr);
-        }
-
-        // Notebook-Doc öffnen + Strokes einfügen
-        openNotebookDoc(nbId);
-        const yArray = getPageStrokes(pageId);
-        if (yArray) {
-          yArray.push(strokes.map(s => ({ id: s.id, points: s.points, color: s.color, size: s.size, tool: s.tool })));
-        }
-        this.drawBackground(); this.redrawStrokes(); this.fitToContent();
-        this._saveLocalSettings();
-      },
-
-      deleteNotebook(id) {
-        if (this.notebooks.length <= 1) return;
-
-        // Aus rootDoc entfernen
-        if (rootDoc) {
-          rootDoc.getMap('notebooks').delete(String(id));
-          rootDoc.getMap('pageIndex').delete(String(id));
-        }
-
-        this.notebooks = this.notebooks.filter(nb => nb.id !== id);
-        delete this.currentPages[id];
-        if (this.currentNotebookId === id) {
-          this.currentNotebookId = this.notebooks[0].id;
-          if (!(this.currentNotebookId in this.currentPages)) {
-            this.currentPages[this.currentNotebookId] = 0;
-          }
-          openNotebookDoc(this.currentNotebookId);
-          this.drawBackground();
-          loadCurrentPageStrokes();
-          this.fitToContent();
-        }
-        this._saveLocalSettings();
-      },
-      
-      toggleIroPicker() {
-        this.showIroPicker = !this.showIroPicker;
-        this.showColorMenu = false;
-        if (this.showIroPicker) {
-          setTimeout(() => {
-            const container = document.getElementById('iro-picker-container');
-            if (!container) return;
-            container.innerHTML = '';
-            const picker = new iro.ColorPicker(container, {
-              width: 200,
-              color: this.color,
-              borderWidth: 1,
-              borderColor: 'rgba(255,255,255,0.15)',
-              layout: [
-                { component: iro.ui.Wheel },
-                { component: iro.ui.Slider, options: { sliderType: 'value' } }
-              ]
-            });
-            picker.on('color:change', (c) => {
-              this.color = c.hexString;
-            });
-          }, 0);
-        }
-      },
-
-      setColor(c) {
-        this.color = c;
-        this._saveLocalSettings();
-      },
-
-      setPenSize(idx) {
-        this.penSizeIndex = idx;
-        this._saveLocalSettings();
-      },
-
-      addCustomColor(hex) {
-        hex = hex.toLowerCase();
-        // Nicht hinzufügen wenn in Standard-Palette oder bereits in Custom
-        if (this.colors.includes(hex) || this.customColors.includes(hex)) {
-          this._saveLocalSettings();
-          return;
-        }
-        this.customColors.push(hex);
-        // Max 10 custom colors, älteste entfernen
-        if (this.customColors.length > 10) this.customColors.shift();
-        this._saveLocalSettings();
-      },
-
-      async openShare() {
-        // Bei localhost die LAN-IP vom Server abfragen, damit andere Geräte den Link öffnen können
-        let origin = location.origin;
-        if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
-          try {
-            const resp = await fetch('/api/lan-ip');
-            const { ip } = await resp.json();
-            if (ip) origin = `${location.protocol}//${ip}:${location.port}`;
-          } catch (e) { /* Fallback: localhost */ }
-        }
-        this.shareUrl = `${origin}${location.pathname}${location.hash}`;
-        this.copySuccess = false;
-        this.showShareModal = true;
-        setTimeout(() => {
-          const container = document.getElementById('share-qr-container');
-          if (container) {
-            container.innerHTML = '';
-            new QRCode(container, { text: this.shareUrl, width: 200, height: 200 });
-          }
-        }, 50);
-      },
-
-      closeShare() {
-        this.showShareModal = false;
-      },
-
-      closeConnect() {
-        this.stopQRScanner();
-        this.showConnectModal = false;
-        this.connectKeyInput = '';
-        this.connectError = '';
-      },
-
-      async startQRScanner() {
-        this.connectError = '';
-        this.scannerActive = true;
-        try {
-          // jsQR lazy laden
-          if (!window.jsQR) {
-            const script = document.createElement('script');
-            script.src = './libs/jsqr.js';
-            await new Promise((resolve, reject) => {
-              script.onload = resolve;
-              script.onerror = reject;
-              document.head.appendChild(script);
-            });
-          }
-          await new Promise(r => setTimeout(r, 50));
-          const video = document.getElementById('qr-video');
-          const stream = await navigator.mediaDevices.getUserMedia({
-            video: { facingMode: 'environment' }
-          });
-          video.srcObject = stream;
-          video.setAttribute('playsinline', 'true');
-          await video.play();
-
-          const canvas = document.createElement('canvas');
-          const ctx = canvas.getContext('2d', { willReadFrequently: true });
-          const self = this;
-
-          function tick() {
-            if (!self.scannerActive || !video.srcObject) return;
-            if (video.readyState === video.HAVE_ENOUGH_DATA) {
-              canvas.width = video.videoWidth;
-              canvas.height = video.videoHeight;
-              ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-              const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-              const code = window.jsQR(imageData.data, imageData.width, imageData.height, {
-                inversionAttempts: 'dontInvert'
-              });
-              if (code && code.data) {
-                self.connectKeyInput = code.data;
-                self.stopQRScanner();
-                self.applyConnectKey();
-                return;
-              }
-            }
-            requestAnimationFrame(tick);
-          }
-          requestAnimationFrame(tick);
-        } catch (err) {
-          console.error('Kamera-Fehler:', err);
-          this.connectError = 'Kamera konnte nicht geöffnet werden.';
-          this.scannerActive = false;
-        }
-      },
-
-      stopQRScanner() {
-        this.scannerActive = false;
-        const video = document.getElementById('qr-video');
-        if (video && video.srcObject) {
-          video.srcObject.getTracks().forEach(t => t.stop());
-          video.srcObject = null;
-        }
-      },
-
-      applyConnectKey() {
-        let input = this.connectKeyInput.trim();
-        if (!input) return;
-        // URL → Hash extrahieren
-        if (input.includes('#')) {
-          input = input.split('#')[1];
-        }
-        if (!input || input.length < 8) {
-          this.connectError = 'Ungültiger Schlüssel. Mindestens 8 Zeichen erwartet.';
-          return;
-        }
-        // Neuen Key übernehmen und App neu laden
-        localStorage.setItem('lastRoomKey', input);
-        window.location.hash = input;
-        window.location.reload();
-      },
-
-      async copyShareUrl() {
-        await navigator.clipboard.writeText(this.shareUrl);
-        this.copySuccess = true;
-        setTimeout(() => { this.copySuccess = false; }, 2500);
-      },
-
-      startRename() {
-        this.newName = this.currentNotebook?.name || '';
-        this.editingName = true;
-      },
-      
-      renameNotebook() {
-        if (!this.newName.trim() || !this.currentNotebook) return;
-        const name = this.newName.trim();
-        const nbId = String(this.currentNotebookId);
-        this.currentNotebook.name = name;
-        this.editingName = false;
-        if (rootDoc) rootDoc.getMap('notebooks').set(nbId, { name });
-      },
-
-      undo() {
-        if (!undoManager || !this.currentPage || this.currentPage.strokes.length === 0) return;
-        undoManager.undo();
-        // In-Memory-Model aktualisieren
-        if (currentStrokeArray) {
-          this.currentPage.strokes = readStrokesFromYArray(currentStrokeArray);
-        }
-        this.redrawStrokes();
-      },
-
-      clearPage() {
-        if (!this.currentPage || !currentStrokeArray) return;
-        if (currentStrokeArray.length > 0) {
-          currentStrokeArray.delete(0, currentStrokeArray.length);
-        }
-        this.currentPage.strokes = [];
-        this.redrawStrokes();
-      },
-      
-      async clearCache() {
-        localStorage.clear();
-        const dbs = await indexedDB.databases();
-        for (const d of dbs) { if (d.name) indexedDB.deleteDatabase(d.name); }
-        const cacheNames = await caches.keys();
-        for (const name of cacheNames) await caches.delete(name);
-        const regs = await navigator.serviceWorker.getRegistrations();
-        for (const reg of regs) await reg.unregister();
-        if (navigator.storage?.getDirectory) {
-          try {
-            const root = await navigator.storage.getDirectory();
-            for await (const [name] of root.entries()) {
-              await root.removeEntry(name, { recursive: true });
-            }
-          } catch(e) { console.warn('OPFS clear failed:', e); }
-        }
-        window.location.href = window.location.pathname + window.location.hash;
-        window.location.reload();
-      },
-
-      // Auto-save via GenosDB (debounced – nur aktuelles Notebook)
-      // Graph-Nodes werden sofort via db.put() gespeichert — kein Debounce nötig
-      scheduleSave(immediate) {
-        this._saveLocalSettings();
-      },
-      
-      // Drawing with Palm Rejection
-      getPos(e) {
-        const container = this.$refs.container;
-        const rect = container.getBoundingClientRect();
-        // Screen → World: Offset abziehen, durch Scale teilen
-        return {
-          x: Math.round(((e.clientX - rect.left - this.viewX) / this.viewScale) * 10) / 10,
-          y: Math.round(((e.clientY - rect.top - this.viewY) / this.viewScale) * 10) / 10
-        };
-      },
-      
-      isPalmOrFinger(e) {
-        // Pen/Stylus: merken, persistieren und akzeptieren
-        if (e.pointerType === 'pen') {
-          if (!this.penDetected) {
-            this.penDetected = true;
-            this._saveLocalSettings();
-          }
-          this.penLastSeen = Date.now();
-          return false;
-        }
-
-        // Mouse wird akzeptiert
-        if (e.pointerType === 'mouse') return false;
-
-        // Touch: Wenn Stiftmodus aktiv, alle Touches blockieren
-        if (e.pointerType === 'touch' && this.penDetected) {
-          return true;
-        }
-
-        return false;
-      },
-      
-      startDrawing(e) {
-        e.preventDefault();
-
-        // Während pageLoading: Zeichnen blockieren (Sync läuft, Strokes würden überschrieben)
-        if (this.pageLoading) return;
-
-        // Zoom-Move-Modus (Schloss offen): Touch → Panning/Pinch, Zeichnen komplett gesperrt
-        if (this.hasTouchscreen && !this.zoomLocked) {
-          if (e.pointerType === 'touch') {
-            pinchState.touches[e.pointerId] = { x: e.clientX, y: e.clientY };
-            const touchIds = Object.keys(pinchState.touches);
-            if (touchIds.length >= 2) {
-              const t1 = pinchState.touches[touchIds[0]];
-              const t2 = pinchState.touches[touchIds[1]];
-              pinchState.active = true;
-              pinchState.startScale = this.viewScale;
-              pinchState.startViewX = this.viewX;
-              pinchState.startViewY = this.viewY;
-              pinchState.startMidX = (t1.x + t2.x) / 2;
-              pinchState.startMidY = (t1.y + t2.y) / 2;
-              pinchState.startDist = Math.hypot(t2.x - t1.x, t2.y - t1.y) || 1;
-              if (this.isDrawing) {
-                this.isDrawing = false;
-                this.activePointerId = null;
-                this.activePointerType = null;
-                this.currentPoints = [];
-                const ac = this.$refs.activeCanvas;
-                if (ac) {
-                  const ctx = ac.getContext('2d');
-                  const dpr = Math.min(window.devicePixelRatio || 1, 2);
-                  ctx.clearRect(0, 0, ac.width / dpr, ac.height / dpr);
-                }
-              }
-            } else {
-              // Einzelner Touch im Zoom-Move-Modus → Panning
-              this.isPanning = true;
-              this.activePointerId = e.pointerId;
-              this.panStartX = e.clientX;
-              this.panStartY = e.clientY;
-              this.panStartViewX = this.viewX;
-              this.panStartViewY = this.viewY;
-            }
-            return; // Im Zoom-Move-Modus: Touch zeichnet nie
-          }
-          // Maus/Pen darf im Zoom-Move-Modus trotzdem zeichnen
-        }
-
-        // Hand-Tool: Panning starten
-        if (this.tool === 'hand') {
-          this.isPanning = true;
-          this.activePointerId = e.pointerId;
-          this.panStartX = e.clientX;
-          this.panStartY = e.clientY;
-          this.panStartViewX = this.viewX;
-          this.panStartViewY = this.viewY;
-          return;
-        }
-
-        // Palm Rejection — blockierte Touches für Swipe-Navigation nutzen
-        if (this.isPalmOrFinger(e)) {
-          if (e.pointerType === 'touch' && !swipeState.active) {
-            swipeState.active = true;
-            swipeState.pointerId = e.pointerId;
-            swipeState.startX = e.clientX;
-            swipeState.startY = e.clientY;
-            swipeState.startTime = Date.now();
-          }
-          return;
-        }
-
-        // Wenn bereits gezeichnet wird, ignoriere neue Pointer
-        if (this.isDrawing) return;
-
-        const pos = this.getPos(e);
-
-        this.isDrawing = true;
-        this.activePointerId = e.pointerId;
-        this.activePointerType = e.pointerType;
-        this.lastPoint = pos;
-        this.currentPoints = [{ x: pos.x, y: pos.y }];
-
-        // Für Radierer: direkt auf staticCanvas zeichnen
-        if (this.tool === 'eraser') {
-          this.drawEraserPoint(pos);
-        }
-      },
-      
-      draw(e) {
-        e.preventDefault();
-
-        // Swipe-Tracking für Seitenwechsel
-        if (swipeState.active && e.pointerId === swipeState.pointerId) {
-          swipeState.currentX = e.clientX;
-          return;
-        }
-
-        // Pen-Timestamp aktualisieren für Palm-Rejection
-        if (e.pointerType === 'pen') this.penLastSeen = Date.now();
-
-        // Pinch-Zoom: laufend aktualisieren (nur im Zoom-Move-Modus)
-        if (this.hasTouchscreen && !this.zoomLocked && e.pointerType === 'touch' && e.pointerId in pinchState.touches) {
-          pinchState.touches[e.pointerId] = { x: e.clientX, y: e.clientY };
-          if (pinchState.active) {
-            const touchIds = Object.keys(pinchState.touches);
-            if (touchIds.length >= 2) {
-              const t1 = pinchState.touches[touchIds[0]];
-              const t2 = pinchState.touches[touchIds[1]];
-              const curDist = Math.hypot(t2.x - t1.x, t2.y - t1.y) || 1;
-              const curMidX = (t1.x + t2.x) / 2;
-              const curMidY = (t1.y + t2.y) / 2;
-              const newScale = Math.min(8, Math.max(0.2, pinchState.startScale * curDist / pinchState.startDist));
-
-              // Canvaspunkt unter Start-Mittelpunkt fixiert halten
-              const cr = this.$refs.container.getBoundingClientRect();
-              const midX0 = pinchState.startMidX - cr.left;
-              const midY0 = pinchState.startMidY - cr.top;
-              const canvasX = (midX0 - pinchState.startViewX) / pinchState.startScale;
-              const canvasY = (midY0 - pinchState.startViewY) / pinchState.startScale;
-              const panDX = curMidX - pinchState.startMidX;
-              const panDY = curMidY - pinchState.startMidY;
-
-              this.viewX = midX0 - canvasX * newScale + panDX;
-              this.viewY = midY0 - canvasY * newScale + panDY;
-              this.viewScale = newScale;
-              this.drawBackground();
-              this.compositeStrokes();
-            }
-            return;
-          }
-        }
-
-        // Hand-Tool: Panning
-        if (this.isPanning && e.pointerId === this.activePointerId) {
-          this.viewX = this.panStartViewX + (e.clientX - this.panStartX);
-          this.viewY = this.panStartViewY + (e.clientY - this.panStartY);
-          this.drawBackground();
-          this.compositeStrokes();
-          return;
-        }
-
-        if (!this.isDrawing) return;
-
-        // Nur akzeptieren wenn es der gleiche Pointer ist
-        if (e.pointerId !== this.activePointerId) return;
-
-        const pos = this.getPos(e);
-        this.currentPoints.push({ x: pos.x, y: pos.y });
-        this.lastPoint = pos;
-
-        if (this.tool === 'eraser') {
-          // Radierer: direkt auf staticCanvas
-          this.drawEraserSegment();
-        } else {
-          // Stift: auf activeCanvas (Preview)
-          this.drawActiveStroke();
-        }
-      },
-      
-      drawEraserPoint(pos) {
-        const canvas = this.$refs.staticCanvas;
-        if (!canvas) return;
-
-        const ctx = canvas.getContext('2d');
-        const size = this.penSizes[this.penSizeIndex].size * 3;
-
-        ctx.save();
-        ctx.translate(this.viewX, this.viewY);
-        ctx.scale(this.viewScale, this.viewScale);
-        ctx.globalCompositeOperation = 'destination-out';
-        ctx.fillStyle = 'rgba(0,0,0,1)';
-        ctx.beginPath();
-        ctx.arc(pos.x, pos.y, size / 2, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.restore();
-      },
-
-      drawEraserSegment() {
-        const canvas = this.$refs.staticCanvas;
-        if (!canvas || this.currentPoints.length < 2) return;
-
-        const ctx = canvas.getContext('2d');
-        const size = this.penSizes[this.penSizeIndex].size * 3;
-        const pts = this.currentPoints;
-        const from = pts[pts.length - 2];
-        const to = pts[pts.length - 1];
-
-        ctx.save();
-        ctx.translate(this.viewX, this.viewY);
-        ctx.scale(this.viewScale, this.viewScale);
-        ctx.globalCompositeOperation = 'destination-out';
-        ctx.fillStyle = 'rgba(0,0,0,1)';
-
-        // Kreis am neuen Punkt
-        ctx.beginPath();
-        ctx.arc(to.x, to.y, size / 2, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Linie zwischen den Punkten
-        ctx.lineWidth = size;
-        ctx.lineCap = 'round';
-        ctx.strokeStyle = 'rgba(0,0,0,1)';
-        ctx.beginPath();
-        ctx.moveTo(from.x, from.y);
-        ctx.lineTo(to.x, to.y);
-        ctx.stroke();
-        ctx.restore();
-      },
-      
-      drawActiveStroke() {
-        const canvas = this.$refs.activeCanvas;
-        if (!canvas || this.currentPoints.length < 2) return;
-
-        const ctx = canvas.getContext('2d');
-        const dpr = Math.min(window.devicePixelRatio || 1, 2);
-        ctx.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr);
-
-        const tempStroke = {
-          points: this.currentPoints,
-          color: this.color,
-          size: this.penSizes[this.penSizeIndex].size,
-          tool: this.tool
-        };
-
-        ctx.save();
-        ctx.translate(this.viewX, this.viewY);
-        ctx.scale(this.viewScale, this.viewScale);
-        drawStrokeToCanvas(ctx, tempStroke);
-        ctx.restore();
-      },
-      
-      stopDrawing(e) {
-        // Swipe-Erkennung: horizontaler Touch-Swipe für Seitenwechsel
-        if (e && swipeState.active && e.pointerId === swipeState.pointerId) {
-          const dx = (swipeState.currentX || e.clientX) - swipeState.startX;
-          const dy = e.clientY - swipeState.startY;
-          const elapsed = Date.now() - swipeState.startTime;
-          swipeState.active = false;
-          swipeState.pointerId = null;
-          // Swipe: mindestens 80px horizontal, überwiegend horizontal, unter 800ms
-          if (Math.abs(dx) > 80 && Math.abs(dx) > Math.abs(dy) * 1.5 && elapsed < 800) {
-            if (dx < 0) {
-              this.nextPage(); // Links swipen → nächste Seite
-            } else if (this.canGoPrev) {
-              this.prevPage(); // Rechts swipen → vorherige Seite
-            }
-          }
-          return;
-        }
-
-        // Pinch-Zoom: Pointer aus Tracking entfernen
-        if (e && e.pointerType === 'touch') {
-          delete pinchState.touches[e.pointerId];
-          if (Object.keys(pinchState.touches).length < 2) {
-            if (pinchState.active) this.redrawStrokes(); // Cache nach Zoom aktualisieren
-            pinchState.active = false;
-          }
-          if (pinchState.active) return; // noch zwei Finger aktiv
-        }
-
-        // Hand-Tool: Panning beenden
-        if (this.isPanning) {
-          this.isPanning = false;
-          this.activePointerId = null;
-          this.redrawStrokes(); // Cache nach Pan aktualisieren
-          return;
-        }
-
-        if (!this.isDrawing) return;
-
-        // Nur stoppen wenn es der aktive Pointer ist
-        if (e && e.pointerId !== this.activePointerId) return;
-
-        this.isDrawing = false;
-        this.activePointerId = null;
-
-        // Stroke wird bei Pointer-Up finalisiert und in Yjs Y.Array eingefügt
-        this.activePointerType = null;
-        
-        if (this.currentPoints.length > 0 && this.currentPage) {
-          const strokeId = String(Date.now());
-          const pageId = String(this.currentPage.id);
-          const isEraser = this.tool === 'eraser';
-          const newStroke = {
-            id: strokeId,
-            points: roundPoints(this.currentPoints),
-            color: isEraser ? '#000000' : this.color,
-            size: this.penSizes[this.penSizeIndex].size,
-            tool: isEraser ? 'eraser' : 'pen'
-          };
-
-          // In-Memory + inkrementell zeichnen (nur neuen Stroke, nicht alles)
-          this.currentPage.strokes.push(newStroke);
-          const sCanvas = this.$refs.staticCanvas;
-          if (sCanvas) {
-            const dpr = Math.min(window.devicePixelRatio || 1, 2);
-            // Auf sichtbares Canvas zeichnen
-            const ctx = sCanvas.getContext('2d');
-            ctx.save();
-            ctx.translate(this.viewX, this.viewY);
-            ctx.scale(this.viewScale, this.viewScale);
-            drawStrokeToCanvas(ctx, newStroke);
-            ctx.restore();
-            // Auch auf Bitmap-Cache zeichnen (für Pan/Zoom)
-            if (this._strokeCacheCanvas) {
-              const cCtx = this._strokeCacheCanvas.getContext('2d');
-              cCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
-              cCtx.save();
-              cCtx.translate(this._cacheViewX, this._cacheViewY);
-              cCtx.scale(this._cacheViewScale, this._cacheViewScale);
-              drawStrokeToCanvas(cCtx, newStroke);
-              cCtx.restore();
-            }
-          }
-
-          // In Yjs Y.Array einfügen (auto-sync + auto-persist)
-          if (currentStrokeArray) {
-            currentStrokeArray.push([{
-              id: newStroke.id, points: newStroke.points.map(p => ({ x: p.x, y: p.y })),
-              color: newStroke.color, size: newStroke.size, tool: newStroke.tool
-            }]);
-          }
-
-          this.updateFitReference();
-          this._saveLocalSettings();
-        }
-
-        // Clear active canvas
-        const canvas = this.$refs.activeCanvas;
-        if (canvas) {
-          const ctx = canvas.getContext('2d');
-          const dpr = Math.min(window.devicePixelRatio || 1, 2);
-          ctx.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr);
-        }
-        
-        this.currentPoints = [];
-        this.lastPoint = null;
-      }
-    }).mount('#app');
-  </script>
-
-  <script>
-    // Service Worker registrieren (PWA / Offline-Support)
-    if ('serviceWorker' in navigator) {
-      window.addEventListener('load', function () {
-        navigator.serviceWorker.register('./sw.js')
-          .then(reg => console.log('[SW] Registriert:', reg.scope))
-          .catch(err => console.warn('[SW] Registrierung fehlgeschlagen:', err));
-      });
-    }
-  </script>
+  <script type="module" src="js/app.js"></script>
 </body>
+
 </html>
