@@ -39,7 +39,7 @@ export function initRelay(roomKey) {
       ws = null;
     }
     const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
-    const wsUrl = isLocal ? `wss://${location.host}` : 'wss://notes.mike.fm-media-staging.at';
+    const wsUrl = isLocal ? `wss://${location.host}` : 'wss://notes.mike.fm-media-staging.at:8080';
     try {
       ws = new WebSocket(wsUrl);
     } catch {

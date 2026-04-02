@@ -2,8 +2,7 @@
  * Notizbuch Relay Server (Plesk / Passenger)
  *
  * WebSocket Relay als Snapshot-Store für Offline-Sync.
- * Kein Static-File-Serving, kein TLS — Plesk/Apache macht beides.
- * Passenger setzt PORT automatisch.
+ * Standalone WebSocket.Server auf eigenem Port (Passenger kann keine WS-Upgrades).
  *
  * Message-Typen:
  *   join        — Room beitreten, sync-Response mit allen Nodes
@@ -12,12 +11,11 @@
  *   node-remove — Node löschen
  */
 
-const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const WebSocket = require('ws');
 
-const PORT = process.env.PORT || 7777;
+const WS_PORT = 8080;
 const DATA_FILE = path.join(__dirname, 'data.json');
 const SAVE_DELAY_MS = 2000;
 const MAX_ROOM_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 Tage
@@ -101,28 +99,9 @@ function broadcastPeerCount(room) {
   }
 }
 
-// ─── HTTP + WebSocket Server ────────────────────────────────────────────────
+// ─── WebSocket Server (Standalone) ──────────────────────────────────────────
 
-const server = http.createServer((req, res) => {
-  // Health-Check
-  if (req.url === '/health') {
-    res.writeHead(200, {
-      'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': '*'
-    });
-    res.end(JSON.stringify({
-      status: 'ok',
-      rooms: rooms.size,
-      clients: [...rooms.values()].reduce((n, r) => n + r.clients.size, 0)
-    }));
-    return;
-  }
-
-  res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('Notizbuch Relay — connect via WebSocket');
-});
-
-const wss = new WebSocket.Server({ server });
+const wss = new WebSocket.Server({ port: WS_PORT });
 
 wss.on('connection', (ws) => {
   let currentRoom = null;
@@ -190,9 +169,7 @@ wss.on('connection', (ws) => {
   });
 });
 
-server.listen(PORT, () => {
-  console.log(`[Relay] Server läuft auf Port ${PORT}`);
-});
+console.log(`[Relay] WebSocket Server läuft auf Port ${WS_PORT}`);
 
 process.on('SIGINT', () => { saveSync(); process.exit(0); });
 process.on('SIGTERM', () => { saveSync(); process.exit(0); });
