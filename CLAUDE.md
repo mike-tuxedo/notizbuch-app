@@ -171,9 +171,11 @@ MasterKey (AES-GCM 256, aus Passphrase via PBKDF2, 600k Iterationen)
 - **fitToContent:** Berechnet Bounding-Box aller Strokes, skaliert (max 1:1), zentriert mit 40px Padding
 - **Aktuell kein inkrementelles Zeichnen** — Full-Redraw nach jedem Stroke (korrekt aber langsam bei >500 Strokes)
 
-## Relay Server (`relay/`)
+## Relay Server
 
-Node.js HTTPS + WSS Server für lokale Entwicklung und persistenten Sync:
+### Lokal (`relay/`)
+
+Node.js HTTPS + WSS Server für lokale Entwicklung:
 
 ```bash
 cd relay && npm install && node server.js
@@ -181,14 +183,12 @@ cd relay && npm install && node server.js
 
 - Serviert statische Files über HTTPS (mkcert-Zertifikat nötig)
 - WebSocket Relay als Snapshot-Store (Graph-Nodes, kein Broadcast)
-- Debug-Dashboard unter `/debug.html` (nur auf `main`)
 - **Daten in `relay/data.json`** — persistiert via debounced JSON-Write + Graceful Shutdown
 - LAN-IP wird automatisch erkannt (nicht hardcoded)
-- Clients pushen einmalig nach Init einen Snapshot an den Relay
 - Message-Typen: `node-put` (speichern/mergen), `node-get` (einzelnen Node abrufen), `node-remove` (löschen) — kein Broadcast an andere Peers
 - **Relay-Server Merge:** `node-put` merged statt überschreibt (`{ ...existing, ...msg.data }`). Verhindert, dass Metadata-Updates bestehende Strokes löschen.
 
-### mkcert Setup (einmalig)
+#### mkcert Setup (einmalig)
 
 ```bash
 mkcert -cert-file cert.pem -key-file key.pem localhost <LAN-IP>
@@ -196,6 +196,24 @@ mkcert -cert-file cert.pem -key-file key.pem localhost <LAN-IP>
 
 LAN-IP ändert sich je nach WLAN — Zertifikat muss bei Netzwerkwechsel neu erstellt werden.
 Für mobile Tests: `rootCA.pem` auf dem Gerät installieren (aus `mkcert -CAROOT`).
+
+### Produktion (`relay-plesk/`)
+
+Standalone WebSocket Relay auf Plesk (`wss://notes.mike.fm-media-staging.at`):
+
+- **Kein HTTP-Server, kein Static-File-Serving** — nur `new WebSocket.Server({ port })`
+- Passenger setzt `PORT` via `process.env.PORT`, Plesk macht TLS-Termination
+- Gleiche Relay-Logik wie Dev-Server (rooms, node-put/get/remove, JSON-Persistenz)
+- 30 Tage Room-TTL
+- Client-URL in `js/relay.js`: `wss://notes.mike.fm-media-staging.at` (ohne Port)
+
+#### Plesk WebSocket Setup
+
+1. Node.js-App anlegen: Application Root = `relay-plesk`, Startup File = `server.js`
+2. `npm install` über Plesk oder SSH
+3. **Wichtig: nginx Proxy deaktivieren** — sonst fängt nginx den WebSocket-Upgrade ab und gibt 200 statt 101. Siehe: https://support.plesk.com/hc/en-us/articles/12377246437399
+4. `WebSocket.Server({ port })` statt `WebSocket.Server({ server })` — Passenger kann keine WS-Upgrades auf dem HTTP-Server durchreichen
+5. Client verbindet sich ohne Portangabe (`wss://domain/`), Plesk routet das zum Node-Prozess
 
 ## GenosDB — Genutzte Features
 
@@ -277,6 +295,14 @@ Für mobile Tests: `rootCA.pem` auf dem Gerät installieren (aus `mkcert -CAROOT
 - **Relay nutzt bestehenden Server unverändert:** `node-put` mit Base64-String (statt Object) löst keinen Object-Merge auf dem Server aus → Ciphertext wird 1:1 gespeichert. Kein neues Server-Protokoll nötig.
 - **Mobile WebSocket-Verbindungen sterben im Hintergrund:** Browser schließen WebSockets aggressiv wenn die App nicht aktiv ist. `relayPut()` in `_flushSave()` geht dann ins Leere. Fix: `handleActivityChange()` reconnectet Relay bei Tab-Fokus und pusht alle Pages erneut.
 - **Relay-Merge via applyFullSync():** Statt eigene Merge-Logik zu schreiben, werden Relay-Daten in ein Full-Sync-Payload-Format umgewandelt und durch die bestehende `applyFullSync()`-Funktion gemerged. Weniger Code, gleiche Merge-Semantik.
+
+### Erkenntnisse Session 2026-04-02 (Plesk Relay + Cleanup)
+
+- **Plesk/Passenger kann keine WebSocket-Upgrades auf `http.createServer()`:** `WebSocket.Server({ server })` funktioniert nicht — Passenger fängt den HTTP-Request ab und gibt 200 zurück statt den Upgrade durchzuleiten. Fix: `WebSocket.Server({ port })` (standalone, wie die funktionierende Listapp).
+- **nginx Proxy in Plesk deaktivieren für WebSockets:** Mit aktiviertem nginx Proxy leitet Plesk den WebSocket-Upgrade nicht korrekt weiter. Muss in den Domain-Einstellungen deaktiviert werden. Ref: https://support.plesk.com/hc/en-us/articles/12377246437399
+- **Client verbindet sich ohne Portangabe:** `wss://domain/` (Port 443) — Plesk routet das intern zum Node-Prozess. Kein expliziter Port im Client nötig.
+- **Öffentliche Nostr-Relays sind unzuverlässig:** `relay.nostr.band` war komplett down. Relay-Liste muss regelmäßig geprüft werden. Trystero braucht nur einen funktionierenden Relay für Signaling.
+- **Firefox `network.websocket.enabled`:** Kann durch Updates/Profil-Reset auf `false` gesetzt werden — alle WebSocket-Verbindungen schlagen fehl (Nostr-Signaling + Relay).
 
 ### Service Worker
 - `sw.js` nutzt **Network-first für HTML** (Änderungen sofort sichtbar) und Stale-while-revalidate für Libs
