@@ -5,7 +5,7 @@
 import { initStorage, savePageData, loadPageData, deletePageData, deleteNotebookData, saveMeta, loadMeta, clearAll } from './storage.js';
 import { roundPoints, drawStrokeToCanvas, drawBackground } from './canvas.js';
 import { initP2P, send as p2pSend, leaveRoom, isConnected, hasPeers } from './p2p-sync.js';
-import { generateKey, exportKey, importKey, encrypt, decrypt, deriveKeyFromPassphrase } from './encryption.js';
+import { generateKey, exportKey, importKey, encrypt, decrypt } from './encryption.js';
 import { exportAppBundle, importAppBundle } from './share.js';
 import { initRelay, putBlob as relayPut, deleteBlob as relayDelete, isRelayConnected } from './relay.js';
 
@@ -124,7 +124,6 @@ function totalPages() {
 // ─── IndexedDB Settings (device-local, not synced) ──────────────────────────
 
 let settingsDB = null;
-let roomKey = '';
 
 /** @returns {Promise<IDBDatabase>} */
 function openSettingsDB() {
@@ -868,79 +867,191 @@ function startRename() {
 /** @type {Uint8Array|null} Raw MasterKey bytes (32 bytes) */
 let masterKeyRaw = null;
 
-/** PBKDF2-Salt — fest pro App (kein Geheimnis, muss nur konsistent sein) */
-const MASTER_SALT = new Uint8Array([78,111,116,105,122,98,117,99,104,45,118,50,45,115,97,108,116]);
-
 /**
- * MasterKey aus Passphrase ableiten.
- * @param {string} passphrase
- * @returns {Promise<{keyHash: string, keyRaw: Uint8Array}>}
+ * SHA-256 Hash der ersten 16 Bytes als Hex-String.
+ * @param {Uint8Array} raw
+ * @returns {Promise<string>}
  */
-async function deriveMasterKey(passphrase) {
-  const key = await deriveKeyFromPassphrase(passphrase, MASTER_SALT);
-  const raw = await exportKey(key);
-  // Hash für Room-ID (erste 16 bytes als Hex)
+async function computeKeyHash(raw) {
   const hashBytes = new Uint8Array(await crypto.subtle.digest('SHA-256', raw));
-  const keyHash = Array.from(hashBytes.slice(0, 16)).map(b => b.toString(16).padStart(2, '0')).join('');
-  return { keyHash, keyRaw: new Uint8Array(raw) };
+  return Array.from(hashBytes.slice(0, 16)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
 /**
- * Passphrase-Dialog anzeigen und MasterKey ableiten.
- * Gibt den Key-Hash zurück (= Room-ID).
- * @returns {Promise<string>} keyHash
+ * MasterKey in localStorage + State speichern.
+ * @param {Uint8Array} raw
+ * @param {string} hash
  */
-function showPassphraseDialog() {
+function saveMasterKeyToStorage(raw, hash) {
+  masterKeyRaw = raw;
+  state.masterKeyHash = hash;
+  localStorage.setItem('notizbuch:masterKeyHash', hash);
+  localStorage.setItem('notizbuch:masterKeyRaw', JSON.stringify(Array.from(raw)));
+}
+
+/**
+ * MasterKey-Hex als Text-Datei herunterladen.
+ * @param {Uint8Array} raw
+ */
+function downloadKeyFile(raw) {
+  const hex = Array.from(raw).map(b => b.toString(16).padStart(2, '0')).join('');
+  const blob = new Blob([hex], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = Object.assign(document.createElement('a'), { href: url, download: 'notizbuch-key.txt' });
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+/**
+ * Hex-String zu Uint8Array konvertieren.
+ * @param {string} hex
+ * @returns {Uint8Array}
+ */
+function hexToBytes(hex) {
+  hex = hex.replace(/\s/g, '');
+  if (hex.length !== 64) throw new Error('Key muss 64 Hex-Zeichen (32 Bytes) lang sein');
+  if (!/^[0-9a-fA-F]+$/.test(hex)) throw new Error('Ungültiges Hex-Format');
+  const bytes = new Uint8Array(32);
+  for (let i = 0; i < 32; i++) bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
+  return bytes;
+}
+
+/**
+ * Erst-Start-Dialog: Neuen Key generieren oder bestehenden importieren.
+ * @returns {Promise<string>} masterKeyHash
+ */
+function showFirstStartDialog() {
   return new Promise(resolve => {
-    const overlay = document.getElementById('passphrase-modal');
-    const input = document.getElementById('passphrase-input');
-    const btn = document.getElementById('passphrase-ok');
-    const error = document.getElementById('passphrase-error');
-    if (!overlay || !input || !btn) {
-      // Fallback: prompt
-      const p = prompt('Passphrase eingeben (leer = neues Notizbuch):') || '';
-      resolve(p);
+    const overlay = document.getElementById('firststart-modal');
+    if (!overlay) {
+      // Fallback: direkt neuen Key generieren
+      generateAndSaveKey().then(resolve);
       return;
     }
     overlay.classList.remove('hidden');
-    input.value = '';
-    input.focus();
-    error.textContent = '';
 
-    const submit = async () => {
-      const passphrase = input.value.trim();
-      if (!passphrase) {
-        error.textContent = 'Bitte Passphrase eingeben';
-        return;
-      }
-      btn.disabled = true;
-      btn.textContent = 'Ableiten...';
-      try {
-        const { keyHash, keyRaw } = await deriveMasterKey(passphrase);
-        masterKeyRaw = keyRaw;
-        state.masterKeyHash = keyHash;
-        localStorage.setItem('notizbuch:masterKeyHash', keyHash);
-        localStorage.setItem('notizbuch:masterKeyRaw', JSON.stringify(Array.from(keyRaw)));
-        overlay.classList.add('hidden');
-        resolve(keyHash);
-      } catch (e) {
-        error.textContent = 'Fehler: ' + e.message;
-        btn.disabled = false;
-        btn.textContent = 'Verbinden';
-      }
+    document.getElementById('btn-new-start').onclick = async () => {
+      overlay.classList.add('hidden');
+      const hash = await generateAndSaveKey();
+      showKeyDisplayDialog(masterKeyRaw).then(() => resolve(hash));
     };
 
-    btn.onclick = submit;
-    input.onkeydown = (e) => { if (e.key === 'Enter') submit(); };
+    document.getElementById('btn-import-key').onclick = () => {
+      overlay.classList.add('hidden');
+      showKeyImportDialog().then(resolve);
+    };
   });
 }
 
 /**
- * Gespeicherten MasterKey laden oder Passphrase-Dialog zeigen.
- * @returns {Promise<string>} roomKey (= masterKeyHash)
+ * Neuen zufälligen MasterKey generieren und speichern.
+ * @returns {Promise<string>} masterKeyHash
+ */
+async function generateAndSaveKey() {
+  const key = await generateKey();
+  const raw = new Uint8Array(await exportKey(key));
+  const hash = await computeKeyHash(raw);
+  saveMasterKeyToStorage(raw, hash);
+  return hash;
+}
+
+/**
+ * Key-Anzeige-Dialog: Key anzeigen, Download anbieten, Bestätigung abwarten.
+ * @param {Uint8Array} raw
+ * @returns {Promise<void>}
+ */
+function showKeyDisplayDialog(raw) {
+  return new Promise(resolve => {
+    const overlay = document.getElementById('keydisplay-modal');
+    if (!overlay) { resolve(); return; }
+    overlay.classList.remove('hidden');
+
+    const hex = Array.from(raw).map(b => b.toString(16).padStart(2, '0')).join('');
+    const keyEl = document.getElementById('keydisplay-key');
+    if (keyEl) keyEl.textContent = hex;
+
+    document.getElementById('btn-download-key').onclick = () => downloadKeyFile(raw);
+
+    document.getElementById('btn-copy-key').onclick = () => {
+      navigator.clipboard.writeText(hex).then(() => {
+        const btn = document.getElementById('btn-copy-key');
+        if (btn) { btn.textContent = 'Kopiert!'; setTimeout(() => { btn.textContent = 'Kopieren'; }, 2000); }
+      });
+    };
+
+    document.getElementById('btn-key-confirmed').onclick = () => {
+      overlay.classList.add('hidden');
+      resolve();
+    };
+  });
+}
+
+/**
+ * Key-Import-Dialog: Hex-Eingabe oder Datei-Upload.
+ * @returns {Promise<string>} masterKeyHash
+ */
+function showKeyImportDialog() {
+  return new Promise(resolve => {
+    const overlay = document.getElementById('keyimport-modal');
+    if (!overlay) {
+      // Fallback: prompt
+      const hex = prompt('MasterKey (64 Hex-Zeichen) eingeben:');
+      if (hex) {
+        importKeyFromHex(hex).then(resolve).catch(() => generateAndSaveKey().then(resolve));
+      } else {
+        generateAndSaveKey().then(resolve);
+      }
+      return;
+    }
+    overlay.classList.remove('hidden');
+    const input = document.getElementById('keyimport-input');
+    const fileInput = document.getElementById('keyimport-file');
+    const btn = document.getElementById('keyimport-ok');
+    const error = document.getElementById('keyimport-error');
+    if (input) input.value = '';
+    if (error) error.textContent = '';
+
+    const submit = async (hex) => {
+      try {
+        const hash = await importKeyFromHex(hex);
+        overlay.classList.add('hidden');
+        resolve(hash);
+      } catch (e) {
+        if (error) error.textContent = e.message;
+      }
+    };
+
+    if (btn) btn.onclick = () => submit(input?.value || '');
+    if (input) input.onkeydown = (e) => { if (e.key === 'Enter') submit(input.value); };
+
+    if (fileInput) fileInput.onchange = async () => {
+      const file = fileInput.files[0];
+      if (!file) return;
+      const text = (await file.text()).trim();
+      if (input) input.value = text;
+      submit(text);
+    };
+  });
+}
+
+/**
+ * MasterKey aus Hex-String importieren und speichern.
+ * @param {string} hex
+ * @returns {Promise<string>} masterKeyHash
+ */
+async function importKeyFromHex(hex) {
+  const raw = hexToBytes(hex.trim());
+  const hash = await computeKeyHash(raw);
+  saveMasterKeyToStorage(raw, hash);
+  return hash;
+}
+
+/**
+ * Gespeicherten MasterKey laden, URL-Hash prüfen, oder Dialog zeigen.
+ * @returns {Promise<string>} masterKeyHash
  */
 async function initMasterKey() {
-  // Gespeicherten Key prüfen
+  // 1. Gespeicherten Key prüfen
   const savedHash = localStorage.getItem('notizbuch:masterKeyHash');
   const savedRaw = localStorage.getItem('notizbuch:masterKeyRaw');
   if (savedHash && savedRaw) {
@@ -950,8 +1061,16 @@ async function initMasterKey() {
       return savedHash;
     } catch {}
   }
-  // Kein gespeicherter Key → Dialog
-  return showPassphraseDialog();
+
+  // 2. URL-Hash prüfen (MasterKey-Hash von anderem Gerät)
+  const hash = location.hash.slice(1);
+  if (hash && !hash.startsWith('nb') && hash.length === 32) {
+    // Hash ist ein masterKeyHash — Key-Import nötig
+    return showKeyImportDialog();
+  }
+
+  // 3. Kein gespeicherter Key, kein URL-Hash → Erst-Start
+  return showFirstStartDialog();
 }
 
 // ─── NotebookKey Management ─────────────────────────────────────────────────
@@ -1144,7 +1263,7 @@ async function applyFullSync(payload) {
 
 /** P2P-Room beitreten und alle Callbacks verdrahten. */
 async function startP2P() {
-  await initP2P(roomKey, {
+  await initP2P(state.masterKeyHash, {
     onStroke({ notebookId, pageId, stroke }, peerId) {
       const nb = state.notebooks.find(n => n.id === notebookId);
       if (!nb) return;
@@ -1508,7 +1627,7 @@ async function handleInvite(invite) {
   await selectNotebook(invite.notebookId);
 
   // URL-Fragment bereinigen (MasterKey-Hash setzen)
-  history.replaceState(null, '', location.pathname + '#' + roomKey);
+  history.replaceState(null, '', location.pathname + '#' + state.masterKeyHash);
   console.log('[Share] Invite verarbeitet:', invite.name, invite.notebookId);
 }
 
@@ -1547,12 +1666,9 @@ async function importApp() {
       const bytes = new Uint8Array(await file.arrayBuffer());
       const { masterKey, notebookKeyMap } = await importAppBundle(bytes, passphrase);
       // MasterKey installieren
-      const rawMaster = await exportKey(masterKey);
-      masterKeyRaw = rawMaster;
-      const hashBytes = new Uint8Array(await crypto.subtle.digest('SHA-256', rawMaster));
-      state.masterKeyHash = Array.from(hashBytes.slice(0, 16)).map(b => b.toString(16).padStart(2, '0')).join('');
-      localStorage.setItem('notizbuch:masterKeyHash', state.masterKeyHash);
-      localStorage.setItem('notizbuch:masterKeyRaw', JSON.stringify(Array.from(rawMaster)));
+      const rawMaster = new Uint8Array(await exportKey(masterKey));
+      const hash = await computeKeyHash(rawMaster);
+      saveMasterKeyToStorage(rawMaster, hash);
       // NotebookKeys installieren
       for (const [id, key] of Object.entries(notebookKeyMap)) {
         state.notebookKeys[id] = key;
@@ -1587,23 +1703,23 @@ async function saveLocalSettings() {
   } catch {
     try { settingsDB = await openSettingsDB(); } catch { return; }
   }
-  await settingsPut(roomKey + ':currentNotebookId', state.currentNotebookId);
-  await settingsPut(roomKey + ':pagePositions', { ...state.currentPages });
-  await settingsPut(roomKey + ':color', state.color);
-  await settingsPut(roomKey + ':penSizeIndex', state.penSizeIndex);
-  await settingsPut(roomKey + ':customColors', [...state.customColors]);
-  await settingsPut(roomKey + ':penDetected', state.penDetected);
+  await settingsPut(state.masterKeyHash + ':currentNotebookId', state.currentNotebookId);
+  await settingsPut(state.masterKeyHash + ':pagePositions', { ...state.currentPages });
+  await settingsPut(state.masterKeyHash + ':color', state.color);
+  await settingsPut(state.masterKeyHash + ':penSizeIndex', state.penSizeIndex);
+  await settingsPut(state.masterKeyHash + ':customColors', [...state.customColors]);
+  await settingsPut(state.masterKeyHash + ':penDetected', state.penDetected);
 }
 
 async function loadLocalSettings() {
-  const savedCurrentId = await settingsGet(roomKey + ':currentNotebookId');
-  const savedColor = await settingsGet(roomKey + ':color');
+  const savedCurrentId = await settingsGet(state.masterKeyHash + ':currentNotebookId');
+  const savedColor = await settingsGet(state.masterKeyHash + ':color');
   if (savedColor) state.color = savedColor;
-  const savedPenSizeIndex = await settingsGet(roomKey + ':penSizeIndex');
+  const savedPenSizeIndex = await settingsGet(state.masterKeyHash + ':penSizeIndex');
   if (typeof savedPenSizeIndex === 'number') state.penSizeIndex = savedPenSizeIndex;
-  const savedCustomColors = await settingsGet(roomKey + ':customColors');
+  const savedCustomColors = await settingsGet(state.masterKeyHash + ':customColors');
   if (Array.isArray(savedCustomColors)) state.customColors = savedCustomColors;
-  const savedPenDetected = await settingsGet(roomKey + ':penDetected');
+  const savedPenDetected = await settingsGet(state.masterKeyHash + ':penDetected');
   if (typeof savedPenDetected === 'boolean') state.penDetected = savedPenDetected;
   return savedCurrentId;
 }
@@ -1970,9 +2086,9 @@ async function init() {
   // 3. Invite-Link prüfen (bevor MasterKey-Dialog kommt)
   const invite = await parseInviteLink();
 
-  // 4. MasterKey → Room-Key ableiten
-  roomKey = await initMasterKey();
-  window.location.hash = roomKey;
+  // 4. MasterKey laden oder generieren
+  await initMasterKey();
+  window.location.hash = state.masterKeyHash;
 
   // 5. Lokale Settings laden
   const savedCurrentId = await loadLocalSettings();
@@ -1982,7 +2098,7 @@ async function init() {
 
   // 6b. Relay: verschlüsselte Snapshots laden und mergen
   try {
-    const relayNodes = await initRelay(roomKey);
+    const relayNodes = await initRelay(state.masterKeyHash);
     if (relayNodes) await mergeRelayData(relayNodes);
   } catch (e) {
     console.warn('[Relay] Init fehlgeschlagen:', e);
@@ -2002,7 +2118,7 @@ async function init() {
   // 7. Nav-State wiederherstellen
   if (savedCurrentId && state.notebooks.find(n => n.id === savedCurrentId)) {
     state.currentNotebookId = savedCurrentId;
-    const pagePositions = await settingsGet(roomKey + ':pagePositions') || {};
+    const pagePositions = await settingsGet(state.masterKeyHash + ':pagePositions') || {};
     for (const nb of state.notebooks) {
       state.currentPages[nb.id] = pagePositions[nb.id] ?? 0;
     }
@@ -2061,7 +2177,7 @@ async function resync() {
 
     // 2. Relay: neu verbinden + Daten mergen
     try {
-      const relayNodes = await initRelay(roomKey);
+      const relayNodes = await initRelay(state.masterKeyHash);
       if (relayNodes) {
         await mergeRelayData(relayNodes);
         console.log('[App] Relay-Daten gemerged');

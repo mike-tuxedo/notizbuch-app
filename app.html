@@ -1129,20 +1129,71 @@
     </main>
   </div>
 
-  <!-- Passphrase Modal -->
-  <div class="modal-overlay hidden" id="passphrase-modal">
-    <div class="modal" style="width: 340px;">
+  <!-- Erst-Start Modal -->
+  <div class="modal-overlay hidden" id="firststart-modal">
+    <div class="modal" style="width: 380px;">
       <div class="modal-header">
-        <h2>Notizbuch verbinden</h2>
+        <h2>Willkommen bei Notizbuch</h2>
+      </div>
+      <div class="modal-body" style="gap: 16px;">
+        <p class="modal-hint" style="text-align: left; width: 100%;">
+          Deine Daten werden Ende-zu-Ende verschlüsselt. Zum Synchronisieren zwischen Geräten brauchst du deinen persönlichen Schlüssel.
+        </p>
+        <button class="copy-btn" id="btn-new-start" style="width: 100%; text-align: center; padding: 12px;">
+          Neues Notizbuch starten
+        </button>
+        <button class="copy-btn" id="btn-import-key"
+          style="width: 100%; text-align: center; padding: 12px; background: transparent; border: 1px solid var(--border-2); color: var(--text);">
+          Bestehenden Key importieren
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Key-Anzeige Modal -->
+  <div class="modal-overlay hidden" id="keydisplay-modal">
+    <div class="modal" style="width: 420px;">
+      <div class="modal-header">
+        <h2>Dein Schlüssel</h2>
+      </div>
+      <div class="modal-body" style="gap: 14px;">
+        <p class="modal-hint" style="text-align: left; width: 100%; color: var(--danger);">
+          Schreibe diesen Schlüssel auf oder speichere ihn sicher ab. Ohne ihn kannst du deine Daten auf anderen Geräten nicht wiederherstellen. Manuelles Aufschreiben wird aus Sicherheitsgründen empfohlen.
+        </p>
+        <code id="keydisplay-key" style="display: block; width: 100%; padding: 12px; background: var(--surface-2); border-radius: 6px; font-size: 11px; word-break: break-all; line-height: 1.6; user-select: all; color: var(--accent);"></code>
+        <div style="display: flex; gap: 8px; width: 100%;">
+          <button class="copy-btn" id="btn-copy-key" style="flex: 1; text-align: center;">Kopieren</button>
+          <button class="copy-btn" id="btn-download-key" style="flex: 1; text-align: center;">Als Datei speichern</button>
+        </div>
+        <button class="copy-btn" id="btn-key-confirmed"
+          style="width: 100%; text-align: center; padding: 12px; margin-top: 4px;">
+          Ich habe den Schlüssel gesichert
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Key-Import Modal -->
+  <div class="modal-overlay hidden" id="keyimport-modal">
+    <div class="modal" style="width: 400px;">
+      <div class="modal-header">
+        <h2>Schlüssel importieren</h2>
       </div>
       <div class="modal-body" style="gap: 12px;">
         <p class="modal-hint" style="text-align: left; width: 100%;">
-          Gib eine Passphrase ein. Alle Geräte mit der gleichen Passphrase synchronisieren automatisch.
+          Gib deinen Schlüssel ein oder lade die Key-Datei hoch.
         </p>
-        <input class="link-input" type="text" id="passphrase-input" placeholder="Passphrase eingeben..."
-          style="width: 100%; font-size: 14px; padding: 10px 12px;">
-        <span id="passphrase-error" style="color: var(--danger); font-size: 12px; min-height: 16px;"></span>
-        <button class="copy-btn" id="passphrase-ok" style="width: 100%; text-align: center;">Verbinden</button>
+        <textarea class="link-input" id="keyimport-input" placeholder="64 Hex-Zeichen eingeben..."
+          style="width: 100%; font-size: 12px; padding: 10px 12px; min-height: 60px; resize: none; font-family: monospace;"></textarea>
+        <span id="keyimport-error" style="color: var(--danger); font-size: 12px; min-height: 16px;"></span>
+        <label class="copy-btn"
+          style="width: 100%; text-align: center; cursor: pointer; background: transparent; border: 1px solid var(--border-2); color: var(--text);">
+          Key-Datei hochladen
+          <input type="file" id="keyimport-file" accept=".txt" style="display: none;">
+        </label>
+        <button class="copy-btn" id="keyimport-ok" style="width: 100%; text-align: center; padding: 12px;">
+          Verbinden
+        </button>
       </div>
     </div>
   </div>
