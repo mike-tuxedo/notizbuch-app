@@ -15,7 +15,7 @@ const fs = require('fs');
 const path = require('path');
 const WebSocket = require('ws');
 
-const WS_PORT = 8080;
+const WS_PORT = process.env.PORT || 8080;
 const DATA_FILE = path.join(__dirname, 'data.json');
 const SAVE_DELAY_MS = 2000;
 const MAX_ROOM_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 Tage
