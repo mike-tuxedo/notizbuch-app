@@ -968,12 +968,23 @@ function showKeyDisplayDialog(raw) {
     if (!overlay) { resolve(); return; }
     overlay.classList.remove('hidden');
 
+    // Modal auf Erst-Start-Modus zurücksetzen (kein QR)
+    const header = overlay.querySelector('.modal-header h2');
+    if (header) header.textContent = 'Dein Schlüssel';
+    const hint = overlay.querySelector('.modal-hint');
+    if (hint) {
+      hint.style.color = 'var(--danger)';
+      hint.textContent = 'Schreibe diesen Schlüssel auf oder speichere ihn sicher ab. Ohne ihn kannst du deine Daten auf anderen Geräten nicht wiederherstellen. Manuelles Aufschreiben wird aus Sicherheitsgründen empfohlen.';
+    }
+    const qrContainer = document.getElementById('keydisplay-qr');
+    if (qrContainer) { qrContainer.innerHTML = ''; qrContainer.style.display = 'none'; }
+
     const hex = Array.from(raw).map(b => b.toString(16).padStart(2, '0')).join('');
     const keyEl = document.getElementById('keydisplay-key');
     if (keyEl) keyEl.textContent = hex;
 
     document.getElementById('btn-download-key').onclick = () => downloadKeyFile(raw);
-
+    document.getElementById('btn-copy-key').textContent = 'Kopieren';
     document.getElementById('btn-copy-key').onclick = () => {
       navigator.clipboard.writeText(hex).then(() => {
         const btn = document.getElementById('btn-copy-key');
@@ -981,6 +992,7 @@ function showKeyDisplayDialog(raw) {
       });
     };
 
+    document.getElementById('btn-key-confirmed').textContent = 'Ich habe den Schlüssel gesichert';
     document.getElementById('btn-key-confirmed').onclick = () => {
       overlay.classList.add('hidden');
       resolve();
@@ -1713,28 +1725,52 @@ async function handleInvite(invite) {
 
 // ─── Geräte-Sync Link ───────────────────────────────────────────────────────
 
-/** Sync-Link anzeigen: URL mit vollem MasterKey für andere Geräte. */
+/** Sync-Link anzeigen: URL mit vollem MasterKey + QR-Code für andere Geräte. */
 function showSyncLink() {
   if (!masterKeyRaw) { alert('Kein MasterKey vorhanden.'); return; }
   const hex = Array.from(masterKeyRaw).map(b => b.toString(16).padStart(2, '0')).join('');
   const url = `${location.origin}${location.pathname}#${hex}`;
-  // Key-Anzeige-Dialog wiederverwenden
   const overlay = document.getElementById('keydisplay-modal');
-  if (overlay) {
-    overlay.classList.remove('hidden');
-    const keyEl = document.getElementById('keydisplay-key');
-    if (keyEl) keyEl.textContent = hex;
-    document.getElementById('btn-download-key').onclick = () => downloadKeyFile(masterKeyRaw);
-    document.getElementById('btn-copy-key').onclick = () => {
-      navigator.clipboard.writeText(url).then(() => {
-        const btn = document.getElementById('btn-copy-key');
-        if (btn) { btn.textContent = 'Link kopiert!'; setTimeout(() => { btn.textContent = 'Kopieren'; }, 2000); }
-      });
-    };
-    document.getElementById('btn-key-confirmed').onclick = () => overlay.classList.add('hidden');
-  } else {
-    prompt('Sync-Link (auf anderem Gerät öffnen):', url);
+  if (!overlay) { prompt('Sync-Link (auf anderem Gerät öffnen):', url); return; }
+
+  overlay.classList.remove('hidden');
+  // Header anpassen
+  const header = overlay.querySelector('.modal-header h2');
+  if (header) header.textContent = 'Geräte-Sync';
+  // Hinweistext anpassen
+  const hint = overlay.querySelector('.modal-hint');
+  if (hint) {
+    hint.style.color = '';
+    hint.textContent = 'Scanne den QR-Code mit deinem anderen Gerät oder kopiere den Sync-Link.';
   }
+  // QR-Code
+  const qrContainer = document.getElementById('keydisplay-qr');
+  if (qrContainer && typeof QRCode !== 'undefined') {
+    qrContainer.innerHTML = '';
+    qrContainer.style.display = 'block';
+    new QRCode(qrContainer, {
+      text: url, width: 200, height: 200,
+      colorDark: '#1a1730', colorLight: '#fefcf8',
+      correctLevel: QRCode.CorrectLevel.L
+    });
+  }
+  // Key anzeigen
+  const keyEl = document.getElementById('keydisplay-key');
+  if (keyEl) keyEl.textContent = hex;
+  // Buttons
+  document.getElementById('btn-copy-key').textContent = 'Link kopieren';
+  document.getElementById('btn-copy-key').onclick = () => {
+    navigator.clipboard.writeText(url).then(() => {
+      const btn = document.getElementById('btn-copy-key');
+      if (btn) { btn.textContent = 'Kopiert!'; setTimeout(() => { btn.textContent = 'Link kopieren'; }, 2000); }
+    });
+  };
+  document.getElementById('btn-download-key').onclick = () => downloadKeyFile(masterKeyRaw);
+  document.getElementById('btn-key-confirmed').textContent = 'Schließen';
+  document.getElementById('btn-key-confirmed').onclick = () => {
+    overlay.classList.add('hidden');
+    if (qrContainer) qrContainer.style.display = 'none';
+  };
 }
 
 // ─── Export / Import ─────────────────────────────────────────────────────────
