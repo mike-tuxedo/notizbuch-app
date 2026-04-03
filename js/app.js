@@ -490,7 +490,9 @@ function compositeStrokes() {
 // ─── Fit to Content ─────────────────────────────────────────────────────────
 
 /**
- * Bounding-Box aller Strokes berechnen.
+ * Bounding-Box der sichtbaren Strokes berechnen.
+ * Rendert alle Strokes (inkl. Eraser) auf ein temporäres Canvas und
+ * ermittelt die Pixel-Bounding-Box. So werden radierte Bereiche korrekt ignoriert.
  * @returns {{minX: number, minY: number, maxX: number, maxY: number}|null}
  */
 function computeStrokeBounds() {
@@ -498,19 +500,63 @@ function computeStrokeBounds() {
   const strokes = page?.strokes;
   if (!strokes?.length) return null;
   const clearedAt = page.clearedAt || 0;
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  for (const s of strokes) {
-    if (s.tool === 'eraser') continue;
-    if (Number(s.id) <= clearedAt) continue;
+  const visible = strokes.filter(s => Number(s.id) > clearedAt);
+  if (!visible.length) return null;
+
+  // Grobe Bounds aus Stroke-Daten (für Canvas-Größe)
+  let rMinX = Infinity, rMinY = Infinity, rMaxX = -Infinity, rMaxY = -Infinity;
+  for (const s of visible) {
     for (const p of (s.points || [])) {
-      if (p.x < minX) minX = p.x;
-      if (p.y < minY) minY = p.y;
-      if (p.x > maxX) maxX = p.x;
-      if (p.y > maxY) maxY = p.y;
+      if (p.x < rMinX) rMinX = p.x;
+      if (p.y < rMinY) rMinY = p.y;
+      if (p.x > rMaxX) rMaxX = p.x;
+      if (p.y > rMaxY) rMaxY = p.y;
     }
   }
-  if (!isFinite(minX)) return null;
-  return { minX, minY, maxX, maxY };
+  if (!isFinite(rMinX)) return null;
+
+  // Temporäres Canvas in World-Koordinaten (1px = 1 unit, max 2000px)
+  const margin = 20;
+  const w = rMaxX - rMinX + margin * 2;
+  const h = rMaxY - rMinY + margin * 2;
+  const maxDim = 2000;
+  const scale = Math.min(1, maxDim / Math.max(w, h));
+  const cw = Math.ceil(w * scale);
+  const ch = Math.ceil(h * scale);
+  if (cw <= 0 || ch <= 0) return null;
+
+  const tmp = document.createElement('canvas');
+  tmp.width = cw;
+  tmp.height = ch;
+  const ctx = tmp.getContext('2d');
+  ctx.translate(-(rMinX - margin) * scale, -(rMinY - margin) * scale);
+  ctx.scale(scale, scale);
+  for (const s of visible) {
+    drawStrokeToCanvas(ctx, s);
+  }
+
+  // Pixel-Bounding-Box der nicht-transparenten Pixel
+  const imgData = ctx.getImageData(0, 0, cw, ch).data;
+  let pMinX = cw, pMinY = ch, pMaxX = 0, pMaxY = 0;
+  for (let y = 0; y < ch; y++) {
+    for (let x = 0; x < cw; x++) {
+      if (imgData[(y * cw + x) * 4 + 3] > 0) {
+        if (x < pMinX) pMinX = x;
+        if (x > pMaxX) pMaxX = x;
+        if (y < pMinY) pMinY = y;
+        if (y > pMaxY) pMaxY = y;
+      }
+    }
+  }
+  if (pMinX > pMaxX) return null;
+
+  // Pixel-Koordinaten zurück in World-Koordinaten
+  return {
+    minX: pMinX / scale + (rMinX - margin),
+    minY: pMinY / scale + (rMinY - margin),
+    maxX: pMaxX / scale + (rMinX - margin),
+    maxY: pMaxY / scale + (rMinY - margin)
+  };
 }
 
 /**
