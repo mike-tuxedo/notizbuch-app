@@ -2057,33 +2057,25 @@ function onPointerDown(e) {
     state.penDetected = true;
   }
 
-  // Touch-Handling: nur im Hand-Modus (Pan/Pinch/Swipe). Sonst ignorieren.
+  // Touch-Handling
   if (e.pointerType === 'touch') {
-    // Nicht Hand-Tool → Touch komplett ignorieren (Palm-Rejection)
-    if (state.tool !== 'hand') return;
-
-    pinchState.touches[e.pointerId] = { x: e.clientX, y: e.clientY };
-    const touchCount = Object.keys(pinchState.touches).length;
-
-    if (touchCount >= 2) {
-      if (!pinchState.active) _startPinch();
+    // Hand-Tool → Pan/Pinch (kein Swipe)
+    if (state.tool === 'hand') {
+      pinchState.touches[e.pointerId] = { x: e.clientX, y: e.clientY };
+      const touchCount = Object.keys(pinchState.touches).length;
+      if (touchCount >= 2) {
+        if (!pinchState.active) _startPinch();
+        return;
+      }
+      isPanning = true;
+      panPointerId = e.pointerId;
+      panStartX = e.clientX;
+      panStartY = e.clientY;
+      panStartViewX = state.viewX;
+      panStartViewY = state.viewY;
       return;
     }
-
-    // 1 Finger → Pan + Swipe
-    isPanning = true;
-    panPointerId = e.pointerId;
-    panStartX = e.clientX;
-    panStartY = e.clientY;
-    panStartViewX = state.viewX;
-    panStartViewY = state.viewY;
-    swipeState.active = true;
-    swipeState.pointerId = e.pointerId;
-    swipeState.startX = e.clientX;
-    swipeState.startY = e.clientY;
-    swipeState.startTime = Date.now();
-    swipeState.currentX = e.clientX;
-    return;
+    // Pen/Eraser-Tool → 1 Finger zeichnet (fällt durch zum Drawing-Code)
   }
 
   // Hand-Tool → Panning
