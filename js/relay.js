@@ -168,19 +168,33 @@ export function fetchRoom(roomKey) {
 }
 
 /**
- * Blob in einem bestimmten Room speichern (über die Hauptverbindung).
- * Wechselt den Room temporär und wechselt zurück.
+ * Mehrere Blobs in einem anderen Room speichern (temporäre Verbindung).
+ * Stört die Hauptverbindung nicht.
  * @param {string} roomKey - Ziel-Room
- * @param {string} mainRoom - Haupt-Room zum Zurückwechseln
- * @param {string} id - Blob-ID
- * @param {Uint8Array} data - Verschlüsselte Daten
+ * @param {Array<{id: string, data: Uint8Array}>} blobs - Zu speichernde Blobs
+ * @returns {Promise<void>}
  */
-export function putBlobToRoom(roomKey, mainRoom, id, data) {
-  if (!ws || ws.readyState !== WebSocket.OPEN) return;
-  ws.send(JSON.stringify({ type: 'join', room: roomKey }));
-  ws.send(JSON.stringify({ type: 'node-put', id, data: toBase64(data) }));
-  // Zurück zum Haupt-Room
-  ws.send(JSON.stringify({ type: 'join', room: mainRoom }));
+export function pushBlobsToRoom(roomKey, blobs) {
+  return new Promise(resolve => {
+    if (!blobs.length) { resolve(); return; }
+    const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+    const wsUrl = isLocal ? `wss://${location.host}` : 'wss://notes.mike.fm-media-staging.at';
+    let tempWs;
+    try { tempWs = new WebSocket(wsUrl); } catch { resolve(); return; }
+
+    const timeout = setTimeout(() => { try { tempWs.close(); } catch {} resolve(); }, 5000);
+
+    tempWs.onopen = () => {
+      tempWs.send(JSON.stringify({ type: 'join', room: roomKey }));
+      for (const { id, data } of blobs) {
+        tempWs.send(JSON.stringify({ type: 'node-put', id, data: toBase64(data) }));
+      }
+      clearTimeout(timeout);
+      setTimeout(() => { try { tempWs.close(); } catch {} resolve(); }, 200);
+    };
+    tempWs.onerror = () => { clearTimeout(timeout); resolve(); };
+    tempWs.onclose = () => { clearTimeout(timeout); resolve(); };
+  });
 }
 
 /**

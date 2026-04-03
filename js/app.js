@@ -7,7 +7,7 @@ import { roundPoints, drawStrokeToCanvas, drawBackground } from './canvas.js';
 import { initP2P, send as p2pSend, leaveRoom, isConnected, hasPeers } from './p2p-sync.js';
 import { generateKey, exportKey, importKey, encrypt, decrypt } from './encryption.js';
 import { exportAppBundle, importAppBundle } from './share.js';
-import { initRelay, putBlob as relayPut, deleteBlob as relayDelete, isRelayConnected, fetchRoom, putBlobToRoom } from './relay.js';
+import { initRelay, putBlob as relayPut, deleteBlob as relayDelete, isRelayConnected, fetchRoom, pushBlobsToRoom } from './relay.js';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -253,11 +253,9 @@ async function _flushSave() {
   const data = await serializeStrokes(page.strokes || [], nbId);
   await savePageData(nbId, String(page.id), data);
   relayPut(`p:${nbId}/${page.id}`, data);
-  // Geteiltes Notebook: auch an shared Relay-Room pushen
+  // Geteiltes Notebook: Page + Meta an shared Relay-Room pushen
   if (state.sharedNotebooks.has(nbId)) {
-    notebookHash(nbId).then(nbHash => {
-      putBlobToRoom(nbHash, state.masterKeyHash, `p:${page.id}`, data);
-    });
+    pushSharedNotebook(nbId);
   }
 }
 
@@ -271,10 +269,10 @@ async function _flushSave() {
 async function loadPage(notebookId, pageId, page) {
   const data = await loadPageData(notebookId, pageId);
   const diskStrokes = data ? await deserializeStrokes(data, notebookId) : [];
-  // Union-Merge: OPFS + In-Memory (P2P-Strokes die noch nicht gespeichert waren)
+  // Union-Merge: OPFS + In-Memory (undone IDs ignorieren)
   const merged = new Map();
-  for (const s of diskStrokes) merged.set(s.id, s);
-  for (const s of (page.strokes || [])) merged.set(s.id, s);
+  for (const s of diskStrokes) { if (!_undoneIds.has(s.id)) merged.set(s.id, s); }
+  for (const s of (page.strokes || [])) { if (!_undoneIds.has(s.id)) merged.set(s.id, s); }
   // Strokes vor clearedAt filtern (Clear wurde evtl. von anderem Peer gesetzt)
   const clearedAt = page.clearedAt || 0;
   page.strokes = [...merged.values()]
@@ -783,11 +781,15 @@ async function createTestNotebook() {
 function undo() {
   const page = currentPage();
   if (!page || !page.strokes.length) return;
-  page.strokes.pop();
+  const removed = page.strokes.pop();
+  if (removed) _undoneIds.add(removed.id);
   redrawStrokes();
-  saveCurrentPage();
-  p2pSend('undo', { notebookId: state.currentNotebookId, pageId: page.id });
+  flushSave(); // Sofort speichern — kein Debounce, damit Relay/Sync den neuen Stand hat
+  p2pSend('undo', { notebookId: state.currentNotebookId, pageId: page.id, strokeId: removed?.id });
 }
+
+/** IDs von per Undo entfernten Strokes — werden bei Union-Merge ignoriert */
+const _undoneIds = new Set();
 
 function clearPage() {
   const page = currentPage();
@@ -1261,10 +1263,10 @@ async function mergeSharedNotebookData(notebookId, nodes) {
       page = { id: pageId, strokes: [], background: 'grid', order: nb.pages.length };
       nb.pages.push(page);
     }
-    // Union-Merge by ID
+    // Union-Merge by ID (undone IDs ignorieren)
     const existing = new Map(page.strokes.map(s => [s.id, s]));
     for (const s of strokes) {
-      if (!existing.has(s.id)) {
+      if (!existing.has(s.id) && !_undoneIds.has(s.id)) {
         page.strokes.push(s);
         merged++;
       }
@@ -1304,23 +1306,26 @@ async function pushSharedNotebook(notebookId) {
   const nb = state.notebooks.find(n => n.id === notebookId);
   if (!nb) return;
   const nbHash = await notebookHash(notebookId);
+  const blobs = [];
 
-  // Meta pushen (Notebook-Name + Page-Struktur, mit NotebookKey verschlüsselt)
+  // Meta (Notebook-Name + Page-Struktur, mit NotebookKey verschlüsselt)
   try {
     const nbKey = await getNotebookKey(notebookId);
     const meta = { name: nb.name, pages: nb.pages.map(p => ({ id: p.id, background: p.background, order: p.order })) };
     const metaEncrypted = await encrypt(nbKey, JSON.stringify(meta));
-    putBlobToRoom(nbHash, state.masterKeyHash, 'meta', metaEncrypted);
+    blobs.push({ id: 'meta', data: metaEncrypted });
   } catch {}
 
-  // Pages pushen
+  // Pages
   for (const page of nb.pages) {
     if (!page.strokes?.length) continue;
     try {
       const encrypted = await serializeStrokes(page.strokes, notebookId);
-      putBlobToRoom(nbHash, state.masterKeyHash, `p:${page.id}`, encrypted);
+      blobs.push({ id: `p:${page.id}`, data: encrypted });
     } catch {}
   }
+
+  await pushBlobsToRoom(nbHash, blobs);
 }
 
 /**
@@ -1510,10 +1515,10 @@ async function applyFullSync(payload) {
           const effectiveClearedAt = Math.max(remoteClearedAt, localClearedAt);
           localPage.clearedAt = effectiveClearedAt;
 
-          // Strokes Union-Merge by ID, dann Strokes vor clearedAt entfernen
+          // Strokes Union-Merge by ID, undone IDs ignorieren, Strokes vor clearedAt entfernen
           const existing = new Map(localPage.strokes.map(s => [s.id, s]));
           for (const s of (rp.strokes || [])) {
-            if (!existing.has(s.id)) existing.set(s.id, s);
+            if (!existing.has(s.id) && !_undoneIds.has(s.id)) existing.set(s.id, s);
           }
           localPage.strokes = [...existing.values()]
             .filter(s => Number(s.id) > effectiveClearedAt)
@@ -1552,11 +1557,16 @@ async function startP2P() {
       serializeStrokes(page.strokes, notebookId).then(d => savePageData(notebookId, pageId, d));
     },
 
-    onUndo({ notebookId, pageId }, peerId) {
+    onUndo({ notebookId, pageId, strokeId }, peerId) {
       const nb = state.notebooks.find(n => n.id === notebookId);
       const page = nb?.pages.find(p => p.id === pageId);
       if (!page || !page.strokes.length) return;
-      page.strokes.pop();
+      if (strokeId) {
+        _undoneIds.add(strokeId);
+        page.strokes = page.strokes.filter(s => s.id !== strokeId);
+      } else {
+        page.strokes.pop();
+      }
       if (notebookId === state.currentNotebookId && pageId === currentPage()?.id) redrawStrokes();
       serializeStrokes(page.strokes, notebookId).then(d => savePageData(notebookId, pageId, d));
     },
