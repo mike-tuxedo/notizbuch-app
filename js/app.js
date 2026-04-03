@@ -621,6 +621,7 @@ async function selectNotebook(nbId) {
   fitToContent();
   renderUI();
   saveLocalSettings();
+  updateUrlHash();
 }
 
 /** Neues Notebook erstellen. */
@@ -663,6 +664,7 @@ async function deleteNotebook(nbId) {
   fitToContent();
   renderUI();
   saveLocalSettings();
+  updateUrlHash();
 }
 
 /**
@@ -1074,6 +1076,39 @@ async function initMasterKey() {
 }
 
 // ─── NotebookKey Management ─────────────────────────────────────────────────
+
+/**
+ * NotebookHash berechnen: SHA-256(NotebookKey) → erste 16 Bytes als Hex.
+ * @param {string} notebookId
+ * @returns {Promise<string>}
+ */
+async function notebookHash(notebookId) {
+  const key = await getNotebookKey(notebookId);
+  const raw = await exportKey(key);
+  return computeKeyHash(raw);
+}
+
+/**
+ * URL-Hash auf aktuelles Notebook setzen: #nb-{notebookHash}
+ */
+async function updateUrlHash() {
+  if (!state.currentNotebookId) return;
+  const hash = await notebookHash(state.currentNotebookId);
+  history.replaceState(null, '', location.pathname + '#nb-' + hash);
+}
+
+/**
+ * Notebook-ID anhand eines NotebookHash finden.
+ * @param {string} hash
+ * @returns {Promise<string|null>} notebookId oder null
+ */
+async function findNotebookByHash(hash) {
+  for (const nb of state.notebooks) {
+    const h = await notebookHash(nb.id);
+    if (h === hash) return nb.id;
+  }
+  return null;
+}
 
 /**
  * NotebookKey für ein Notebook holen (oder erstellen + speichern).
@@ -1557,9 +1592,10 @@ async function openShareModal() {
       }
     } catch {}
   }
-  // Format: #nb={notebookId}&k={base64(notebookKey)}&name={name}
+  // Format: #nb-{notebookHash}&k={base64(notebookKey)}&name={name}
   const nb = currentNotebook();
-  const url = `${origin}${location.pathname}#nb=${nbId}&k=${encodeURIComponent(keyB64)}&name=${encodeURIComponent(nb?.name || '')}`;
+  const nbHash = await notebookHash(nbId);
+  const url = `${origin}${location.pathname}#nb-${nbHash}&k=${encodeURIComponent(keyB64)}&name=${encodeURIComponent(nb?.name || '')}`;
   const linkInput = document.getElementById('share-link');
   if (linkInput) linkInput.value = url;
   // QR-Code generieren (qrcode.js API: new QRCode(element, options))
@@ -1581,54 +1617,96 @@ function closeShareModal() {
 
 /**
  * Invite-Link aus URL-Fragment parsen.
- * Format: #nb={notebookId}&k={base64(notebookKey)}&name={name}
- * @returns {Promise<{notebookId: string, key: CryptoKey, name: string}|null>}
+ * Neues Format: #nb-{hash}&k={base64(notebookKey)}&name={name}
+ * Altes Format: #nb={notebookId}&k={base64(notebookKey)}&name={name}
+ * @returns {Promise<{notebookId: string|null, key: CryptoKey, name: string, nbHash: string|null}|null>}
  */
 async function parseInviteLink() {
   const hash = location.hash;
-  if (!hash || !hash.includes('nb=')) return null;
-  try {
-    const params = new URLSearchParams(hash.slice(1));
-    const notebookId = params.get('nb');
-    const keyB64 = params.get('k');
-    const name = params.get('name') || 'Geteiltes Notizbuch';
-    if (!notebookId || !keyB64) return null;
-    const raw = Uint8Array.from(atob(decodeURIComponent(keyB64)), c => c.charCodeAt(0));
-    const key = await importKey(raw, true);
-    return { notebookId, key, name };
-  } catch (e) {
-    console.warn('[Share] Invite-Link ungültig:', e);
-    return null;
+  if (!hash) return null;
+  // Neues Format: #nb-{hash}&k=...
+  if (hash.startsWith('#nb-') && hash.includes('&k=')) {
+    try {
+      const afterNb = hash.slice(4); // nach '#nb-'
+      const ampIdx = afterNb.indexOf('&');
+      const nbHash = afterNb.slice(0, ampIdx);
+      const params = new URLSearchParams(afterNb.slice(ampIdx + 1));
+      const keyB64 = params.get('k');
+      const name = params.get('name') || 'Geteiltes Notizbuch';
+      if (!keyB64) return null;
+      const raw = Uint8Array.from(atob(decodeURIComponent(keyB64)), c => c.charCodeAt(0));
+      const key = await importKey(raw, true);
+      // notebookId wird aus dem Key-Hash abgeleitet — erst nach Meta-Load auflösbar
+      return { notebookId: null, key, name, nbHash };
+    } catch (e) {
+      console.warn('[Share] Invite-Link ungültig:', e);
+      return null;
+    }
   }
+  // Altes Format: #nb={id}&k=...
+  if (hash.includes('nb=')) {
+    try {
+      const params = new URLSearchParams(hash.slice(1));
+      const notebookId = params.get('nb');
+      const keyB64 = params.get('k');
+      const name = params.get('name') || 'Geteiltes Notizbuch';
+      if (!notebookId || !keyB64) return null;
+      const raw = Uint8Array.from(atob(decodeURIComponent(keyB64)), c => c.charCodeAt(0));
+      const key = await importKey(raw, true);
+      return { notebookId, key, name, nbHash: null };
+    } catch (e) {
+      console.warn('[Share] Invite-Link ungültig:', e);
+      return null;
+    }
+  }
+  return null;
 }
 
 /**
  * Invite-Link verarbeiten: NotebookKey installieren, Notebook erstellen wenn nötig.
- * @param {{notebookId: string, key: CryptoKey, name: string}} invite
+ * @param {{notebookId: string|null, key: CryptoKey, name: string, nbHash: string|null}} invite
  */
 async function handleInvite(invite) {
+  // NotebookId bestimmen: aus Hash suchen oder aus altem Format
+  let notebookId = invite.notebookId;
+
+  if (!notebookId && invite.nbHash) {
+    // Neues Format: NotebookKey installieren, Hash berechnen, existierendes Notebook suchen
+    const keyRaw = await exportKey(invite.key);
+    const keyHash = await computeKeyHash(keyRaw);
+    // Alle Notebooks durchsuchen
+    for (const nb of state.notebooks) {
+      if (state.notebookKeys[nb.id]) {
+        const h = await notebookHash(nb.id);
+        if (h === invite.nbHash) { notebookId = nb.id; break; }
+      }
+    }
+    // Nicht gefunden → neues Notebook erstellen
+    if (!notebookId) notebookId = String(Date.now());
+  }
+
   // NotebookKey speichern
-  state.notebookKeys[invite.notebookId] = invite.key;
+  state.notebookKeys[notebookId] = invite.key;
   const raw = await exportKey(invite.key);
-  localStorage.setItem(`notizbuch:nbKey:${invite.notebookId}`, JSON.stringify(Array.from(raw)));
+  localStorage.setItem(`notizbuch:nbKey:${notebookId}`, JSON.stringify(Array.from(raw)));
 
   // Notebook erstellen wenn nicht vorhanden
-  if (!state.notebooks.find(n => n.id === invite.notebookId)) {
+  if (!state.notebooks.find(n => n.id === notebookId)) {
     const pageId = String(Date.now() + 1);
     state.notebooks.push({
-      id: invite.notebookId, name: invite.name,
+      id: notebookId, name: invite.name,
       pages: [{ id: pageId, strokes: [], background: 'grid', order: 0 }]
     });
-    state.currentPages[invite.notebookId] = 0;
+    state.currentPages[notebookId] = 0;
     await saveAppMeta();
   }
 
   // Zum geteilten Notebook wechseln
-  await selectNotebook(invite.notebookId);
+  await selectNotebook(notebookId);
 
-  // URL-Fragment bereinigen (MasterKey-Hash setzen)
-  history.replaceState(null, '', location.pathname + '#' + state.masterKeyHash);
-  console.log('[Share] Invite verarbeitet:', invite.name, invite.notebookId);
+  // URL-Fragment auf Notebook-Hash setzen
+  await updateUrlHash();
+  console.log('[Share] Invite verarbeitet:', invite.name, notebookId);
 }
 
 // ─── Export / Import ─────────────────────────────────────────────────────────
@@ -2088,7 +2166,6 @@ async function init() {
 
   // 4. MasterKey laden oder generieren
   await initMasterKey();
-  window.location.hash = state.masterKeyHash;
 
   // 5. Lokale Settings laden
   const savedCurrentId = await loadLocalSettings();
@@ -2115,7 +2192,7 @@ async function init() {
     await handleInvite(invite);
   }
 
-  // 7. Nav-State wiederherstellen
+  // 7c. Nav-State wiederherstellen
   if (savedCurrentId && state.notebooks.find(n => n.id === savedCurrentId)) {
     state.currentNotebookId = savedCurrentId;
     const pagePositions = await settingsGet(state.masterKeyHash + ':pagePositions') || {};
@@ -2127,6 +2204,15 @@ async function init() {
   }
   for (const nb of state.notebooks) {
     if (!(nb.id in state.currentPages)) state.currentPages[nb.id] = 0;
+  }
+
+  // 7d. URL-Hash #nb-{hash} auswerten (Bookmark/direkter Link, kein Invite)
+  if (!invite) {
+    const urlHash = location.hash.slice(1);
+    if (urlHash.startsWith('nb-') && !urlHash.includes('&')) {
+      const nbId = await findNotebookByHash(urlHash.slice(3));
+      if (nbId) state.currentNotebookId = nbId;
+    }
   }
 
   // 8. Canvas-Referenzen
@@ -2145,8 +2231,25 @@ async function init() {
   setupCanvases();
   requestAnimationFrame(() => { setupCanvases(); fitToContent(); });
 
+  // 10b. URL-Hash auf aktuelles Notebook setzen
+  await updateUrlHash();
+
   // 11. Event-Listener
   setupEvents();
+
+  // 11b. hashchange-Listener für manuelle Navigation
+  window.addEventListener('hashchange', async () => {
+    const hash = location.hash.slice(1);
+    if (!hash) return;
+    // #nb-{notebookHash} → Notebook wechseln
+    if (hash.startsWith('nb-')) {
+      const nbHash = hash.slice(3);
+      const nbId = await findNotebookByHash(nbHash);
+      if (nbId && nbId !== state.currentNotebookId) {
+        await selectNotebook(nbId);
+      }
+    }
+  });
 
   // 12. UI rendern
   renderUI();
