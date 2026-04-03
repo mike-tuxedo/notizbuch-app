@@ -1050,10 +1050,19 @@ async function importKeyFromHex(hex) {
 
 /**
  * Gespeicherten MasterKey laden, URL-Hash prüfen, oder Dialog zeigen.
+ * URL-Format: #{fullMasterKeyHex} (64 Hex-Zeichen = 32 Bytes = voller AES-256 Key)
+ * Wer die URL hat, hat den Key — kein Import-Dialog nötig.
  * @returns {Promise<string>} masterKeyHash
  */
 async function initMasterKey() {
-  // 1. Gespeicherten Key prüfen
+  // 1. URL-Hash prüfen (voller MasterKey von anderem Gerät/Share)
+  const hash = location.hash.slice(1);
+  if (hash && !hash.startsWith('nb') && hash.length === 64 && /^[0-9a-fA-F]+$/.test(hash)) {
+    // Voller Key in URL → direkt importieren, kein Dialog
+    return importKeyFromHex(hash);
+  }
+
+  // 2. Gespeicherten Key prüfen
   const savedHash = localStorage.getItem('notizbuch:masterKeyHash');
   const savedRaw = localStorage.getItem('notizbuch:masterKeyRaw');
   if (savedHash && savedRaw) {
@@ -1062,13 +1071,6 @@ async function initMasterKey() {
       state.masterKeyHash = savedHash;
       return savedHash;
     } catch {}
-  }
-
-  // 2. URL-Hash prüfen (MasterKey-Hash von anderem Gerät)
-  const hash = location.hash.slice(1);
-  if (hash && !hash.startsWith('nb') && hash.length === 32) {
-    // Hash ist ein masterKeyHash — Key-Import nötig
-    return showKeyImportDialog();
   }
 
   // 3. Kein gespeicherter Key, kein URL-Hash → Erst-Start
@@ -1707,6 +1709,32 @@ async function handleInvite(invite) {
   // URL-Fragment auf Notebook-Hash setzen
   await updateUrlHash();
   console.log('[Share] Invite verarbeitet:', invite.name, notebookId);
+}
+
+// ─── Geräte-Sync Link ───────────────────────────────────────────────────────
+
+/** Sync-Link anzeigen: URL mit vollem MasterKey für andere Geräte. */
+function showSyncLink() {
+  if (!masterKeyRaw) { alert('Kein MasterKey vorhanden.'); return; }
+  const hex = Array.from(masterKeyRaw).map(b => b.toString(16).padStart(2, '0')).join('');
+  const url = `${location.origin}${location.pathname}#${hex}`;
+  // Key-Anzeige-Dialog wiederverwenden
+  const overlay = document.getElementById('keydisplay-modal');
+  if (overlay) {
+    overlay.classList.remove('hidden');
+    const keyEl = document.getElementById('keydisplay-key');
+    if (keyEl) keyEl.textContent = hex;
+    document.getElementById('btn-download-key').onclick = () => downloadKeyFile(masterKeyRaw);
+    document.getElementById('btn-copy-key').onclick = () => {
+      navigator.clipboard.writeText(url).then(() => {
+        const btn = document.getElementById('btn-copy-key');
+        if (btn) { btn.textContent = 'Link kopiert!'; setTimeout(() => { btn.textContent = 'Kopieren'; }, 2000); }
+      });
+    };
+    document.getElementById('btn-key-confirmed').onclick = () => overlay.classList.add('hidden');
+  } else {
+    prompt('Sync-Link (auf anderem Gerät öffnen):', url);
+  }
 }
 
 // ─── Export / Import ─────────────────────────────────────────────────────────
@@ -2392,6 +2420,7 @@ function setupEvents() {
 
   // Share
   document.getElementById('btn-share')?.addEventListener('click', openShareModal);
+  document.getElementById('btn-sync-link')?.addEventListener('click', showSyncLink);
   document.getElementById('btn-export')?.addEventListener('click', exportApp);
   document.getElementById('btn-import')?.addEventListener('click', importApp);
 
