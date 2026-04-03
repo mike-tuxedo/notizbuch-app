@@ -91,8 +91,6 @@ const pinchState = {
   startViewX: 0, startViewY: 0, startScale: 1,
   startMidX: 0, startMidY: 0, startDist: 1
 };
-/** Alle aktiven Touch-Pointer (für Finger-Zählung, unabhängig von pinchState) */
-const activeTouches = new Set();
 
 // ─── Swipe State ────────────────────────────────────────────────────────────
 
@@ -2059,57 +2057,33 @@ function onPointerDown(e) {
     state.penDetected = true;
   }
 
-  // Touch-Handling: 3-Finger = Zoom/Pan, 1-2 Finger = Zeichnen (oder Hand-Tool)
+  // Touch-Handling: nur im Hand-Modus (Pan/Pinch/Swipe). Sonst ignorieren.
   if (e.pointerType === 'touch') {
-    activeTouches.add(e.pointerId);
-    pinchState.touches[e.pointerId] = { x: e.clientX, y: e.clientY };
-    const touchCount = activeTouches.size;
+    // Nicht Hand-Tool → Touch komplett ignorieren (Palm-Rejection)
+    if (state.tool !== 'hand') return;
 
-    // 3+ Finger → Pinch-Zoom/Pan (unabhängig vom Tool)
-    if (touchCount >= 3) {
-      // Zeichnen abbrechen falls aktiv
-      if (isDrawing) {
-        isDrawing = false;
-        activePointerId = null;
-        if (activeCtx) {
-          activeCtx.setTransform(DPR, 0, 0, DPR, 0, 0);
-          activeCtx.clearRect(0, 0, activeCanvas.width / DPR, activeCanvas.height / DPR);
-        }
-        currentPoints = [];
-        lastPoint = null;
-      }
+    pinchState.touches[e.pointerId] = { x: e.clientX, y: e.clientY };
+    const touchCount = Object.keys(pinchState.touches).length;
+
+    if (touchCount >= 2) {
       if (!pinchState.active) _startPinch();
       return;
     }
 
-    // Hand-Tool: 1 Finger → Pan + Swipe, 2 Finger → Pinch
-    if (state.tool === 'hand') {
-      if (touchCount >= 2) {
-        if (!pinchState.active) _startPinch();
-        return;
-      }
-      isPanning = true;
-      panPointerId = e.pointerId;
-      panStartX = e.clientX;
-      panStartY = e.clientY;
-      panStartViewX = state.viewX;
-      panStartViewY = state.viewY;
-      swipeState.active = true;
-      swipeState.pointerId = e.pointerId;
-      swipeState.startX = e.clientX;
-      swipeState.startY = e.clientY;
-      swipeState.startTime = Date.now();
-      swipeState.currentX = e.clientX;
-      return;
-    }
-
-    // Pen erkannt → Touch komplett ignorieren (Palm-Rejection)
-    if (state.penDetected) return;
-
-    // 2 Finger ohne Hand-Tool → ignorieren (kein versehentliches Zeichnen)
-    if (touchCount >= 2) return;
-
-    // 1 Finger → Zeichnen (fällt durch zum Drawing-Code unten)
+    // 1 Finger → Pan + Swipe
+    isPanning = true;
+    panPointerId = e.pointerId;
+    panStartX = e.clientX;
+    panStartY = e.clientY;
+    panStartViewX = state.viewX;
+    panStartViewY = state.viewY;
+    swipeState.active = true;
+    swipeState.pointerId = e.pointerId;
+    swipeState.startX = e.clientX;
+    swipeState.startY = e.clientY;
+    swipeState.startTime = Date.now();
+    swipeState.currentX = e.clientX;
+    return;
   }
 
   // Hand-Tool → Panning
@@ -2195,12 +2169,11 @@ function onPointerMove(e) {
 
 function onPointerUp(e) {
   // Touch aufräumen
-  activeTouches.delete(e.pointerId);
   delete pinchState.touches[e.pointerId];
 
   // Pinch-Zoom beenden
   if (pinchState.active) {
-    if (activeTouches.size < 2) {
+    if (Object.keys(pinchState.touches).length < 2) {
       pinchState.active = false;
       redrawStrokes(); // Cache nach Zoom aktualisieren
     }
