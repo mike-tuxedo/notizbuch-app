@@ -20,7 +20,6 @@ const APP_ID = 'notizbuch-v2';
 const NOSTR_RELAYS = [
   'wss://relay.damus.io',
   'wss://nos.lol',
-  'wss://relay.snort.social',
   'wss://nostr.wine',
   'wss://relay.primal.net',
   'wss://purplepag.es',
