@@ -7,7 +7,7 @@ import { roundPoints, drawStrokeToCanvas, drawBackground } from './canvas.js';
 import { initP2P, send as p2pSend, leaveRoom, isConnected, hasPeers } from './p2p-sync.js';
 import { generateKey, exportKey, importKey, encrypt, decrypt } from './encryption.js';
 import { exportAppBundle, importAppBundle } from './share.js';
-import { initRelay, putBlob as relayPut, deleteBlob as relayDelete, isRelayConnected } from './relay.js';
+import { initRelay, putBlob as relayPut, deleteBlob as relayDelete, isRelayConnected, fetchRoom, putBlobToRoom } from './relay.js';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -58,6 +58,8 @@ const state = {
   masterKeyHash: null,
   /** @type {Object<string, CryptoKey>} notebookId → NotebookKey (für OPFS-Verschlüsselung) */
   notebookKeys: {},
+  /** @type {Set<string>} IDs der geteilten Notebooks (Relay-Sync über notebookHash) */
+  sharedNotebooks: new Set(),
 
   // UI
   sidebarOpen: true,
@@ -251,6 +253,12 @@ async function _flushSave() {
   const data = await serializeStrokes(page.strokes || [], nbId);
   await savePageData(nbId, String(page.id), data);
   relayPut(`p:${nbId}/${page.id}`, data);
+  // Geteiltes Notebook: auch an shared Relay-Room pushen
+  if (state.sharedNotebooks.has(nbId)) {
+    notebookHash(nbId).then(nbHash => {
+      putBlobToRoom(nbHash, state.masterKeyHash, `p:${page.id}`, data);
+    });
+  }
 }
 
 /**
@@ -1110,6 +1118,105 @@ async function notebookHash(notebookId) {
   return computeKeyHash(raw);
 }
 
+/** Geteilte Notebooks in localStorage speichern. */
+function saveSharedNotebooks() {
+  localStorage.setItem('notizbuch:sharedNotebooks', JSON.stringify([...state.sharedNotebooks]));
+}
+
+/** Geteilte Notebooks aus localStorage laden. */
+function loadSharedNotebooks() {
+  try {
+    const saved = localStorage.getItem('notizbuch:sharedNotebooks');
+    if (saved) state.sharedNotebooks = new Set(JSON.parse(saved));
+  } catch {}
+}
+
+/**
+ * Daten aus einem geteilten Relay-Room in ein Notebook mergen.
+ * @param {string} notebookId
+ * @param {Object<string, Uint8Array>} nodes - Relay-Blobs
+ */
+async function mergeSharedNotebookData(notebookId, nodes) {
+  const nb = state.notebooks.find(n => n.id === notebookId);
+  if (!nb) return;
+
+  let merged = 0;
+  for (const [key, blob] of Object.entries(nodes)) {
+    // Pages: key = "p:{pageId}"
+    if (!key.startsWith('p:') || !(blob instanceof Uint8Array)) continue;
+    const pageId = key.slice(2);
+    let strokes = [];
+    try { strokes = await deserializeStrokes(blob, notebookId); } catch { continue; }
+    if (!strokes.length) continue;
+
+    let page = nb.pages.find(p => p.id === pageId);
+    if (!page) {
+      // Neue Seite erstellen
+      page = { id: pageId, strokes: [], background: 'grid', order: nb.pages.length };
+      nb.pages.push(page);
+    }
+    // Union-Merge by ID
+    const existing = new Map(page.strokes.map(s => [s.id, s]));
+    for (const s of strokes) {
+      if (!existing.has(s.id)) {
+        page.strokes.push(s);
+        merged++;
+      }
+    }
+  }
+
+  // Meta aus shared Room (Notebook-Name, Page-Struktur)
+  const metaBlob = nodes['meta'];
+  if (metaBlob instanceof Uint8Array) {
+    try {
+      const nbKey = await getNotebookKey(notebookId);
+      const plainBuf = await decrypt(nbKey, metaBlob);
+      const sharedMeta = JSON.parse(new TextDecoder().decode(plainBuf));
+      if (sharedMeta.name && nb.name === 'Geteiltes Notizbuch') nb.name = sharedMeta.name;
+      // Fehlende Pages anlegen
+      if (sharedMeta.pages) {
+        for (const sp of sharedMeta.pages) {
+          if (!nb.pages.find(p => p.id === sp.id)) {
+            nb.pages.push({ id: sp.id, strokes: [], background: sp.background || 'grid', order: sp.order ?? nb.pages.length });
+          }
+        }
+      }
+    } catch {}
+  }
+
+  if (merged > 0) {
+    console.log(`[Share] ${merged} Strokes aus Relay gemerged für Notebook ${notebookId}`);
+    await saveAppMeta();
+  }
+}
+
+/**
+ * Alle Pages eines geteilten Notebooks an den shared Relay-Room pushen.
+ * @param {string} notebookId
+ */
+async function pushSharedNotebook(notebookId) {
+  const nb = state.notebooks.find(n => n.id === notebookId);
+  if (!nb) return;
+  const nbHash = await notebookHash(notebookId);
+
+  // Meta pushen (Notebook-Name + Page-Struktur, mit NotebookKey verschlüsselt)
+  try {
+    const nbKey = await getNotebookKey(notebookId);
+    const meta = { name: nb.name, pages: nb.pages.map(p => ({ id: p.id, background: p.background, order: p.order })) };
+    const metaEncrypted = await encrypt(nbKey, JSON.stringify(meta));
+    putBlobToRoom(nbHash, state.masterKeyHash, 'meta', metaEncrypted);
+  } catch {}
+
+  // Pages pushen
+  for (const page of nb.pages) {
+    if (!page.strokes?.length) continue;
+    try {
+      const encrypted = await serializeStrokes(page.strokes, notebookId);
+      putBlobToRoom(nbHash, state.masterKeyHash, `p:${page.id}`, encrypted);
+    } catch {}
+  }
+}
+
 /**
  * URL-Hash auf aktuelles Notebook setzen: #nb-{notebookHash}
  */
@@ -1228,6 +1335,10 @@ async function pushAllToRelay() {
         relayPut(`p:${nb.id}/${p.id}`, data);
       } catch {}
     }
+  }
+  // Geteilte Notebooks auch an shared Relay-Rooms pushen
+  for (const nbId of state.sharedNotebooks) {
+    await pushSharedNotebook(nbId);
   }
   console.log('[Relay] Alle Pages gepusht');
 }
@@ -1631,6 +1742,13 @@ async function openShareModal() {
     });
   }
   modal.classList.remove('hidden');
+
+  // Notebook als geteilt markieren + Daten an shared Relay-Room pushen
+  if (!state.sharedNotebooks.has(nbId)) {
+    state.sharedNotebooks.add(nbId);
+    saveSharedNotebooks();
+  }
+  pushSharedNotebook(nbId);
 }
 
 function closeShareModal() {
@@ -1721,6 +1839,21 @@ async function handleInvite(invite) {
     });
     state.currentPages[notebookId] = 0;
     await saveAppMeta();
+  }
+
+  // Als geteiltes Notebook markieren
+  state.sharedNotebooks.add(notebookId);
+  saveSharedNotebooks();
+
+  // Daten aus dem geteilten Relay-Room holen
+  try {
+    const nbHash = await notebookHash(notebookId);
+    const sharedNodes = await fetchRoom(nbHash);
+    if (sharedNodes) {
+      await mergeSharedNotebookData(notebookId, sharedNodes);
+    }
+  } catch (e) {
+    console.warn('[Share] Relay-Fetch fehlgeschlagen:', e);
   }
 
   // Zum geteilten Notebook wechseln
@@ -2261,6 +2394,9 @@ async function init() {
   // 5. Lokale Settings laden
   const savedCurrentId = await loadLocalSettings();
 
+  // 5b. Geteilte Notebooks laden
+  loadSharedNotebooks();
+
   // 6. App-Metadaten laden (lokal)
   await loadAppMeta();
 
@@ -2270,6 +2406,15 @@ async function init() {
     if (relayNodes) await mergeRelayData(relayNodes);
   } catch (e) {
     console.warn('[Relay] Init fehlgeschlagen:', e);
+  }
+
+  // 6c. Geteilte Notebooks: Daten aus shared Relay-Rooms holen
+  for (const nbId of state.sharedNotebooks) {
+    try {
+      const nbHash = await notebookHash(nbId);
+      const sharedNodes = await fetchRoom(nbHash);
+      if (sharedNodes) await mergeSharedNotebookData(nbId, sharedNodes);
+    } catch {}
   }
 
   // 7. Wenn keine Notebooks: Default erstellen

@@ -130,6 +130,60 @@ export async function reconnect(roomKey) {
 }
 
 /**
+ * Daten aus einem anderen Relay-Room holen (temporäre Verbindung).
+ * Stört die Hauptverbindung nicht.
+ * @param {string} roomKey - Room-ID
+ * @returns {Promise<Object<string, Uint8Array>|null>}
+ */
+export function fetchRoom(roomKey) {
+  return new Promise(resolve => {
+    const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+    const wsUrl = isLocal ? `wss://${location.host}` : 'wss://notes.mike.fm-media-staging.at';
+    let tempWs;
+    try { tempWs = new WebSocket(wsUrl); } catch { resolve(null); return; }
+
+    const timeout = setTimeout(() => { try { tempWs.close(); } catch {} resolve(null); }, 5000);
+
+    tempWs.onopen = () => {
+      tempWs.send(JSON.stringify({ type: 'join', room: roomKey }));
+    };
+    tempWs.onmessage = (event) => {
+      let msg;
+      try { msg = JSON.parse(event.data); } catch { return; }
+      if (msg.type === 'sync') {
+        clearTimeout(timeout);
+        const nodes = {};
+        for (const [key, val] of Object.entries(msg.notebooks || {})) {
+          if (typeof val === 'string') {
+            try { nodes[key] = fromBase64(val); } catch {}
+          }
+        }
+        tempWs.close();
+        resolve(nodes);
+      }
+    };
+    tempWs.onclose = () => { clearTimeout(timeout); resolve(null); };
+    tempWs.onerror = () => { clearTimeout(timeout); resolve(null); };
+  });
+}
+
+/**
+ * Blob in einem bestimmten Room speichern (über die Hauptverbindung).
+ * Wechselt den Room temporär und wechselt zurück.
+ * @param {string} roomKey - Ziel-Room
+ * @param {string} mainRoom - Haupt-Room zum Zurückwechseln
+ * @param {string} id - Blob-ID
+ * @param {Uint8Array} data - Verschlüsselte Daten
+ */
+export function putBlobToRoom(roomKey, mainRoom, id, data) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({ type: 'join', room: roomKey }));
+  ws.send(JSON.stringify({ type: 'node-put', id, data: toBase64(data) }));
+  // Zurück zum Haupt-Room
+  ws.send(JSON.stringify({ type: 'join', room: mainRoom }));
+}
+
+/**
  * Prüfen ob mit Relay verbunden.
  * @returns {boolean}
  */
