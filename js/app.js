@@ -1830,15 +1830,15 @@ async function handleInvite(invite) {
   const raw = await exportKey(invite.key);
   localStorage.setItem(`notizbuch:nbKey:${notebookId}`, JSON.stringify(Array.from(raw)));
 
-  // Notebook erstellen wenn nicht vorhanden
+  // Notebook erstellen wenn nicht vorhanden (ohne Pages — kommen vom Relay)
+  let isNew = false;
   if (!state.notebooks.find(n => n.id === notebookId)) {
-    const pageId = String(Date.now() + 1);
     state.notebooks.push({
       id: notebookId, name: invite.name,
-      pages: [{ id: pageId, strokes: [], background: 'grid', order: 0 }]
+      pages: []
     });
     state.currentPages[notebookId] = 0;
-    await saveAppMeta();
+    isNew = true;
   }
 
   // Als geteiltes Notebook markieren
@@ -1855,6 +1855,14 @@ async function handleInvite(invite) {
   } catch (e) {
     console.warn('[Share] Relay-Fetch fehlgeschlagen:', e);
   }
+
+  // Falls nach Relay-Merge immer noch keine Pages: eine leere Seite anlegen
+  const nb = state.notebooks.find(n => n.id === notebookId);
+  if (nb && nb.pages.length === 0) {
+    nb.pages.push({ id: String(Date.now() + 1), strokes: [], background: 'grid', order: 0 });
+  }
+
+  if (isNew) await saveAppMeta();
 
   // Zum geteilten Notebook wechseln
   await selectNotebook(notebookId);
@@ -2051,7 +2059,7 @@ function onPointerDown(e) {
 
   // Touch-Handling: 3-Finger = Zoom/Pan, 1-2 Finger = Zeichnen (oder Hand-Tool)
   if (e.pointerType === 'touch') {
-    // Touch-Position immer tracken
+    // Zählen wie viele Touch-Punkte aktiv sind (inkl. diesen neuen)
     pinchState.touches[e.pointerId] = { x: e.clientX, y: e.clientY };
     const touchCount = Object.keys(pinchState.touches).length;
 
@@ -2096,9 +2104,11 @@ function onPointerDown(e) {
     // Pen erkannt → Touch komplett ignorieren (Palm-Rejection)
     if (state.penDetected) return;
 
-    // 1 Finger ohne Pen → Zeichnen (fällt durch zum Drawing-Code unten)
     // 2 Finger ohne Hand-Tool → ignorieren (kein versehentliches Zeichnen)
     if (touchCount >= 2) return;
+
+    // 1 Finger ohne Pen → Zeichnen: aus pinchState entfernen damit pointerUp korrekt läuft
+    delete pinchState.touches[e.pointerId];
   }
 
   // Hand-Tool → Panning
