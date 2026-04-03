@@ -1066,7 +1066,10 @@ async function importKeyFromHex(hex) {
  * Wer die URL hat, hat den Key — kein Import-Dialog nötig.
  * @returns {Promise<string>} masterKeyHash
  */
-async function initMasterKey() {
+/**
+ * @param {boolean} [hasInvite=false] - Invite-Link erkannt → MasterKey still generieren
+ */
+async function initMasterKey(hasInvite = false) {
   // 1. URL-Hash prüfen (voller MasterKey von anderem Gerät/Share)
   const hash = location.hash.slice(1);
   if (hash && !hash.startsWith('nb') && hash.length === 64 && /^[0-9a-fA-F]+$/.test(hash)) {
@@ -1085,7 +1088,12 @@ async function initMasterKey() {
     } catch {}
   }
 
-  // 3. Kein gespeicherter Key, kein URL-Hash → Erst-Start
+  // 3. Invite-Link → MasterKey still generieren (kein Dialog)
+  if (hasInvite) {
+    return generateAndSaveKey();
+  }
+
+  // 4. Kein gespeicherter Key, kein URL-Hash → Erst-Start
   return showFirstStartDialog();
 }
 
@@ -1908,31 +1916,46 @@ function onPointerDown(e) {
     state.penDetected = true;
   }
 
-  // Touch-Handling: Bei Pen-Erkennung oder wenn nicht Hand-Tool → Touch ignorieren für Zeichnen
+  // Touch-Handling: Pinch/Pan/Swipe
   if (e.pointerType === 'touch') {
-    if (state.tool === 'hand') {
-      // Hand-Tool: Touch erlaubt für Pan/Pinch/Swipe
-      pinchState.touches[e.pointerId] = { x: e.clientX, y: e.clientY };
-      if (Object.keys(pinchState.touches).length === 2) {
-        _startPinch();
-      } else if (Object.keys(pinchState.touches).length === 1) {
-        // Single-Touch: Pan starten
-        isPanning = true;
-        panPointerId = e.pointerId;
-        panStartX = e.clientX;
-        panStartY = e.clientY;
-        panStartViewX = state.viewX;
-        panStartViewY = state.viewY;
-        // Gleichzeitig Swipe tracken
-        swipeState.active = true;
-        swipeState.pointerId = e.pointerId;
-        swipeState.startX = e.clientX;
-        swipeState.startY = e.clientY;
-        swipeState.startTime = Date.now();
-        swipeState.currentX = e.clientX;
+    // Immer Touch-Position tracken (für 3-Finger Zoom/Pan)
+    pinchState.touches[e.pointerId] = { x: e.clientX, y: e.clientY };
+    const touchCount = Object.keys(pinchState.touches).length;
+
+    // 2+ Finger → Pinch-Zoom (unabhängig vom Tool)
+    if (touchCount >= 2) {
+      // Zeichnen abbrechen falls aktiv
+      if (isDrawing) {
+        isDrawing = false;
+        activePointerId = null;
+        if (activeCtx) {
+          activeCtx.setTransform(DPR, 0, 0, DPR, 0, 0);
+          activeCtx.clearRect(0, 0, activeCanvas.width / DPR, activeCanvas.height / DPR);
+        }
+        currentPoints = [];
+        lastPoint = null;
       }
+      if (!pinchState.active) _startPinch();
       return;
     }
+
+    // 1 Finger + Hand-Tool → Pan + Swipe
+    if (state.tool === 'hand') {
+      isPanning = true;
+      panPointerId = e.pointerId;
+      panStartX = e.clientX;
+      panStartY = e.clientY;
+      panStartViewX = state.viewX;
+      panStartViewY = state.viewY;
+      swipeState.active = true;
+      swipeState.pointerId = e.pointerId;
+      swipeState.startX = e.clientX;
+      swipeState.startY = e.clientY;
+      swipeState.startTime = Date.now();
+      swipeState.currentX = e.clientX;
+      return;
+    }
+
     // Pen erkannt → Touch komplett ignorieren (Palm-Rejection)
     if (state.penDetected) return;
   }
@@ -2182,12 +2205,16 @@ function renderUI() {
     const allColors = [...COLORS, ...state.customColors];
     mColorGrid.innerHTML = allColors.map(c =>
       `<button class="color-dot ${c === state.color ? 'active' : ''}" data-mcolor="${c}" style="background:${c}"></button>`
-    ).join('');
+    ).join('') + `<button class="color-dot color-picker-btn" id="btn-mobile-color-picker" title="Farbwähler"></button>`;
     mColorGrid.querySelectorAll('[data-mcolor]').forEach(btn => {
       btn.addEventListener('click', () => {
         setColor(btn.dataset.mcolor);
         document.getElementById('mobile-color-menu')?.classList.add('hidden');
       });
+    });
+    document.getElementById('btn-mobile-color-picker')?.addEventListener('click', () => {
+      document.getElementById('mobile-color-menu')?.classList.add('hidden');
+      toggleColorPicker();
     });
   }
 
@@ -2228,8 +2255,8 @@ async function init() {
   // 3. Invite-Link prüfen (bevor MasterKey-Dialog kommt)
   const invite = await parseInviteLink();
 
-  // 4. MasterKey laden oder generieren
-  await initMasterKey();
+  // 4. MasterKey laden oder generieren (bei Invite: still generieren)
+  await initMasterKey(!!invite);
 
   // 5. Lokale Settings laden
   const savedCurrentId = await loadLocalSettings();

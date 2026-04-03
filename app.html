@@ -50,6 +50,9 @@
       height: 100%;
       overflow: hidden;
       touch-action: none;
+      overscroll-behavior: none;
+      position: fixed;
+      width: 100%;
     }
 
     body {
@@ -527,6 +530,7 @@
 
     body.zen-mode .toolbar-left [data-tool="pen"],
     body.zen-mode .toolbar-left [data-tool="eraser"],
+    body.zen-mode .toolbar-left #btn-undo,
     body.zen-mode .toolbar-left #btn-reset-view,
     body.zen-mode .toolbar-left #btn-zen {
       display: flex;
