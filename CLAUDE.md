@@ -122,21 +122,28 @@ js/
 ### Schlüssel-Hierarchie
 
 ```
-MasterKey (AES-GCM 256, aus Passphrase via PBKDF2, 600k Iterationen)
-    ├── NotebookKey NB-1 (AES-GCM 256, zufällig generiert)
-    ├── NotebookKey NB-2
-    └── NotebookKey NB-3
+MasterKey (AES-GCM 256, zufällig generiert — KEIN Passphrase)
+  ├── verschlüsselt meta.bin (Notebook-Struktur + alle NotebookKeys)
+  ├── SHA-256(MasterKey)[0:16] = masterKeyHash
+  │     → Relay-Room, P2P-Room (eigene Geräte)
+  │
+  └── NotebookKey pro Notebook (AES-GCM 256, zufällig)
+        ├── verschlüsselt Stroke-Daten (OPFS + Relay)
+        └── SHA-256(NotebookKey)[0:16] = notebookHash
+              → URL-Hash: #nb-{notebookHash}
+              → Share-Link: #nb-{hash}&k={base64}&name={name}
 ```
 
-- **MasterKey**: Gleiche Passphrase = gleicher Room = automatischer Sync zwischen eigenen Geräten
-- **NotebookKey**: Pro Notebook. Wird beim Teilen im URL-Fragment übergeben (`#nb={id}&k={base64}`)
-- **Key-Sharing**: NotebookKeys werden in der verschlüsselten Meta eingebettet (MasterKey-verschlüsselt). `installNotebookKeys()` installiert fehlende Keys bei `loadAppMeta()` + `mergeRelayData()`. Ohne das: Key-Mismatch zwischen Geräten → Relay-Sync kann Page-Daten nicht entschlüsseln.
-- Keys in localStorage (raw bytes als JSON-Array). Produktions-Upgrade: IndexedDB non-extractable CryptoKey.
+- **MasterKey**: Zufällig generiert bei Erst-Start. User muss Key sichern (Hex anzeigen + .txt Download). Gleicher Key auf anderem Gerät = gleicher Sync-Room. Import via Hex-Eingabe oder Datei-Upload.
+- **NotebookKey**: Pro Notebook. Wird beim Teilen im URL-Fragment übergeben.
+- **URL-Hash**: `#nb-{notebookHash}` zeigt aktuelles Notebook. Ändert sich bei Navigation. `hashchange`-Listener für manuelle URL-Eingabe. Altes Format `#nb={id}&k={key}` wird auch erkannt.
+- **Key-Sharing**: NotebookKeys in verschlüsselter Meta eingebettet (MasterKey-verschlüsselt). `installNotebookKeys()` bei `loadAppMeta()` + `mergeRelayData()`.
+- Keys in localStorage (raw bytes als JSON-Array).
 
 ### P2P-Sync (Trystero)
 
 - **Library:** Trystero via `esm.sh/trystero/nostr` (kein eigener Signaling-Server)
-- **Room-ID:** Hash des MasterKeys (alle Geräte mit gleicher Passphrase im selben Room)
+- **Room-ID:** Hash des MasterKeys (alle eigenen Geräte im selben Room)
 - **Actions:** stroke, undo, clear, full-sync, nb-created, nb-deleted, nb-renamed, page-created, page-deleted, page-bg
 - **Full-Sync:** Bei Peer-Join wird kompletter State gesendet (alle Notebooks, Pages, Strokes). Union-Merge by ID.
 - **Kein Room-Wechsel bei Seitennavigation** — alle Pages eines Notebooks über denselben Room
