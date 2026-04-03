@@ -91,6 +91,8 @@ const pinchState = {
   startViewX: 0, startViewY: 0, startScale: 1,
   startMidX: 0, startMidY: 0, startDist: 1
 };
+/** Alle aktiven Touch-Pointer (für Finger-Zählung, unabhängig von pinchState) */
+const activeTouches = new Set();
 
 // ─── Swipe State ────────────────────────────────────────────────────────────
 
@@ -2059,9 +2061,9 @@ function onPointerDown(e) {
 
   // Touch-Handling: 3-Finger = Zoom/Pan, 1-2 Finger = Zeichnen (oder Hand-Tool)
   if (e.pointerType === 'touch') {
-    // Zählen wie viele Touch-Punkte aktiv sind (inkl. diesen neuen)
+    activeTouches.add(e.pointerId);
     pinchState.touches[e.pointerId] = { x: e.clientX, y: e.clientY };
-    const touchCount = Object.keys(pinchState.touches).length;
+    const touchCount = activeTouches.size;
 
     // 3+ Finger → Pinch-Zoom/Pan (unabhängig vom Tool)
     if (touchCount >= 3) {
@@ -2107,8 +2109,7 @@ function onPointerDown(e) {
     // 2 Finger ohne Hand-Tool → ignorieren (kein versehentliches Zeichnen)
     if (touchCount >= 2) return;
 
-    // 1 Finger ohne Pen → Zeichnen: aus pinchState entfernen damit pointerUp korrekt läuft
-    delete pinchState.touches[e.pointerId];
+    // 1 Finger → Zeichnen (fällt durch zum Drawing-Code unten)
   }
 
   // Hand-Tool → Panning
@@ -2145,10 +2146,13 @@ function onPointerDown(e) {
 }
 
 function onPointerMove(e) {
-  // Pinch-Zoom
+  // Touch-Position aktualisieren (für Pinch-Berechnung)
   if (pinchState.touches[e.pointerId]) {
     pinchState.touches[e.pointerId] = { x: e.clientX, y: e.clientY };
-    if (pinchState.active) _updatePinch();
+  }
+  // Aktiver Pinch-Zoom → nur Pinch updaten
+  if (pinchState.active) {
+    _updatePinch();
     // Swipe-Tracking
     if (swipeState.active && e.pointerId === swipeState.pointerId) {
       swipeState.currentX = e.clientX;
@@ -2190,10 +2194,13 @@ function onPointerMove(e) {
 }
 
 function onPointerUp(e) {
+  // Touch aufräumen
+  activeTouches.delete(e.pointerId);
+  delete pinchState.touches[e.pointerId];
+
   // Pinch-Zoom beenden
-  if (pinchState.touches[e.pointerId]) {
-    delete pinchState.touches[e.pointerId];
-    if (pinchState.active) {
+  if (pinchState.active) {
+    if (activeTouches.size < 2) {
       pinchState.active = false;
       redrawStrokes(); // Cache nach Zoom aktualisieren
     }
