@@ -2049,14 +2049,14 @@ function onPointerDown(e) {
     state.penDetected = true;
   }
 
-  // Touch-Handling: Pinch/Pan/Swipe
+  // Touch-Handling: 3-Finger = Zoom/Pan, 1-2 Finger = Zeichnen (oder Hand-Tool)
   if (e.pointerType === 'touch') {
-    // Immer Touch-Position tracken (für 3-Finger Zoom/Pan)
+    // Touch-Position immer tracken
     pinchState.touches[e.pointerId] = { x: e.clientX, y: e.clientY };
     const touchCount = Object.keys(pinchState.touches).length;
 
-    // 2+ Finger → Pinch-Zoom (unabhängig vom Tool)
-    if (touchCount >= 2) {
+    // 3+ Finger → Pinch-Zoom/Pan (unabhängig vom Tool)
+    if (touchCount >= 3) {
       // Zeichnen abbrechen falls aktiv
       if (isDrawing) {
         isDrawing = false;
@@ -2072,8 +2072,12 @@ function onPointerDown(e) {
       return;
     }
 
-    // 1 Finger + Hand-Tool → Pan + Swipe
+    // Hand-Tool: 1 Finger → Pan + Swipe, 2 Finger → Pinch
     if (state.tool === 'hand') {
+      if (touchCount >= 2) {
+        if (!pinchState.active) _startPinch();
+        return;
+      }
       isPanning = true;
       panPointerId = e.pointerId;
       panStartX = e.clientX;
@@ -2091,6 +2095,10 @@ function onPointerDown(e) {
 
     // Pen erkannt → Touch komplett ignorieren (Palm-Rejection)
     if (state.penDetected) return;
+
+    // 1 Finger ohne Pen → Zeichnen (fällt durch zum Drawing-Code unten)
+    // 2 Finger ohne Hand-Tool → ignorieren (kein versehentliches Zeichnen)
+    if (touchCount >= 2) return;
   }
 
   // Hand-Tool → Panning
@@ -2528,7 +2536,7 @@ async function resync() {
     // 3. Aktuelle Seite neu laden (OPFS könnte durch Relay-Merge aktualisiert worden sein)
     const page = currentPage();
     if (page) await loadPage(state.currentNotebookId, page.id, page);
-    fitToContent();
+    redrawStrokes();
     renderUI();
 
     // 4. P2P: nur neu aufbauen wenn keine Peers verbunden (Signaling ist teuer + fragil)
