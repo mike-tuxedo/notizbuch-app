@@ -494,11 +494,14 @@ function compositeStrokes() {
  * @returns {{minX: number, minY: number, maxX: number, maxY: number}|null}
  */
 function computeStrokeBounds() {
-  const strokes = currentPage()?.strokes;
+  const page = currentPage();
+  const strokes = page?.strokes;
   if (!strokes?.length) return null;
+  const clearedAt = page.clearedAt || 0;
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   for (const s of strokes) {
     if (s.tool === 'eraser') continue;
+    if (Number(s.id) <= clearedAt) continue;
     for (const p of (s.points || [])) {
       if (p.x < minX) minX = p.x;
       if (p.y < minY) minY = p.y;
