@@ -186,11 +186,20 @@ export function pushBlobsToRoom(roomKey, blobs) {
 
     tempWs.onopen = () => {
       tempWs.send(JSON.stringify({ type: 'join', room: roomKey }));
-      for (const { id, data } of blobs) {
-        tempWs.send(JSON.stringify({ type: 'node-put', id, data: toBase64(data) }));
+    };
+    tempWs.onmessage = (event) => {
+      let msg;
+      try { msg = JSON.parse(event.data); } catch { return; }
+      // Warte auf sync-Response (= Join bestätigt, Room ist gesetzt)
+      if (msg.type === 'sync') {
+        for (const { id, data } of blobs) {
+          tempWs.send(JSON.stringify({ type: 'node-put', id, data: toBase64(data) }));
+        }
+        clearTimeout(timeout);
+        console.log('[Relay] Shared Room push:', blobs.length, 'Blobs →', roomKey.slice(0, 8));
+        // Warten bis WebSocket-Buffer geleert ist
+        setTimeout(() => { try { tempWs.close(); } catch {} resolve(); }, 500);
       }
-      clearTimeout(timeout);
-      setTimeout(() => { try { tempWs.close(); } catch {} resolve(); }, 200);
     };
     tempWs.onerror = () => { clearTimeout(timeout); resolve(); };
     tempWs.onclose = () => { clearTimeout(timeout); resolve(); };

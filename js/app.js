@@ -245,6 +245,8 @@ function flushSave() {
   _flushSave();
 }
 
+let _sharedPushTimer = null;
+
 async function _flushSave() {
   _saveTimer = null;
   const page = currentPage();
@@ -253,9 +255,13 @@ async function _flushSave() {
   const data = await serializeStrokes(page.strokes || [], nbId);
   await savePageData(nbId, String(page.id), data);
   relayPut(`p:${nbId}/${page.id}`, data);
-  // Geteiltes Notebook: Page + Meta an shared Relay-Room pushen
+  // Geteiltes Notebook: debounced an shared Relay-Room pushen (3s)
   if (state.sharedNotebooks.has(nbId)) {
-    pushSharedNotebook(nbId);
+    if (_sharedPushTimer) clearTimeout(_sharedPushTimer);
+    _sharedPushTimer = setTimeout(() => {
+      _sharedPushTimer = null;
+      pushSharedNotebook(nbId);
+    }, 3000);
   }
 }
 
@@ -1247,6 +1253,7 @@ function loadSharedNotebooks() {
 async function mergeSharedNotebookData(notebookId, nodes) {
   const nb = state.notebooks.find(n => n.id === notebookId);
   if (!nb) return;
+  console.log('[Share] mergeSharedNotebookData:', notebookId, Object.keys(nodes).length, 'Blobs');
 
   let merged = 0;
   for (const [key, blob] of Object.entries(nodes)) {
@@ -1964,7 +1971,9 @@ async function handleInvite(invite) {
   // Daten aus dem geteilten Relay-Room holen
   try {
     const nbHash = await notebookHash(notebookId);
+    console.log('[Share] Fetching from shared room:', nbHash.slice(0, 8));
     const sharedNodes = await fetchRoom(nbHash);
+    console.log('[Share] fetchRoom result:', sharedNodes ? Object.keys(sharedNodes).length + ' Blobs' : 'null');
     if (sharedNodes) {
       await mergeSharedNotebookData(notebookId, sharedNodes);
     }
