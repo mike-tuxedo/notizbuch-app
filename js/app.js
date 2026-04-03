@@ -892,7 +892,64 @@ function toggleZenMode() {
   setTimeout(() => setupCanvases(), 100);
 }
 
-// ─── Notebook Rename ────────────────────────────────────────────────────────
+// ─── Notebook Rename + Kontextmenü ──────────────────────────────────────────
+
+/** Inline-Rename in der Sidebar-Liste starten. */
+function inlineRenameNotebook(nbId) {
+  const tab = document.querySelector(`.notebook-tab[data-nb="${nbId}"]`);
+  if (!tab) return;
+  const nameEl = tab.querySelector('.nb-name');
+  if (!nameEl) return;
+  const nb = state.notebooks.find(n => n.id === nbId);
+  if (!nb) return;
+
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = nb.name;
+  input.className = 'rename-input';
+  input.style.cssText = 'width:100%;font-size:13px;padding:2px 4px;background:var(--surface-2);border:1px solid var(--accent);border-radius:4px;color:var(--text);outline:none;';
+  const finish = async () => {
+    await renameNotebook(nbId, input.value);
+    renderUI();
+  };
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') finish();
+    if (e.key === 'Escape') renderUI();
+  });
+  input.addEventListener('blur', finish);
+  nameEl.textContent = '';
+  nameEl.appendChild(input);
+  input.focus();
+  input.select();
+}
+
+/** Kontextmenü für Notebook anzeigen (Touch Longpress). */
+function showNbContextMenu(nbId, x, y) {
+  const menu = document.getElementById('nb-context-menu');
+  if (!menu) return;
+  menu.classList.remove('hidden');
+  menu.style.left = Math.min(x, window.innerWidth - 160) + 'px';
+  menu.style.top = Math.min(y, window.innerHeight - 100) + 'px';
+
+  document.getElementById('nb-ctx-rename').onclick = () => {
+    menu.classList.add('hidden');
+    inlineRenameNotebook(nbId);
+  };
+  document.getElementById('nb-ctx-delete').onclick = () => {
+    menu.classList.add('hidden');
+    if (state.notebooks.length > 1 && confirm('Notebook löschen?')) {
+      deleteNotebook(nbId);
+    }
+  };
+  // Menü schließen bei Klick außerhalb
+  const close = (e) => {
+    if (!menu.contains(e.target)) {
+      menu.classList.add('hidden');
+      document.removeEventListener('pointerdown', close);
+    }
+  };
+  setTimeout(() => document.addEventListener('pointerdown', close), 10);
+}
 
 /** Inline-Rename im Notebook-Titel starten. */
 function startRename() {
@@ -2277,21 +2334,48 @@ function renderUI() {
   // Notebook-Liste in Sidebar
   const nbList = document.getElementById('notebook-list');
   if (nbList) {
+    const renameSvg = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>';
+    const deleteSvg = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
     nbList.innerHTML = state.notebooks.map(nb => `
       <button class="notebook-tab ${nb.id === state.currentNotebookId ? 'active' : ''}" data-nb="${nb.id}">
         <span class="nb-name">${nb.name}</span>
-        ${state.notebooks.length > 1 ? `<button class="nb-delete" data-delete="${nb.id}" title="Löschen">&times;</button>` : ''}
+        <span class="nb-actions">
+          <span class="nb-action-btn" data-rename="${nb.id}" title="Umbenennen">${renameSvg}</span>
+          ${state.notebooks.length > 1 ? `<span class="nb-action-btn danger" data-delete="${nb.id}" title="Löschen">${deleteSvg}</span>` : ''}
+        </span>
       </button>
     `).join('');
 
     // Event-Listener
     nbList.querySelectorAll('.notebook-tab').forEach(btn => {
+      const nbId = btn.dataset.nb;
+      // Klick → Notebook wechseln
       btn.addEventListener('click', (e) => {
-        if (e.target.classList.contains('nb-delete')) return;
-        selectNotebook(btn.dataset.nb);
+        if (e.target.closest('.nb-action-btn')) return;
+        selectNotebook(nbId);
+      });
+      // Longpress → Kontextmenü (Touch)
+      let lpTimer = null;
+      btn.addEventListener('pointerdown', (e) => {
+        if (e.pointerType !== 'touch') return;
+        lpTimer = setTimeout(() => {
+          lpTimer = null;
+          showNbContextMenu(nbId, e.clientX, e.clientY);
+        }, 500);
+      });
+      btn.addEventListener('pointerup', () => { if (lpTimer) clearTimeout(lpTimer); });
+      btn.addEventListener('pointerleave', () => { if (lpTimer) clearTimeout(lpTimer); });
+      btn.addEventListener('pointermove', () => { if (lpTimer) clearTimeout(lpTimer); });
+    });
+    // Hover-Buttons: Umbenennen
+    nbList.querySelectorAll('[data-rename]').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        inlineRenameNotebook(btn.dataset.rename);
       });
     });
-    nbList.querySelectorAll('.nb-delete').forEach(btn => {
+    // Hover-Buttons: Löschen
+    nbList.querySelectorAll('[data-delete]').forEach(btn => {
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
         if (confirm('Notebook löschen?')) deleteNotebook(btn.dataset.delete);

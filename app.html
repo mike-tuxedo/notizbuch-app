@@ -152,19 +152,71 @@
       white-space: nowrap;
     }
 
-    .nb-delete {
-      font-size: 16px;
-      color: var(--text-faint);
-      padding: 0 2px;
+    .nb-actions {
+      display: flex;
+      gap: 2px;
       opacity: 0;
       transition: opacity 0.15s;
+      flex-shrink: 0;
     }
 
-    .notebook-tab:hover .nb-delete {
+    .notebook-tab:hover .nb-actions {
       opacity: 1;
     }
 
-    .nb-delete:hover {
+    .nb-action-btn {
+      width: 22px;
+      height: 22px;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-faint);
+      transition: background 0.15s, color 0.15s;
+    }
+
+    .nb-action-btn:hover {
+      background: var(--surface-2);
+      color: var(--text);
+    }
+
+    .nb-action-btn.danger:hover {
+      color: var(--danger);
+    }
+
+    /* Touch: Longpress-Menü */
+    .nb-context-menu {
+      position: fixed;
+      background: var(--surface);
+      border: 1px solid var(--border-2);
+      border-radius: 8px;
+      padding: 4px;
+      z-index: 300;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+      min-width: 140px;
+    }
+
+    .nb-context-menu.hidden {
+      display: none;
+    }
+
+    .nb-context-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+      padding: 8px 12px;
+      border-radius: 5px;
+      color: var(--text);
+      font-size: 13px;
+      text-align: left;
+    }
+
+    .nb-context-item:hover {
+      background: var(--surface-2);
+    }
+
+    .nb-context-item.danger {
       color: var(--danger);
     }
 
@@ -1223,6 +1275,18 @@
     <div class="mobile-popup-content" id="mobile-size-grid">
       <!-- Dynamisch via renderUI() -->
     </div>
+  </div>
+
+  <!-- Notebook Kontextmenü (Touch Longpress) -->
+  <div class="nb-context-menu hidden" id="nb-context-menu">
+    <button class="nb-context-item" id="nb-ctx-rename">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>
+      Umbenennen
+    </button>
+    <button class="nb-context-item danger" id="nb-ctx-delete">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+      Löschen
+    </button>
   </div>
 
   <!-- Sidebar Overlay (mobil) -->
