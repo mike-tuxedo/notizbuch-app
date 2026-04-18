@@ -1334,9 +1334,17 @@ async function pushSharedNotebook(notebookId) {
   const nb = state.notebooks.find(n => n.id === notebookId);
   if (!nb) { console.warn('[Share] pushSharedNotebook: notebook nicht gefunden', notebookId); return; }
   const nbHash = await notebookHash(notebookId);
-  const blobs = [];
 
-  // Meta (Notebook-Name + Page-Struktur, mit NotebookKey verschlüsselt)
+  // 1. Erst Remote-Daten fetchen + mergen (verhindert Überschreiben fremder Strokes)
+  try {
+    const remoteNodes = await fetchRoom(nbHash);
+    if (remoteNodes && Object.keys(remoteNodes).length > 0) {
+      await mergeSharedNotebookData(notebookId, remoteNodes);
+    }
+  } catch (e) { console.warn('[Share] Pre-push fetch fehlgeschlagen:', e); }
+
+  // 2. Aktuellen (gemergten) State serialisieren
+  const blobs = [];
   try {
     const nbKey = await getNotebookKey(notebookId);
     const meta = { name: nb.name, pages: nb.pages.map(p => ({ id: p.id, background: p.background, order: p.order })) };
@@ -1344,7 +1352,6 @@ async function pushSharedNotebook(notebookId) {
     blobs.push({ id: 'meta', data: metaEncrypted });
   } catch (e) { console.warn('[Share] Meta-encrypt fehlgeschlagen:', e); }
 
-  // Pages
   for (const page of nb.pages) {
     if (!page.strokes?.length) continue;
     try {
@@ -1355,6 +1362,24 @@ async function pushSharedNotebook(notebookId) {
 
   console.log('[Share] pushSharedNotebook:', notebookId, '→ Room', nbHash.slice(0, 8), '|', blobs.length, 'Blobs (', nb.pages.length, 'Pages,', nb.pages.reduce((n, p) => n + (p.strokes?.length || 0), 0), 'Strokes total)');
   await pushBlobsToRoom(nbHash, blobs);
+}
+
+/** Periodisches Polling der geteilten Notebooks (alle 10s). */
+let _sharedPollTimer = null;
+function startSharedPolling() {
+  if (_sharedPollTimer) return;
+  _sharedPollTimer = setInterval(async () => {
+    if (document.hidden) return; // nur wenn Tab aktiv
+    for (const nbId of state.sharedNotebooks) {
+      try {
+        const nbHash = await notebookHash(nbId);
+        const nodes = await fetchRoom(nbHash);
+        if (nodes && Object.keys(nodes).length > 0) {
+          await mergeSharedNotebookData(nbId, nodes);
+        }
+      } catch {}
+    }
+  }, 10000);
 }
 
 /**
@@ -2661,6 +2686,9 @@ async function init() {
 
   // 14. Alle Pages an Relay pushen (im Hintergrund)
   pushAllToRelay();
+
+  // 15. Polling für geteilte Notebooks starten
+  startSharedPolling();
 
   console.log('[App] Bereit.', state.notebooks.length, 'Notebooks');
 }
