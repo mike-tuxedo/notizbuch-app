@@ -43,6 +43,7 @@
       box-sizing: border-box;
       margin: 0;
       padding: 0;
+      user-select: none;
     }
 
     html,
@@ -292,6 +293,15 @@
     .footer-btn svg {
       flex-shrink: 0;
       opacity: 0.7;
+    }
+
+    .footer-btn.active {
+      background: var(--accent-glow);
+      color: var(--accent);
+    }
+
+    .footer-btn.active svg {
+      opacity: 1;
     }
 
     /* ─── Main ───────────────────────────────────────────────────────────── */
@@ -984,6 +994,14 @@
           <span class="status-dot" id="status-dot"></span>
           <span class="peer-label" id="peer-count"></span>
         </div>
+        <button class="footer-btn" id="btn-pen-only" title="Nur Stift zum Zeichnen (Finger ignorieren)">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 19l7-7 3 3-7 7-3-3z" />
+            <path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z" />
+          </svg>
+          Nur Stift
+        </button>
         <button class="footer-btn" id="btn-share" title="Notebook teilen">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
             stroke-linecap="round" stroke-linejoin="round">

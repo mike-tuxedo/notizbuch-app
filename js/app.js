@@ -45,6 +45,7 @@ const state = {
   penSizeIndex: 2,
   customColors: [],
   penDetected: false,
+  penOnlyMode: false,
 
   // View
   viewScale: 1,
@@ -880,6 +881,15 @@ function setPenSize(idx) {
   state.penSizeIndex = idx;
   saveLocalSettings();
   renderUI();
+}
+
+// ─── Stiftmodus (Finger-Zeichnen blockieren) ────────────────────────────────
+
+function togglePenOnlyMode() {
+  state.penOnlyMode = !state.penOnlyMode;
+  const btn = document.getElementById('btn-pen-only');
+  if (btn) btn.classList.toggle('active', state.penOnlyMode);
+  saveLocalSettings();
 }
 
 // ─── Zen Mode ───────────────────────────────────────────────────────────────
@@ -2310,6 +2320,7 @@ async function saveLocalSettings() {
   await settingsPut(state.masterKeyHash + ':penSizeIndex', state.penSizeIndex);
   await settingsPut(state.masterKeyHash + ':customColors', [...state.customColors]);
   await settingsPut(state.masterKeyHash + ':penDetected', state.penDetected);
+  await settingsPut(state.masterKeyHash + ':penOnlyMode', state.penOnlyMode);
 }
 
 async function loadLocalSettings() {
@@ -2322,6 +2333,8 @@ async function loadLocalSettings() {
   if (Array.isArray(savedCustomColors)) state.customColors = savedCustomColors;
   const savedPenDetected = await settingsGet(state.masterKeyHash + ':penDetected');
   if (typeof savedPenDetected === 'boolean') state.penDetected = savedPenDetected;
+  const savedPenOnlyMode = await settingsGet(state.masterKeyHash + ':penOnlyMode');
+  if (typeof savedPenOnlyMode === 'boolean') state.penOnlyMode = savedPenOnlyMode;
   return savedCurrentId;
 }
 
@@ -2385,6 +2398,8 @@ function onPointerDown(e) {
       panStartViewY = state.viewY;
       return;
     }
+    // Stiftmodus aktiv → Finger-Zeichnen komplett blockieren
+    if (state.penOnlyMode) return;
     // Pen/Eraser-Tool → 1 Finger zeichnet (fällt durch zum Drawing-Code)
   }
 
@@ -2698,6 +2713,10 @@ function renderUI() {
     const n = state.connectedPeers.length;
     peerEl.textContent = n > 0 ? `${n} Peer${n > 1 ? 's' : ''}` : '';
   }
+
+  // Stiftmodus-Button
+  const penOnlyBtn = document.getElementById('btn-pen-only');
+  if (penOnlyBtn) penOnlyBtn.classList.toggle('active', state.penOnlyMode);
 }
 
 // ─── Init ───────────────────────────────────────────────────────────────────
@@ -2955,6 +2974,9 @@ function setupEvents() {
   document.getElementById('btn-burger')?.addEventListener('click', toggleSidebar);
   // Sidebar schließen bei Klick auf Overlay
   document.getElementById('sidebar-overlay')?.addEventListener('click', toggleSidebar);
+
+  // Stiftmodus
+  document.getElementById('btn-pen-only')?.addEventListener('click', togglePenOnlyMode);
 
   // Share
   document.getElementById('btn-share')?.addEventListener('click', openShareModal);
