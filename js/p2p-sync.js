@@ -2,6 +2,10 @@
 // Signaling über öffentliche Nostr-Relays — kein eigener Server nötig.
 // Datentransport via WebRTC DataChannel — direkte Peer-Verbindung.
 //
+// Multi-Room Support:
+//   - Haupt-Room (masterKeyHash): eigene Geräte, kompletter App-State
+//   - Shared-Rooms (notebookHash): pro geteiltem Notebook, nur Notebook-Daten
+//
 // Actions:
 //   'stroke'       — Ein neuer Stroke
 //   'undo'         — Letzter Stroke gelöscht
@@ -12,6 +16,7 @@
 //   'nb-renamed'   — Notebook umbenannt
 //   'page-created' — Neue Seite
 //   'page-deleted' — Seite gelöscht
+//   'page-bg'      — Seiten-Hintergrund geändert
 
 /** @type {string} App-ID für Trystero Room-Naming */
 const APP_ID = 'notizbuch-v2';
@@ -25,104 +30,173 @@ const NOSTR_RELAYS = [
   'wss://purplepag.es',
 ];
 
-let room = null;
-let _actions = {};
+const ACTION_NAMES = [
+  'stroke', 'undo', 'clear', 'full-sync',
+  'nb-created', 'nb-deleted', 'nb-renamed',
+  'page-created', 'page-deleted', 'page-bg'
+];
 
-/**
- * P2P-Room beitreten.
- * @param {string} roomId - Room-ID (z.B. Hash des MasterKeys)
- * @param {Object} callbacks - Handler für eingehende Actions
- * @returns {Promise<void>}
- */
-export async function initP2P(roomId, callbacks) {
-  if (room) {
-    try { room.leave(); } catch {}
-    room = null;
-    _actions = {};
+/** @type {Map<string, {room: any, actions: Object, callbacks: Object, isMain: boolean}>} */
+const rooms = new Map();
+
+/** @type {string|null} ID des Haupt-Rooms (= masterKeyHash) */
+let mainRoomId = null;
+
+/** @type {Function|null} Cached joinRoom function */
+let _joinRoom = null;
+
+async function ensureTrystero() {
+  if (_joinRoom) return _joinRoom;
+  const mod = await import('https://esm.sh/trystero/nostr');
+  _joinRoom = mod.joinRoom;
+  return _joinRoom;
+}
+
+function actionCallbackName(action) {
+  return 'on' + action.split('-').map(s => s.charAt(0).toUpperCase() + s.slice(1)).join('');
+}
+
+async function _joinAnyRoom(roomId, callbacks, isMain) {
+  // Bestehenden Room verlassen falls vorhanden
+  const existing = rooms.get(roomId);
+  if (existing) {
+    try { existing.room.leave(); } catch {}
+    rooms.delete(roomId);
   }
 
-  try {
-    const { joinRoom } = await import('https://esm.sh/trystero/nostr');
-    room = joinRoom({ appId: APP_ID, relayUrls: NOSTR_RELAYS }, roomId);
-  } catch (e) {
-    console.error('[P2P] Trystero import/join fehlgeschlagen:', e);
-    return;
-  }
+  let joinRoom;
+  try { joinRoom = await ensureTrystero(); }
+  catch (e) { console.error('[P2P] Trystero Import fehlgeschlagen:', e); return; }
 
-  // Alle Actions registrieren
-  const actionNames = [
-    'stroke', 'undo', 'clear', 'full-sync',
-    'nb-created', 'nb-deleted', 'nb-renamed',
-    'page-created', 'page-deleted', 'page-bg'
-  ];
+  let room;
+  try { room = joinRoom({ appId: APP_ID, relayUrls: NOSTR_RELAYS }, roomId); }
+  catch (e) { console.error('[P2P] Room-Join fehlgeschlagen:', e); return; }
 
-  for (const name of actionNames) {
+  const actions = {};
+  for (const name of ACTION_NAMES) {
     const [send, receive] = room.makeAction(name);
-    _actions[name] = send;
-
-    // Callback-Name: 'full-sync' → 'onFullSync', 'nb-created' → 'onNbCreated'
-    const cbName = 'on' + name.split('-').map((s, i) =>
-      s.charAt(0).toUpperCase() + s.slice(1)
-    ).join('');
-
+    actions[name] = send;
+    const cbName = actionCallbackName(name);
     receive((data, peerId) => {
-      if (callbacks[cbName]) callbacks[cbName](data, peerId);
+      if (callbacks[cbName]) callbacks[cbName](data, peerId, roomId);
     });
   }
 
   room.onPeerJoin(peerId => {
-    console.log('[P2P] Peer joined:', peerId);
-    if (callbacks.onPeerJoin) callbacks.onPeerJoin(peerId);
+    console.log(`[P2P] Peer joined ${isMain ? '(main)' : '(shared)'}:`, peerId, '@', roomId.slice(0, 8));
+    if (callbacks.onPeerJoin) callbacks.onPeerJoin(peerId, roomId);
   });
   room.onPeerLeave(peerId => {
-    console.log('[P2P] Peer left:', peerId);
-    if (callbacks.onPeerLeave) callbacks.onPeerLeave(peerId);
+    console.log(`[P2P] Peer left ${isMain ? '(main)' : '(shared)'}:`, peerId, '@', roomId.slice(0, 8));
+    if (callbacks.onPeerLeave) callbacks.onPeerLeave(peerId, roomId);
   });
 
-  console.log('[P2P] Room beigetreten:', roomId);
+  rooms.set(roomId, { room, actions, callbacks, isMain });
+  console.log(`[P2P] Room beigetreten ${isMain ? '(main)' : '(shared)'}:`, roomId.slice(0, 8));
 }
 
 /**
- * Action an alle Peers (oder einen bestimmten) senden.
+ * Haupt-Room beitreten (eigene Geräte).
+ * @param {string} roomId - masterKeyHash
+ * @param {Object} callbacks - Handler für eingehende Actions
+ */
+export async function initP2P(roomId, callbacks) {
+  mainRoomId = roomId;
+  await _joinAnyRoom(roomId, callbacks, true);
+}
+
+/**
+ * Shared-Room beitreten (geteiltes Notebook).
+ * @param {string} roomId - notebookHash
+ * @param {Object} callbacks - Handler für eingehende Actions (gleiche wie Haupt-Room)
+ */
+export async function joinSharedRoom(roomId, callbacks) {
+  if (rooms.has(roomId)) return;
+  await _joinAnyRoom(roomId, callbacks, false);
+}
+
+/**
+ * Shared-Room verlassen.
+ * @param {string} roomId
+ */
+export function leaveSharedRoom(roomId) {
+  const entry = rooms.get(roomId);
+  if (!entry) return;
+  try { entry.room.leave(); } catch {}
+  rooms.delete(roomId);
+}
+
+/**
+ * Action senden. Standard: an Haupt-Room. Mit `roomId`: an spezifischen Room.
  * @param {string} action - Action-Name
  * @param {*} data - Daten
- * @param {string} [peerId] - Nur an diesen Peer
+ * @param {{peerId?: string, roomId?: string}} [opts]
  */
-export function send(action, data, peerId) {
-  const fn = _actions[action];
+export function send(action, data, opts = {}) {
+  const targetRoomId = opts.roomId || mainRoomId;
+  const entry = rooms.get(targetRoomId);
+  if (!entry) {
+    console.warn('[P2P] Room nicht verfügbar:', targetRoomId?.slice(0, 8));
+    return;
+  }
+  const fn = entry.actions[action];
   if (!fn) {
     console.warn('[P2P] Action nicht registriert:', action);
     return;
   }
   try {
-    if (peerId) fn(data, peerId);
+    if (opts.peerId) fn(data, opts.peerId);
     else fn(data);
   } catch (e) {
     console.error('[P2P] Senden fehlgeschlagen:', action, e);
   }
 }
 
-/** Aktuellen Room verlassen. */
-export function leaveRoom() {
-  if (room) {
-    try { room.leave(); } catch {}
-    room = null;
-    _actions = {};
+/**
+ * Action an mehrere Rooms senden (Haupt + alle Shared).
+ * Für Strokes etc. die sowohl an eigene Geräte als auch an geteilte Peers sollen.
+ */
+export function sendToAll(action, data) {
+  for (const [roomId] of rooms) {
+    send(action, data, { roomId });
   }
 }
 
-/** Prüfen ob Room existiert (nicht ob Peers verbunden sind). */
-export function isConnected() {
-  return room !== null;
+/** Alle Rooms verlassen. */
+export function leaveAllRooms() {
+  for (const [, entry] of rooms) {
+    try { entry.room.leave(); } catch {}
+  }
+  rooms.clear();
+  mainRoomId = null;
 }
 
-/** Prüfen ob tatsächlich Peers im Room sind. */
+/** Aktuellen Haupt-Room verlassen (Kompatibilität). */
+export function leaveRoom() {
+  leaveAllRooms();
+}
+
+/** Prüfen ob Haupt-Room existiert. */
+export function isConnected() {
+  return mainRoomId !== null && rooms.has(mainRoomId);
+}
+
+/** Prüfen ob im Haupt-Room Peers sind. */
 export function hasPeers() {
-  if (!room) return false;
+  const entry = rooms.get(mainRoomId);
+  if (!entry) return false;
   try {
-    const peers = room.getPeers();
+    const peers = entry.room.getPeers();
     return Object.keys(peers).length > 0;
   } catch {
     return false;
   }
+}
+
+/** Anzahl Peers in einem Room. */
+export function peerCount(roomId = mainRoomId) {
+  const entry = rooms.get(roomId);
+  if (!entry) return 0;
+  try { return Object.keys(entry.room.getPeers()).length; }
+  catch { return 0; }
 }
