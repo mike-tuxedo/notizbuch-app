@@ -1256,12 +1256,16 @@ async function mergeSharedNotebookData(notebookId, nodes) {
   console.log('[Share] mergeSharedNotebookData:', notebookId, Object.keys(nodes).length, 'Blobs');
 
   let merged = 0;
+  const changedPages = new Set();
   for (const [key, blob] of Object.entries(nodes)) {
     // Pages: key = "p:{pageId}"
     if (!key.startsWith('p:') || !(blob instanceof Uint8Array)) continue;
     const pageId = key.slice(2);
     let strokes = [];
-    try { strokes = await deserializeStrokes(blob, notebookId); } catch { continue; }
+    try { strokes = await deserializeStrokes(blob, notebookId); } catch (e) {
+      console.warn('[Share] Page-decrypt fehlgeschlagen:', pageId, e);
+      continue;
+    }
     if (!strokes.length) continue;
 
     let page = nb.pages.find(p => p.id === pageId);
@@ -1272,12 +1276,15 @@ async function mergeSharedNotebookData(notebookId, nodes) {
     }
     // Union-Merge by ID (undone IDs ignorieren)
     const existing = new Map(page.strokes.map(s => [s.id, s]));
+    let pageMerged = 0;
     for (const s of strokes) {
       if (!existing.has(s.id) && !_undoneIds.has(s.id)) {
         page.strokes.push(s);
         merged++;
+        pageMerged++;
       }
     }
+    if (pageMerged > 0) changedPages.add(pageId);
   }
 
   // Meta aus shared Room (Notebook-Name, Page-Struktur)
@@ -1296,11 +1303,25 @@ async function mergeSharedNotebookData(notebookId, nodes) {
           }
         }
       }
-    } catch {}
+    } catch (e) { console.warn('[Share] Meta-decrypt fehlgeschlagen:', e); }
+  }
+
+  // Strokes lokal speichern (OPFS) damit sie persistent sind
+  for (const pageId of changedPages) {
+    const page = nb.pages.find(p => p.id === pageId);
+    if (page) {
+      const data = await serializeStrokes(page.strokes, notebookId);
+      await savePageData(notebookId, String(pageId), data);
+    }
   }
 
   if (merged > 0) {
     console.log(`[Share] ${merged} Strokes aus Relay gemerged für Notebook ${notebookId}`);
+    // Aktuelle Seite neu zeichnen falls betroffen
+    if (notebookId === state.currentNotebookId) {
+      const curPage = currentPage();
+      if (curPage && changedPages.has(curPage.id)) redrawStrokes();
+    }
     await saveAppMeta();
   }
 }
@@ -1311,7 +1332,7 @@ async function mergeSharedNotebookData(notebookId, nodes) {
  */
 async function pushSharedNotebook(notebookId) {
   const nb = state.notebooks.find(n => n.id === notebookId);
-  if (!nb) return;
+  if (!nb) { console.warn('[Share] pushSharedNotebook: notebook nicht gefunden', notebookId); return; }
   const nbHash = await notebookHash(notebookId);
   const blobs = [];
 
@@ -1321,7 +1342,7 @@ async function pushSharedNotebook(notebookId) {
     const meta = { name: nb.name, pages: nb.pages.map(p => ({ id: p.id, background: p.background, order: p.order })) };
     const metaEncrypted = await encrypt(nbKey, JSON.stringify(meta));
     blobs.push({ id: 'meta', data: metaEncrypted });
-  } catch {}
+  } catch (e) { console.warn('[Share] Meta-encrypt fehlgeschlagen:', e); }
 
   // Pages
   for (const page of nb.pages) {
@@ -1329,9 +1350,10 @@ async function pushSharedNotebook(notebookId) {
     try {
       const encrypted = await serializeStrokes(page.strokes, notebookId);
       blobs.push({ id: `p:${page.id}`, data: encrypted });
-    } catch {}
+    } catch (e) { console.warn('[Share] Page-encrypt fehlgeschlagen:', page.id, e); }
   }
 
+  console.log('[Share] pushSharedNotebook:', notebookId, '→ Room', nbHash.slice(0, 8), '|', blobs.length, 'Blobs (', nb.pages.length, 'Pages,', nb.pages.reduce((n, p) => n + (p.strokes?.length || 0), 0), 'Strokes total)');
   await pushBlobsToRoom(nbHash, blobs);
 }
 
