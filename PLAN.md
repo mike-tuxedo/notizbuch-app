@@ -1,56 +1,65 @@
 # PLAN.md — Notizbuch App
 
-## Nächste Schritte
+## Aktueller Stand (Stand 2026-04-20)
 
-### Sharing: Peer-Freigabe (geplant)
+App ist produktiv deployed unter `notizbuch-app.vercel.app`. Backup-Relay läuft auf Plesk (`wss://notes.mike.fm-media-staging.at`).
 
-- [ ] Separater P2P-Room pro geteiltem Notebook
-- [ ] Owner muss Peers freigeben (Peer sendet UserKey)
+**Architektur** (siehe CLAUDE.md für Details):
+- WebRTC P2P (Trystero, Nostr-Signaling, Multi-Room) — Live-Sync
+- Plesk WebSocket-Relay — Backup-Snapshot-Store für Offline-Peers
+- AES-GCM 256 (zufälliger MasterKey + NotebookKeys, kein Passphrase)
+- OPFS-Storage mit IndexedDB-Fallback
+- Modulare JS-Architektur (`js/*.js`), `app.html` nur UI
+
+## Offene Punkte
+
+### Peer-Freigabe (Sicherheit, geplant)
+
+- [ ] Owner muss Peers für geteilte Notebooks freigeben
+- [ ] Peer sendet UserKey beim Beitreten
 - [ ] Peer-Management UI (verbundene Peers anzeigen, freigeben/blockieren)
 
-### Sonstiges
+### Performance
+
+- [ ] Inkrementelles Stroke-Rendering bei >500 Strokes
+  - Bisheriger Versuch (DPR + setTransform) hatte visuelle Regressions, reverted
+- [ ] Lazy-Load Strokes bei sehr großen Notebooks
+
+### Testing
 
 - [ ] Mobile-Testing: Brave Android, Safari iOS, Firefox Android
-- [ ] Firefox Stable: OPFS `GetDirectory` SecurityError — Fallback testen
-- [ ] Inkrementelles Stroke-Rendering (Performance bei >500 Strokes)
+- [ ] Firefox Stable: OPFS `GetDirectory` SecurityError — Fallback verifizieren
 
-### Risiken
+## Bekannte Limitierungen
 
-- **Key-Verlust = Datenverlust**: Erst-Start-Dialog warnt aggressiv. Download + Bestätigung.
-- **P2P-Room bleibt global**: Alle Notebooks über einen Room — beim Sharing könnte ein Peer theoretisch Full-Sync aller Notebooks empfangen. Fix bei Peer-Freigabe (separate Rooms).
+- **Concurrent shared edits**: Race-Window ~500ms (zwischen Fetch und Push) bei gleichzeitigem Zeichnen aus zwei Browsern. Kann einzelne Strokes verlieren — akzeptabel für typische asynchrone Nutzung.
+- **Key-Verlust = Datenverlust**: Bei zufälligem MasterKey gibt es kein Recovery. Erst-Start-Dialog warnt + erzwingt Bestätigung.
+- **Öffentliche Nostr-Relays unzuverlässig**: Liste in `js/p2p-sync.js` muss gelegentlich gepflegt werden.
 
----
+## Letzte Änderungen
 
-## Erledigte Arbeiten
+### Session 2026-04-18..20
 
-### Session 2026-04-02/03
+- [x] **Stiftmodus-Toggle** in Sidebar (Touch-Zeichnen blockieren auch wenn Pen weg)
+- [x] **Multi-Room P2P** für geteilte Notebooks (notebookHash als P2P-Room)
+- [x] **Fetch-Merge-Push** für shared Relay (verhindert Überschreiben fremder Daten)
+- [x] **Shared Notebook OPFS-Persistenz** (Strokes nach Merge auf Disk speichern)
+- [x] **Notebook umbenennen/löschen**: Hover-Icons (Desktop) + Longpress-Kontextmenü (Touch)
+- [x] **fitToContent pixel-basiert**: Radierte Bereiche werden korrekt ignoriert
+- [x] **Cleanup**: nostr-relay/ Versuch entfernt, alte Branches gelöscht, .gitignore erweitert
 
-- [x] **Key/Auth-Umbau Phase 1:** Zufälliger MasterKey statt Passphrase, Erst-Start-Dialog, Key-Anzeige + Export, Key-Import (Hex + Datei)
-- [x] **Key/Auth-Umbau Phase 2:** URL-Hash `#nb-{notebookHash}` pro Notebook, hashchange-Listener, Bookmark-Navigation
-- [x] **Key/Auth-Umbau Phase 3:** Share-Links mit `#nb-{hash}&k={key}` Format, Abwärtskompatibilität mit altem `#nb={id}` Format
-- [x] **Relay-Plesk:** Standalone WebSocket.Server für Plesk/Passenger (`relay-plesk/`)
-- [x] **Nostr-Relays:** Tote Relays entfernt (relay.nostr.band, eigener Relay)
-- [x] **Mobile Portrait:** Zweizeilige Toolbar, einzeilig im Zen-Mode
-- [x] **fitToContent:** Automatische Zentrierung bei Init, Resync, Seitenwechsel
-- [x] **Canvas-Crash Fix:** Guard gegen 0-Dimensionen in setupCanvases/redrawStrokes
-- [x] **Cleanup:** app-v2.html → app.html, debug.html entfernt, main = experiment/yjs-sync
+### Session 2026-04-02..03
 
-### Session 2026-03-27b
+- [x] **Key/Auth-Umbau**: Zufälliger MasterKey statt Passphrase
+- [x] **URL-Hash pro Notebook** (`#nb-{hash}`), Bookmark-Navigation
+- [x] **Share-Links** (`#nb-{hash}&k={key}&name={name}`)
+- [x] **Geräte-Sync via QR-Code** (Sidebar-Button mit voller Sync-URL)
+- [x] **Plesk-Relay** deployed (`wss://notes.mike.fm-media-staging.at`)
 
-- [x] Seite löschen, Hintergrund-Auswahl, Relay v2, NotebookKey-Sharing, Relay-Reconnect
+### Session 2026-03-26..27
 
-### Session 2026-03-26/27
-
-- [x] Modulare Architektur, Storage, Canvas Engine, Dark Theme UI, Verschlüsselung, Sharing, Export/Import, Touch/Palm-Rejection
-
-### Session 2026-03-25
-
-- [x] rootDb/pageDb Split, Relay-Merge, Stale-Guard, pageLoading-State, Notebook-Löschung
-
-### Session 2026-03-23/24
-
-- [x] E2E-Verschlüsselung, Relay-Persistenz, Bitmap-Cache, Graph-Migration, Live-Channel
-
-### Session 2026-03-22
-
-- [x] Sync-Bugs, Relay-Server, HTTPS Dev-Server, Share-Links, Service Worker
+- [x] **Modulare Architektur** auf `js/*.js` umgestellt
+- [x] **Trystero P2P** statt GenosDB (Multi-Room-fähig, kein eigener Sync-Code)
+- [x] **OPFS + AES-GCM** Verschlüsselung
+- [x] **Notebook-Sharing** mit Invite-Links
+- [x] **Export/Import** als passphrase-protected .enc Bundle

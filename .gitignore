@@ -7,3 +7,8 @@ rootCA.pem
 icons/
 iconified/
 iconified.zip
+debug/
+relay/data.json
+relay/package-lock.json
+.claude/
+.mcp.json
