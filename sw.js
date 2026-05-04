@@ -1,12 +1,17 @@
-const CACHE_NAME = 'notizbuch-v40';
+const CACHE_NAME = 'notizbuch-v43';
 
 const STATIC_ASSETS = [
   './',
   './index.html',
   './app.html',
-  './app-evolu.html',
   './manifest.json',
-  './libs/petite-vue.iife.js',
+  './js/app.js',
+  './js/canvas.js',
+  './js/storage.js',
+  './js/encryption.js',
+  './js/p2p-sync.js',
+  './js/relay.js',
+  './js/share.js',
   './libs/qrcode.min.js',
   './libs/iro.min.js'
 ];
@@ -14,8 +19,16 @@ const STATIC_ASSETS = [
 const OPTIONAL_ASSETS = [
   './img/favicon.ico',
   './img/apple-touch-icon.png',
+  './img/apple-touch-icon-57x57.png',
+  './img/apple-touch-icon-72x72.png',
+  './img/apple-touch-icon-76x76.png',
+  './img/apple-touch-icon-114x114.png',
+  './img/apple-touch-icon-120x120.png',
   './img/apple-touch-icon-144x144.png',
-  './img/apple-touch-icon-180x180.png'
+  './img/apple-touch-icon-152x152.png',
+  './img/apple-touch-icon-180x180.png',
+  './img/icon-192.png',
+  './img/icon-512.png'
 ];
 
 // Installation: Assets cachen, sofort aktivieren
@@ -46,11 +59,6 @@ self.addEventListener('activate', (event) => {
 //   Rest → Cache-first
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
-  // CDN-Requests (Yjs) cachen
-  if (event.request.url.includes('cdn.jsdelivr.net')) {
-    event.respondWith(staleWhileRevalidate(event.request, event));
-    return;
-  }
   if (!event.request.url.startsWith(self.location.origin)) return;
   // WebSocket-Upgrades nicht anfassen
   if (event.request.headers.get('upgrade') === 'websocket') return;

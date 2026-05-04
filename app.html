@@ -3,7 +3,7 @@
 
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
   <meta name="theme-color" content="#0e0d15">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -27,13 +27,18 @@
       --accent-dim: #3a8fd4;
       --accent-glow: rgba(77, 171, 247, 0.15);
       --text: #eae8f5;
-      --text-dim: #7a7692;
-      --text-faint: #3e3b56;
+      --text-dim: #b0acc8;
+      --text-faint: #6c6886;
       --danger: #ff6b6b;
       --paper: #f5f5f0;
       --sidebar-w: 220px;
       --toolbar-h: 48px;
       --pagebar-h: 44px;
+      --safe-top: env(safe-area-inset-top, 0px);
+      --safe-right: env(safe-area-inset-right, 0px);
+      --safe-bottom: env(safe-area-inset-bottom, 0px);
+      --safe-left: env(safe-area-inset-left, 0px);
+      --tap-target: 44px;
     }
 
     /* ─── Reset ──────────────────────────────────────────────────────────── */
@@ -49,6 +54,7 @@
     html,
     body {
       height: 100%;
+      height: 100dvh;
       overflow: hidden;
       touch-action: none;
       overscroll-behavior: none;
@@ -75,6 +81,7 @@
       display: grid;
       grid-template-columns: var(--sidebar-w) 1fr;
       height: 100vh;
+      height: 100dvh;
     }
 
     /* ─── Sidebar ────────────────────────────────────────────────────────── */
@@ -84,13 +91,14 @@
       background: var(--surface);
       border-right: 1px solid var(--border);
       overflow: hidden;
+      padding-left: var(--safe-left);
     }
 
     .brand {
       display: flex;
       align-items: center;
       gap: 10px;
-      padding: 16px 16px 14px;
+      padding: calc(16px + var(--safe-top)) 16px 14px;
       border-bottom: 1px solid var(--border);
     }
 
@@ -239,7 +247,7 @@
     }
 
     .sidebar-footer {
-      padding: 10px 8px 14px;
+      padding: 10px 8px calc(14px + var(--safe-bottom));
       border-top: 1px solid var(--border);
       display: flex;
       flex-direction: column;
@@ -307,8 +315,9 @@
     /* ─── Main ───────────────────────────────────────────────────────────── */
     .main {
       display: grid;
-      grid-template-rows: var(--toolbar-h) 1fr var(--pagebar-h);
+      grid-template-rows: calc(var(--toolbar-h) + var(--safe-top)) 1fr calc(var(--pagebar-h) + var(--safe-bottom));
       overflow: hidden;
+      position: relative;
     }
 
     /* Toolbar */
@@ -316,7 +325,7 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 0 12px;
+      padding: var(--safe-top) calc(12px + var(--safe-right)) 0 calc(12px + var(--safe-left));
       gap: 8px;
       border-bottom: 1px solid var(--border);
       background: var(--surface);
@@ -344,6 +353,7 @@
     .tool-btn {
       width: 34px;
       height: 34px;
+      flex-shrink: 0;
       border-radius: 6px;
       background: transparent;
       color: var(--text-dim);
@@ -440,7 +450,7 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 0 12px;
+      padding: 0 calc(12px + var(--safe-right)) var(--safe-bottom) calc(12px + var(--safe-left));
       border-top: 1px solid var(--border);
       background: var(--surface);
     }
@@ -829,7 +839,7 @@
 
     .mobile-popup {
       position: fixed;
-      top: var(--toolbar-h);
+      top: calc(var(--toolbar-h) + var(--safe-top));
       left: 0;
       right: 0;
       background: var(--surface);
@@ -864,13 +874,18 @@
     }
 
     .mobile-popup-content .color-dot {
-      width: 32px;
-      height: 32px;
+      width: 44px;
+      height: 44px;
     }
 
     .mobile-popup-content .size-btn {
-      padding: 8px 14px;
+      min-width: 44px;
+      min-height: 44px;
+      padding: 10px 16px;
       font-size: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
     }
 
     /* ─── Responsive: Sidebar auf mobil verstecken ───────────────────────── */
@@ -902,13 +917,10 @@
       .color-palette,
       .size-palette,
       .desktop-only,
-      .bg-selector {
+      .bg-selector,
+      .toolbar-left .divider,
+      .toolbar-right .divider {
         display: none !important;
-      }
-
-      .mobile-color-trigger,
-      .mobile-size-trigger {
-        display: flex;
       }
 
       .toolbar-center {
@@ -919,38 +931,113 @@
         display: block;
       }
 
-      /* Portrait: Toolbar zweizeilig */
-      @media (orientation: portrait) {
-        .toolbar {
-          flex-wrap: wrap;
-          padding: 4px 8px;
-          gap: 2px 6px;
-          height: calc(var(--toolbar-h) * 2);
-        }
-        .toolbar-left,
-        .toolbar-right {
-          gap: 4px;
-        }
-        .toolbar-left {
-          flex-basis: 100%;
-          justify-content: center;
-        }
-        .toolbar-right {
-          flex-basis: 100%;
-          justify-content: center;
-        }
-        .main {
-          grid-template-rows: calc(var(--toolbar-h) * 2) 1fr var(--pagebar-h);
-        }
-        /* Zen-Mode: einzeilig, wenige Buttons passen in eine Zeile */
-        body.zen-mode .toolbar {
-          flex-wrap: nowrap;
-          height: auto;
-        }
-        body.zen-mode .toolbar-left,
-        body.zen-mode .toolbar-right {
-          flex-basis: auto;
-        }
+      /* Topbar: bleibt einzeilig, kompakter Platz */
+      .toolbar {
+        gap: 4px;
+        padding: var(--safe-top) calc(8px + var(--safe-right)) 0 calc(8px + var(--safe-left));
+      }
+
+      .toolbar-left {
+        gap: 2px;
+        flex: 1;
+        justify-content: flex-start;
+      }
+
+      .toolbar-right {
+        gap: 4px;
+        margin-left: auto;
+      }
+
+      /* Tool-Buttons auf Mobile: Höhe 44px (Tap-Target),
+         Breite 40px (pragmatisch — 8 Tools × 44px würde 360px-Viewports sprengen) */
+      .tool-btn {
+        width: 40px;
+        height: var(--tap-target);
+      }
+
+      /* Mobile Color/Size-Trigger: schweben rechts oben unter Topbar */
+      .mobile-color-trigger,
+      .mobile-size-trigger {
+        position: fixed;
+        right: calc(10px + var(--safe-right));
+        width: var(--tap-target);
+        height: var(--tap-target);
+        background: transparent;
+        border: none;
+        box-shadow: none;
+        z-index: 60;
+        display: flex;
+        /* schwebend über Papier — Label braucht dunkle Farbe für Lesbarkeit */
+        color: #2b2840;
+      }
+
+      .mobile-color-trigger .mobile-color-dot {
+        /* Color-Dot bleibt durch Pen-Farbe getragen, dunkle Border statt Border-Token */
+        border-color: #2b2840;
+      }
+
+      .mobile-size-trigger .mobile-size-label {
+        color: #2b2840;
+      }
+
+      .mobile-color-trigger {
+        top: calc(var(--toolbar-h) + var(--safe-top) + 10px);
+      }
+
+      .mobile-size-trigger {
+        top: calc(var(--toolbar-h) + var(--safe-top) + 10px + var(--tap-target) + 8px);
+      }
+
+      /* Zen-Mode: Trigger gehören in die Topbar (es ist Platz),
+         nicht schwebend */
+      body.zen-mode .mobile-color-trigger,
+      body.zen-mode .mobile-size-trigger {
+        position: static;
+        z-index: auto;
+        top: auto;
+        right: auto;
+      }
+
+      .mobile-color-dot {
+        width: 22px;
+        height: 22px;
+      }
+
+      .mobile-size-label {
+        font-size: 14px;
+      }
+
+      /* Touch-Targets: andere Buttons */
+      .footer-btn {
+        min-height: var(--tap-target);
+        padding: 10px 12px;
+        font-size: 13px;
+      }
+
+      .nb-add-btn {
+        min-height: var(--tap-target);
+        font-size: 14px;
+      }
+
+      .notebook-tab {
+        min-height: var(--tap-target);
+        padding: 10px 12px;
+        font-size: 14px;
+      }
+
+      .page-btn {
+        width: var(--tap-target);
+        height: var(--tap-target);
+      }
+
+      .bg-btn {
+        width: var(--tap-target);
+        height: var(--tap-target);
+      }
+
+      .modal-close {
+        width: var(--tap-target);
+        height: var(--tap-target);
       }
     }
 

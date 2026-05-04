@@ -42,7 +42,7 @@ js/
 ├── relay.js          — WebSocket relay client (backup snapshots)
 └── share.js          — Export/Import .enc bundle (passphrase-protected)
 
-libs/                 — Vendored third-party libs (iro.js, qrcode.js, petite-vue)
+libs/                 — Vendored third-party libs (iro.js, qrcode.js)
 relay/                — Local dev server (HTTPS + WSS + static files, mkcert)
 relay-plesk/          — Production relay (standalone WebSocket on Plesk)
 ```
