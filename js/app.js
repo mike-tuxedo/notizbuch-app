@@ -27,7 +27,7 @@ const PEN_SIZES = [
 ];
 
 const BACKGROUNDS = ['grid', 'lined', 'blank'];
-const APP_VERSION = '2026-04-20-soft-delete-v2';
+const APP_VERSION = '2026-04-20-soft-delete-v3';
 
 // ─── State ──────────────────────────────────────────────────────────────────
 
@@ -1365,11 +1365,18 @@ async function mergeSharedNotebookData(notebookId, nodes) {
       // Fehlende Pages anlegen
       if (sharedMeta.pages) {
         for (const sp of sharedMeta.pages) {
-          if (!nb.pages.find(p => p.id === sp.id)) {
+          const existingPage = nb.pages.find(p => p.id === sp.id);
+          if (!existingPage) {
             nb.pages.push({ id: sp.id, strokes: [], background: sp.background || 'grid', order: sp.order ?? nb.pages.length, createdAt: sp.createdAt || 0, deletedAt: sp.deletedAt || 0 });
             normalizePageOrder(nb);
+          } else {
+            if (typeof sp.order === 'number') existingPage.order = sp.order;
+            if (sp.background) existingPage.background = sp.background;
+            if (!existingPage.createdAt && sp.createdAt) existingPage.createdAt = sp.createdAt;
+            existingPage.deletedAt = Math.max(existingPage.deletedAt || 0, sp.deletedAt || 0);
           }
         }
+        normalizePageOrder(nb);
       }
     } catch (e) { console.warn('[Share] Meta-decrypt fehlgeschlagen:', e); }
   }
@@ -1665,6 +1672,11 @@ async function applyFullSync(payload) {
             strokes: rp.strokes || []
           });
         } else {
+          // Struktur-/Meta-Felder vom Remote übernehmen, damit Reihenfolge geräteübergreifend gleich bleibt
+          if (typeof rp.order === 'number') localPage.order = rp.order;
+          if (rp.background) localPage.background = rp.background;
+          if (!localPage.createdAt && rp.createdAt) localPage.createdAt = rp.createdAt;
+
           // clearedAt: höheren Wert übernehmen (= neuester Clear gewinnt)
           const remoteClearedAt = rp.clearedAt || 0;
           const localClearedAt = localPage.clearedAt || 0;
