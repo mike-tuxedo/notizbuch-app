@@ -27,6 +27,7 @@ const PEN_SIZES = [
 ];
 
 const BACKGROUNDS = ['grid', 'lined', 'blank'];
+const APP_VERSION = '2026-04-20-soft-delete-v2';
 
 // ─── State ──────────────────────────────────────────────────────────────────
 
@@ -36,8 +37,8 @@ const state = {
   notebooks: [],
   /** @type {string|null} */
   currentNotebookId: null,
-  /** @type {Object<string, number>} notebookId → pageIndex */
-  currentPages: {},
+  /** @type {Object<string, string|null>} notebookId → pageId */
+  currentPageIds: {},
 
   // Tools
   tool: 'pen',        // 'pen' | 'eraser' | 'hand'
@@ -107,16 +108,58 @@ function currentNotebook() {
   return state.notebooks.find(n => n.id === state.currentNotebookId);
 }
 
+function newId() {
+  return crypto.randomUUID();
+}
+
+function comparePageOrder(a, b) {
+  const ao = Number.isFinite(a?.order) ? a.order : 0;
+  const bo = Number.isFinite(b?.order) ? b.order : 0;
+  if (ao !== bo) return ao - bo;
+  const ac = Number.isFinite(a?.createdAt) ? a.createdAt : 0;
+  const bc = Number.isFinite(b?.createdAt) ? b.createdAt : 0;
+  if (ac !== bc) return ac - bc;
+  return String(a?.id || '').localeCompare(String(b?.id || ''));
+}
+
+function normalizePageOrder(nb) {
+  if (!nb?.pages) return;
+  nb.pages.sort(comparePageOrder);
+  nb.pages.forEach((p, i) => { p.order = i; });
+}
+
+function ensureCurrentPageId(notebookId = state.currentNotebookId) {
+  const nb = state.notebooks.find(n => n.id === notebookId);
+  if (!nb?.pages?.length) {
+    state.currentPageIds[notebookId] = null;
+    return null;
+  }
+  const currentId = state.currentPageIds[notebookId];
+  if (currentId && nb.pages.some(p => p.id === currentId)) return currentId;
+  const fallbackId = nb.pages[0].id;
+  state.currentPageIds[notebookId] = fallbackId;
+  return fallbackId;
+}
+
+function isPageDeleted(page = currentPage()) {
+  return !!(page?.deletedAt);
+}
+
 /** @returns {{id: string, strokes: Array, background: string}|undefined} */
 function currentPage() {
   const nb = currentNotebook();
-  const idx = state.currentPages[state.currentNotebookId] ?? 0;
-  return nb?.pages?.[idx];
+  if (!nb?.pages?.length) return undefined;
+  const pageId = ensureCurrentPageId(state.currentNotebookId);
+  return nb.pages.find(p => p.id === pageId) || nb.pages[0];
 }
 
 /** @returns {number} */
 function currentPageIndex() {
-  return state.currentPages[state.currentNotebookId] ?? 0;
+  const nb = currentNotebook();
+  if (!nb?.pages?.length) return 0;
+  const pageId = ensureCurrentPageId(state.currentNotebookId);
+  const idx = nb.pages.findIndex(p => p.id === pageId);
+  return idx >= 0 ? idx : 0;
 }
 
 /** @returns {number} */
@@ -304,7 +347,7 @@ async function saveAppMeta() {
     notebooks: state.notebooks.map(nb => ({
       id: nb.id,
       name: nb.name,
-      pages: nb.pages.map(p => ({ id: p.id, background: p.background || 'grid', order: p.order ?? 0, clearedAt: p.clearedAt || 0 }))
+      pages: nb.pages.map(p => ({ id: p.id, background: p.background || 'grid', order: p.order ?? 0, createdAt: p.createdAt || 0, clearedAt: p.clearedAt || 0, deletedAt: p.deletedAt || 0 }))
     })),
     notebookKeys: nbKeys
   };
@@ -349,9 +392,10 @@ async function loadAppMeta() {
     id: nb.id,
     name: nb.name,
     pages: (nb.pages || []).map(p => ({
-      id: p.id, strokes: [], background: p.background || 'grid', order: p.order ?? 0, clearedAt: p.clearedAt || 0
+      id: p.id, strokes: [], background: p.background || 'grid', order: p.order ?? 0, createdAt: p.createdAt || 0, clearedAt: p.clearedAt || 0, deletedAt: p.deletedAt || 0
     }))
   }));
+  state.notebooks.forEach(normalizePageOrder);
   // NotebookKeys aus Meta installieren (fehlende)
   await installNotebookKeys(meta.notebookKeys);
 }
@@ -420,7 +464,7 @@ function redrawBackground() {
 /** Hintergrund der aktuellen Seite ändern. */
 async function setBackground(bg) {
   const page = currentPage();
-  if (!page || page.background === bg) return;
+  if (!page || page.background === bg || isPageDeleted(page)) return;
   page.background = bg;
   redrawBackground();
   await saveAppMeta();
@@ -610,7 +654,7 @@ async function goToPage(index) {
   const nb = currentNotebook();
   if (!nb || index < 0 || index >= nb.pages.length) return;
   flushSave();
-  state.currentPages[state.currentNotebookId] = index;
+  state.currentPageIds[state.currentNotebookId] = nb.pages[index].id;
   const page = currentPage();
   await loadPage(state.currentNotebookId, page.id, page);
   // Alle Canvas-Layer komplett leeren vor dem Neuzeichnen
@@ -630,11 +674,13 @@ async function nextPage() {
 
   if (nextIdx >= nb.pages.length) {
     // Neue Seite erstellen
-    const pageId = String(Date.now());
+    const pageId = newId();
+    const createdAt = Date.now();
     const bg = currentPage()?.background || 'grid';
-    nb.pages.push({ id: pageId, strokes: [], background: bg, order: nextIdx });
+    nb.pages.push({ id: pageId, strokes: [], background: bg, order: nextIdx, createdAt, deletedAt: 0 });
+    normalizePageOrder(nb);
     await saveAppMeta();
-    p2pSendForNotebook('page-created', { notebookId: state.currentNotebookId, page: { id: pageId, background: bg, order: nextIdx } });
+    p2pSendForNotebook('page-created', { notebookId: state.currentNotebookId, page: { id: pageId, background: bg, order: nextIdx, createdAt } });
   }
 
   await goToPage(nextIdx);
@@ -649,22 +695,31 @@ async function prevPage() {
 /** Aktuelle Seite löschen (min. 1 Seite muss bleiben). */
 async function deletePage() {
   const nb = currentNotebook();
-  if (!nb || nb.pages.length <= 1) return;
-  const idx = currentPageIndex();
-  const pageId = nb.pages[idx].id;
+  const page = currentPage();
+  if (!nb || !page) return;
+  if (!page.deletedAt && nb.pages.filter(p => !p.deletedAt).length <= 1) return;
   flushSave();
-  // Storage + Memory + Relay
-  await deletePageData(state.currentNotebookId, pageId);
-  relayDelete(`p:${state.currentNotebookId}/${pageId}`);
-  nb.pages.splice(idx, 1);
-  // Order neu nummerieren
-  nb.pages.forEach((p, i) => p.order = i);
-  // Index anpassen
-  const newIdx = Math.min(idx, nb.pages.length - 1);
-  state.currentPages[state.currentNotebookId] = newIdx;
+  page.deletedAt = Date.now();
   await saveAppMeta();
-  p2pSendForNotebook('page-deleted', { notebookId: state.currentNotebookId, pageId });
-  await goToPage(newIdx);
+  p2pSendForNotebook('page-deleted', { notebookId: state.currentNotebookId, pageId: page.id, deletedAt: page.deletedAt });
+  if (page.id === currentPage()?.id) {
+    clearAllCanvases();
+    redrawBackground();
+    redrawStrokes();
+  }
+  renderUI();
+}
+
+async function restorePage() {
+  const page = currentPage();
+  if (!page || !page.deletedAt) return;
+  page.deletedAt = 0;
+  await saveAppMeta();
+  p2pSendForNotebook('page-restored', { notebookId: state.currentNotebookId, pageId: page.id });
+  clearAllCanvases();
+  redrawBackground();
+  redrawStrokes();
+  renderUI();
 }
 
 /**
@@ -675,7 +730,7 @@ async function selectNotebook(nbId) {
   if (nbId === state.currentNotebookId) return;
   flushSave();
   state.currentNotebookId = nbId;
-  if (!(nbId in state.currentPages)) state.currentPages[nbId] = 0;
+  ensureCurrentPageId(nbId);
   const page = currentPage();
   if (page) await loadPage(nbId, page.id, page);
   clearAllCanvases();
@@ -688,17 +743,18 @@ async function selectNotebook(nbId) {
 
 /** Neues Notebook erstellen. */
 async function createNotebook() {
-  const nbId = String(Date.now());
-  const pageId = String(Date.now() + 1);
+  const nbId = newId();
+  const pageId = newId();
+  const createdAt = Date.now();
   const name = 'Neues Notizbuch';
   state.notebooks.push({
     id: nbId, name,
-    pages: [{ id: pageId, strokes: [], background: 'grid', order: 0 }]
+    pages: [{ id: pageId, strokes: [], background: 'grid', order: 0, createdAt, deletedAt: 0 }]
   });
-  state.currentPages[nbId] = 0;
+  state.currentPageIds[nbId] = pageId;
   await saveAppMeta();
   p2pSend('nb-created', { id: nbId, name });
-  p2pSend('page-created', { notebookId: nbId, page: { id: pageId, background: 'grid', order: 0 } });
+  p2pSend('page-created', { notebookId: nbId, page: { id: pageId, background: 'grid', order: 0, createdAt } });
   await selectNotebook(nbId);
 }
 
@@ -713,10 +769,10 @@ async function deleteNotebook(nbId) {
   if (nb) nb.pages.forEach(p => relayDelete(`p:${nbId}/${p.id}`));
   await deleteNotebookData(nbId);
   state.notebooks = state.notebooks.filter(n => n.id !== nbId);
-  delete state.currentPages[nbId];
+  delete state.currentPageIds[nbId];
   if (state.currentNotebookId === nbId) {
     state.currentNotebookId = state.notebooks[0].id;
-    state.currentPages[state.currentNotebookId] = 0;
+    state.currentPageIds[state.currentNotebookId] = state.notebooks[0]?.pages?.[0]?.id || null;
   }
   await saveAppMeta();
   p2pSend('nb-deleted', { id: nbId });
@@ -745,21 +801,21 @@ async function renameNotebook(nbId, name) {
 
 /** Default-Notebook erstellen (erster Start). */
 function createDefaultNotebook() {
-  const nbId = String(Date.now());
-  const pageId = String(Date.now() + 1);
+  const nbId = newId();
+  const pageId = newId();
   state.notebooks = [{
     id: nbId,
     name: `Notizen ${getClientName()}`,
-    pages: [{ id: pageId, strokes: [], background: 'grid', order: 0 }]
+    pages: [{ id: pageId, strokes: [], background: 'grid', order: 0, createdAt: Date.now(), deletedAt: 0 }]
   }];
   state.currentNotebookId = nbId;
-  state.currentPages[nbId] = 0;
+  state.currentPageIds[nbId] = pageId;
 }
 
 /** Testbuch mit 1000 Strokes erstellen. */
 async function createTestNotebook() {
-  const nbId = String(Date.now());
-  const pageId = String(Date.now() + 1);
+  const nbId = newId();
+  const pageId = newId();
   const strokes = [];
   for (let i = 0; i < 1000; i++) {
     const y = 20 + (i % 50) * 30;
@@ -773,9 +829,9 @@ async function createTestNotebook() {
   state.notebooks.push({
     id: nbId,
     name: `Testbuch (${strokes.length} Strokes)`,
-    pages: [{ id: pageId, strokes, background: 'grid', order: 0 }]
+    pages: [{ id: pageId, strokes, background: 'grid', order: 0, createdAt: Date.now(), deletedAt: 0 }]
   });
-  state.currentPages[nbId] = 0;
+  state.currentPageIds[nbId] = pageId;
   await saveAppMeta();
   await selectNotebook(nbId);
   // Strokes sofort speichern
@@ -787,7 +843,7 @@ async function createTestNotebook() {
 
 function undo() {
   const page = currentPage();
-  if (!page || !page.strokes.length) return;
+  if (!page || !page.strokes.length || isPageDeleted(page)) return;
   const removed = page.strokes.pop();
   if (removed) _undoneIds.add(removed.id);
   redrawStrokes();
@@ -800,7 +856,7 @@ const _undoneIds = new Set();
 
 function clearPage() {
   const page = currentPage();
-  if (!page) return;
+  if (!page || isPageDeleted(page)) return;
   page.strokes = [];
   page.clearedAt = Date.now();
   redrawStrokes();
@@ -1281,8 +1337,9 @@ async function mergeSharedNotebookData(notebookId, nodes) {
     let page = nb.pages.find(p => p.id === pageId);
     if (!page) {
       // Neue Seite erstellen
-      page = { id: pageId, strokes: [], background: 'grid', order: nb.pages.length };
+      page = { id: pageId, strokes: [], background: 'grid', order: nb.pages.length, createdAt: 0, deletedAt: 0 };
       nb.pages.push(page);
+      normalizePageOrder(nb);
     }
     // Union-Merge by ID (undone IDs ignorieren)
     const existing = new Map(page.strokes.map(s => [s.id, s]));
@@ -1309,7 +1366,8 @@ async function mergeSharedNotebookData(notebookId, nodes) {
       if (sharedMeta.pages) {
         for (const sp of sharedMeta.pages) {
           if (!nb.pages.find(p => p.id === sp.id)) {
-            nb.pages.push({ id: sp.id, strokes: [], background: sp.background || 'grid', order: sp.order ?? nb.pages.length });
+            nb.pages.push({ id: sp.id, strokes: [], background: sp.background || 'grid', order: sp.order ?? nb.pages.length, createdAt: sp.createdAt || 0, deletedAt: sp.deletedAt || 0 });
+            normalizePageOrder(nb);
           }
         }
       }
@@ -1357,7 +1415,7 @@ async function pushSharedNotebook(notebookId) {
   const blobs = [];
   try {
     const nbKey = await getNotebookKey(notebookId);
-    const meta = { name: nb.name, pages: nb.pages.map(p => ({ id: p.id, background: p.background, order: p.order })) };
+    const meta = { name: nb.name, pages: nb.pages.map(p => ({ id: p.id, background: p.background, order: p.order, createdAt: p.createdAt || 0, deletedAt: p.deletedAt || 0 })) };
     const metaEncrypted = await encrypt(nbKey, JSON.stringify(meta));
     blobs.push({ id: 'meta', data: metaEncrypted });
   } catch (e) { console.warn('[Share] Meta-encrypt fehlgeschlagen:', e); }
@@ -1513,7 +1571,9 @@ async function mergeRelayData(nodes) {
       }
       syncNb.pages.push({
         id: p.id, background: p.background || 'grid', order: p.order ?? 0,
-        clearedAt: p.clearedAt || 0, strokes
+        createdAt: p.createdAt || 0,
+        clearedAt: p.clearedAt || 0,
+        deletedAt: p.deletedAt || 0, strokes
       });
     }
     payload.notebooks.push(syncNb);
@@ -1558,7 +1618,9 @@ function buildFullSyncPayload() {
         id: p.id,
         background: p.background || 'grid',
         order: p.order ?? 0,
+        createdAt: p.createdAt || 0,
         clearedAt: p.clearedAt || 0,
+        deletedAt: p.deletedAt || 0,
         strokes: (p.strokes || []).map(s => ({
           id: s.id, points: s.points, color: s.color, size: s.size, tool: s.tool
         }))
@@ -1582,11 +1644,14 @@ async function applyFullSync(payload) {
         id: remoteNb.id, name: remoteNb.name,
         pages: remoteNb.pages.map(p => ({
           id: p.id, background: p.background || 'grid', order: p.order ?? 0,
+          createdAt: p.createdAt || 0,
           clearedAt: p.clearedAt || 0,
+          deletedAt: p.deletedAt || 0,
           strokes: p.strokes || []
         }))
       });
-      if (!(remoteNb.id in state.currentPages)) state.currentPages[remoteNb.id] = 0;
+      normalizePageOrder(state.notebooks[state.notebooks.length - 1]);
+      ensureCurrentPageId(remoteNb.id);
     } else {
       // Bestehendes Notebook: Pages mergen
       for (const rp of remoteNb.pages) {
@@ -1594,7 +1659,9 @@ async function applyFullSync(payload) {
         if (!localPage) {
           localNb.pages.push({
             id: rp.id, background: rp.background || 'grid', order: rp.order ?? 0,
+            createdAt: rp.createdAt || 0,
             clearedAt: rp.clearedAt || 0,
+            deletedAt: rp.deletedAt || 0,
             strokes: rp.strokes || []
           });
         } else {
@@ -1603,6 +1670,7 @@ async function applyFullSync(payload) {
           const localClearedAt = localPage.clearedAt || 0;
           const effectiveClearedAt = Math.max(remoteClearedAt, localClearedAt);
           localPage.clearedAt = effectiveClearedAt;
+          localPage.deletedAt = Math.max(localPage.deletedAt || 0, rp.deletedAt || 0);
 
           // Strokes Union-Merge by ID, undone IDs ignorieren, Strokes vor clearedAt entfernen
           const existing = new Map(localPage.strokes.map(s => [s.id, s]));
@@ -1614,7 +1682,8 @@ async function applyFullSync(payload) {
             .sort((a, b) => Number(a.id) - Number(b.id));
         }
       }
-      localNb.pages.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+      normalizePageOrder(localNb);
+      ensureCurrentPageId(localNb.id);
     }
   }
 
@@ -1649,7 +1718,7 @@ const _p2pCallbacks = {
     const nb = state.notebooks.find(n => n.id === notebookId);
     if (!nb) return;
     const page = nb.pages.find(p => p.id === pageId);
-    if (!page) return;
+    if (!page || isPageDeleted(page)) return;
     if (page.strokes.some(s => s.id === stroke.id)) return;
     page.strokes.push(stroke);
     if (notebookId === state.currentNotebookId && pageId === currentPage()?.id) {
@@ -1662,7 +1731,7 @@ const _p2pCallbacks = {
     notebookId = _resolveNbId(notebookId, roomId);
     const nb = state.notebooks.find(n => n.id === notebookId);
     const page = nb?.pages.find(p => p.id === pageId);
-    if (!page || !page.strokes.length) return;
+    if (!page || !page.strokes.length || isPageDeleted(page)) return;
     if (strokeId) {
       _undoneIds.add(strokeId);
       page.strokes = page.strokes.filter(s => s.id !== strokeId);
@@ -1677,7 +1746,7 @@ const _p2pCallbacks = {
     notebookId = _resolveNbId(notebookId, roomId);
     const nb = state.notebooks.find(n => n.id === notebookId);
     const page = nb?.pages.find(p => p.id === pageId);
-    if (!page) return;
+    if (!page || isPageDeleted(page)) return;
     page.strokes = [];
     page.clearedAt = clearedAt || Date.now();
     if (notebookId === state.currentNotebookId && pageId === currentPage()?.id) redrawStrokes();
@@ -1689,31 +1758,38 @@ const _p2pCallbacks = {
     const nb = state.notebooks.find(n => n.id === notebookId);
     if (!nb) return;
     if (nb.pages.find(p => p.id === page.id)) return;
-    nb.pages.push({ id: page.id, strokes: [], background: page.background || 'grid', order: page.order ?? nb.pages.length });
-    nb.pages.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    nb.pages.push({ id: page.id, strokes: [], background: page.background || 'grid', order: page.order ?? nb.pages.length, createdAt: page.createdAt || 0, deletedAt: page.deletedAt || 0 });
+    normalizePageOrder(nb);
+    ensureCurrentPageId(notebookId);
     saveAppMeta();
     renderUI();
   },
 
-  onPageDeleted({ notebookId, pageId }, peerId, roomId) {
+  onPageDeleted({ notebookId, pageId, deletedAt }, peerId, roomId) {
     notebookId = _resolveNbId(notebookId, roomId);
     const nb = state.notebooks.find(n => n.id === notebookId);
     if (!nb) return;
-    nb.pages = nb.pages.filter(p => p.id !== pageId);
-    nb.pages.forEach((p, i) => p.order = i);
-    deletePageData(notebookId, pageId);
-    if (notebookId in state.currentPages) {
-      const idx = state.currentPages[notebookId];
-      if (idx >= nb.pages.length) state.currentPages[notebookId] = Math.max(0, nb.pages.length - 1);
-    }
+    const page = nb.pages.find(p => p.id === pageId);
+    if (!page) return;
+    page.deletedAt = Math.max(page.deletedAt || 0, deletedAt || Date.now());
     saveAppMeta();
-    if (notebookId === state.currentNotebookId) {
-      const page = currentPage();
-      if (page) loadPage(notebookId, page.id, page).then(() => {
-        clearAllCanvases(); redrawBackground(); redrawStrokes();
-      });
-      renderUI();
+    if (notebookId === state.currentNotebookId && pageId === currentPage()?.id) {
+      clearAllCanvases(); redrawBackground(); redrawStrokes();
     }
+    renderUI();
+  },
+
+  onPageRestored({ notebookId, pageId }, peerId, roomId) {
+    notebookId = _resolveNbId(notebookId, roomId);
+    const nb = state.notebooks.find(n => n.id === notebookId);
+    const page = nb?.pages.find(p => p.id === pageId);
+    if (!page) return;
+    page.deletedAt = 0;
+    saveAppMeta();
+    if (notebookId === state.currentNotebookId && pageId === currentPage()?.id) {
+      clearAllCanvases(); redrawBackground(); redrawStrokes();
+    }
+    renderUI();
   },
 
   onPageBg({ notebookId, pageId, background }, peerId, roomId) {
@@ -1721,7 +1797,7 @@ const _p2pCallbacks = {
     const nb = state.notebooks.find(n => n.id === notebookId);
     if (!nb) return;
     const page = nb.pages.find(p => p.id === pageId);
-    if (!page) return;
+    if (!page || isPageDeleted(page)) return;
     page.background = background;
     saveAppMeta();
     if (notebookId === state.currentNotebookId && page.id === currentPage()?.id) {
@@ -1817,12 +1893,12 @@ async function startP2P() {
         if (toRemove.length > 0) {
           for (const id of toRemove) {
             state.notebooks = state.notebooks.filter(n => n.id !== id);
-            delete state.currentPages[id];
+            delete state.currentPageIds[id];
             deleteNotebookData(id);
           }
           if (!state.notebooks.find(n => n.id === state.currentNotebookId)) {
             state.currentNotebookId = state.notebooks[0]?.id;
-            state.currentPages[state.currentNotebookId] = 0;
+            state.currentPageIds[state.currentNotebookId] = state.notebooks[0]?.pages?.[0]?.id || null;
           }
           await saveAppMeta();
           console.log('[P2P] Duplikat-Notebooks entfernt:', toRemove.length);
@@ -1840,7 +1916,7 @@ async function startP2P() {
     onNbCreated({ id, name }, peerId) {
       if (state.notebooks.find(n => n.id === id)) return;
       state.notebooks.push({ id, name, pages: [] });
-      state.currentPages[id] = 0;
+      state.currentPageIds[id] = null;
       saveAppMeta();
       renderUI();
       console.log('[P2P] Notebook erstellt von Peer:', name);
@@ -1850,10 +1926,10 @@ async function startP2P() {
       const delNb = state.notebooks.find(n => n.id === id);
       if (delNb) delNb.pages.forEach(p => relayDelete(`p:${id}/${p.id}`));
       state.notebooks = state.notebooks.filter(n => n.id !== id);
-      delete state.currentPages[id];
+      delete state.currentPageIds[id];
       if (state.currentNotebookId === id && state.notebooks.length > 0) {
         state.currentNotebookId = state.notebooks[0].id;
-        state.currentPages[state.currentNotebookId] = 0;
+        state.currentPageIds[state.currentNotebookId] = state.notebooks[0]?.pages?.[0]?.id || null;
         const page = currentPage();
         if (page) loadPage(state.currentNotebookId, page.id, page).then(() => {
           redrawBackground(); redrawStrokes();
@@ -1875,32 +1951,36 @@ async function startP2P() {
       const nb = state.notebooks.find(n => n.id === notebookId);
       if (!nb) return;
       if (nb.pages.find(p => p.id === page.id)) return;
-      nb.pages.push({ id: page.id, strokes: [], background: page.background || 'grid', order: page.order ?? nb.pages.length });
-      nb.pages.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+      nb.pages.push({ id: page.id, strokes: [], background: page.background || 'grid', order: page.order ?? nb.pages.length, createdAt: page.createdAt || 0, deletedAt: page.deletedAt || 0 });
+      normalizePageOrder(nb);
+      ensureCurrentPageId(notebookId);
       saveAppMeta();
       renderUI();
     },
 
-    onPageDeleted({ notebookId, pageId }, peerId) {
+    onPageDeleted({ notebookId, pageId, deletedAt }, peerId) {
       const nb = state.notebooks.find(n => n.id === notebookId);
       if (!nb) return;
-      nb.pages = nb.pages.filter(p => p.id !== pageId);
-      nb.pages.forEach((p, i) => p.order = i);
-      deletePageData(notebookId, pageId);
-      relayDelete(`p:${notebookId}/${pageId}`);
-      // Index anpassen falls aktive Seite betroffen
-      if (notebookId in state.currentPages) {
-        const idx = state.currentPages[notebookId];
-        if (idx >= nb.pages.length) state.currentPages[notebookId] = Math.max(0, nb.pages.length - 1);
-      }
+      const page = nb.pages.find(p => p.id === pageId);
+      if (!page) return;
+      page.deletedAt = Math.max(page.deletedAt || 0, deletedAt || Date.now());
       saveAppMeta();
-      if (notebookId === state.currentNotebookId) {
-        const page = currentPage();
-        if (page) loadPage(notebookId, page.id, page).then(() => {
-          clearAllCanvases(); redrawBackground(); redrawStrokes();
-        });
-        renderUI();
+      if (notebookId === state.currentNotebookId && pageId === currentPage()?.id) {
+        clearAllCanvases(); redrawBackground(); redrawStrokes();
       }
+      renderUI();
+    },
+
+    onPageRestored({ notebookId, pageId }, peerId) {
+      const nb = state.notebooks.find(n => n.id === notebookId);
+      const page = nb?.pages.find(p => p.id === pageId);
+      if (!page) return;
+      page.deletedAt = 0;
+      saveAppMeta();
+      if (notebookId === state.currentNotebookId && pageId === currentPage()?.id) {
+        clearAllCanvases(); redrawBackground(); redrawStrokes();
+      }
+      renderUI();
     },
 
     onPageBg({ notebookId, pageId, background }, peerId) {
@@ -2139,7 +2219,7 @@ async function handleInvite(invite) {
       }
     }
     // Nicht gefunden → neues Notebook erstellen
-    if (!notebookId) notebookId = String(Date.now());
+    if (!notebookId) notebookId = newId();
   }
 
   // NotebookKey speichern
@@ -2154,7 +2234,7 @@ async function handleInvite(invite) {
       id: notebookId, name: invite.name,
       pages: []
     });
-    state.currentPages[notebookId] = 0;
+    state.currentPageIds[notebookId] = null;
     isNew = true;
   }
 
@@ -2179,7 +2259,8 @@ async function handleInvite(invite) {
   // Falls nach Relay-Merge immer noch keine Pages: eine leere Seite anlegen
   const nb = state.notebooks.find(n => n.id === notebookId);
   if (nb && nb.pages.length === 0) {
-    nb.pages.push({ id: String(Date.now() + 1), strokes: [], background: 'grid', order: 0 });
+    nb.pages.push({ id: newId(), strokes: [], background: 'grid', order: 0, createdAt: Date.now() });
+    ensureCurrentPageId(notebookId);
   }
 
   if (isNew) await saveAppMeta();
@@ -2315,7 +2396,7 @@ async function saveLocalSettings() {
     try { settingsDB = await openSettingsDB(); } catch { return; }
   }
   await settingsPut(state.masterKeyHash + ':currentNotebookId', state.currentNotebookId);
-  await settingsPut(state.masterKeyHash + ':pagePositions', { ...state.currentPages });
+  await settingsPut(state.masterKeyHash + ':pagePositions', { ...state.currentPageIds });
   await settingsPut(state.masterKeyHash + ':color', state.color);
   await settingsPut(state.masterKeyHash + ':penSizeIndex', state.penSizeIndex);
   await settingsPut(state.masterKeyHash + ':customColors', [...state.customColors]);
@@ -2375,6 +2456,7 @@ let panStartViewX = 0, panStartViewY = 0;
 let panPointerId = null;
 
 function onPointerDown(e) {
+  if (isPageDeleted()) return;
   // Palm-Rejection: Pen erkannt → Touch ignorieren für Zeichnen
   if (e.pointerType === 'pen') {
     state.penDetected = true;
@@ -2526,7 +2608,7 @@ function onPointerUp(e) {
   }
 
   const page = currentPage();
-  if (!page || currentPoints.length < 2) { currentPoints = []; lastPoint = null; return; }
+  if (!page || isPageDeleted(page) || currentPoints.length < 2) { currentPoints = []; lastPoint = null; return; }
 
   const strokeId = String(Date.now());
   const newStroke = {
@@ -2604,15 +2686,17 @@ function renderUI() {
 
   // Notebook-Name in Toolbar + Pagebar (mobil)
   const nbName = currentNotebook()?.name || '';
+  const deletedPage = isPageDeleted();
+  const titleSuffix = deletedPage ? ' · gelöscht' : '';
   const titleEl = document.getElementById('notebook-title');
-  if (titleEl) titleEl.textContent = nbName;
+  if (titleEl) titleEl.textContent = nbName + titleSuffix;
   const pagebarTitle = document.getElementById('pagebar-title');
-  if (pagebarTitle) pagebarTitle.textContent = nbName;
+  if (pagebarTitle) pagebarTitle.textContent = nbName + titleSuffix;
 
   // Page-Indicator
   const pageIndicator = document.getElementById('page-indicator');
   if (pageIndicator) {
-    pageIndicator.textContent = `${currentPageIndex() + 1} / ${totalPages()}`;
+    pageIndicator.textContent = `${currentPageIndex() + 1} / ${totalPages()}${deletedPage ? ' · gelöscht' : ''}`;
   }
 
   // Prev/Next Buttons
@@ -2621,14 +2705,26 @@ function renderUI() {
   if (prevBtn) prevBtn.disabled = currentPageIndex() === 0;
   if (nextBtn) nextBtn.disabled = false; // Immer erlaubt (erstellt neue Seite)
 
-  // Delete-Page Button (nur wenn >1 Seite)
+  // Delete/Restore-Page Button
   const delPageBtn = document.getElementById('btn-delete-page');
-  if (delPageBtn) delPageBtn.disabled = totalPages() <= 1;
+  if (delPageBtn) {
+    delPageBtn.disabled = !deletedPage && currentNotebook()?.pages?.filter(p => !p.deletedAt).length <= 1;
+    delPageBtn.title = deletedPage ? 'Seite wiederherstellen' : 'Seite löschen';
+    delPageBtn.classList.toggle('danger', !deletedPage);
+    delPageBtn.classList.toggle('active', deletedPage);
+  }
+
+  const clearBtn = document.getElementById('btn-clear');
+  if (clearBtn) {
+    clearBtn.disabled = deletedPage;
+    clearBtn.title = deletedPage ? 'Gelöschte Seite kann nicht geleert werden' : 'Seite auskehren';
+  }
 
   // Hintergrund-Buttons
   const curBg = currentPage()?.background || 'grid';
   document.querySelectorAll('.bg-btn[data-bg]').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.bg === curBg);
+    btn.disabled = deletedPage;
   });
 
   // Tool-Buttons
@@ -2640,7 +2736,8 @@ function renderUI() {
   const container = document.getElementById('canvas-container');
   if (container) {
     container.classList.toggle('hand-cursor', state.tool === 'hand');
-    if (state.tool !== 'hand') container.style.cursor = state.tool === 'eraser' ? 'cell' : 'crosshair';
+    container.classList.toggle('page-deleted', deletedPage);
+    if (state.tool !== 'hand') container.style.cursor = deletedPage ? 'not-allowed' : (state.tool === 'eraser' ? 'cell' : 'crosshair');
   }
 
   // Farb-Palette (Standard + Custom + Picker)
@@ -2722,7 +2819,7 @@ function renderUI() {
 // ─── Init ───────────────────────────────────────────────────────────────────
 
 async function init() {
-  console.log('[App] Init...');
+  console.log('[App] Init...', APP_VERSION);
 
   // 1. Storage initialisieren
   const storageBackend = await initStorage();
@@ -2779,13 +2876,17 @@ async function init() {
     state.currentNotebookId = savedCurrentId;
     const pagePositions = await settingsGet(state.masterKeyHash + ':pagePositions') || {};
     for (const nb of state.notebooks) {
-      state.currentPages[nb.id] = pagePositions[nb.id] ?? 0;
+      const savedPagePos = pagePositions[nb.id];
+      state.currentPageIds[nb.id] = typeof savedPagePos === 'number'
+        ? (nb.pages[savedPagePos]?.id || null)
+        : (savedPagePos ?? null);
+      ensureCurrentPageId(nb.id);
     }
   } else {
     state.currentNotebookId = state.notebooks[0].id;
   }
   for (const nb of state.notebooks) {
-    if (!(nb.id in state.currentPages)) state.currentPages[nb.id] = 0;
+    ensureCurrentPageId(nb.id);
   }
 
   // 7d. URL-Hash #nb-{hash} auswerten (Bookmark/direkter Link, kein Invite)
@@ -2951,7 +3052,11 @@ function setupEvents() {
     if (confirm('Seite wirklich leeren?')) clearPage();
   });
   document.getElementById('btn-delete-page')?.addEventListener('click', () => {
-    if (confirm('Seite löschen?')) deletePage();
+    if (isPageDeleted()) {
+      if (confirm('Gelöschte Seite wiederherstellen?')) restorePage();
+    } else if (confirm('Seite löschen? Sie bleibt auf anderen Geräten als gelöscht markiert und kann wiederhergestellt werden.')) {
+      deletePage();
+    }
   });
 
   // Hintergrund-Auswahl

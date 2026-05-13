@@ -15,7 +15,8 @@
 //   'nb-deleted'   — Notebook gelöscht
 //   'nb-renamed'   — Notebook umbenannt
 //   'page-created' — Neue Seite
-//   'page-deleted' — Seite gelöscht
+//   'page-deleted' — Seite weich gelöscht (Tombstone)
+//   'page-restored'— Gelöschte Seite wiederhergestellt
 //   'page-bg'      — Seiten-Hintergrund geändert
 
 /** @type {string} App-ID für Trystero Room-Naming */
@@ -33,7 +34,7 @@ const NOSTR_RELAYS = [
 const ACTION_NAMES = [
   'stroke', 'undo', 'clear', 'full-sync',
   'nb-created', 'nb-deleted', 'nb-renamed',
-  'page-created', 'page-deleted', 'page-bg'
+  'page-created', 'page-deleted', 'page-restored', 'page-bg'
 ];
 
 /** @type {Map<string, {room: any, actions: Object, callbacks: Object, isMain: boolean}>} */
