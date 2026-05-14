@@ -27,7 +27,7 @@ const PEN_SIZES = [
 ];
 
 const BACKGROUNDS = ['grid', 'lined', 'blank'];
-const APP_VERSION = '2026-04-20-export-v12';
+const APP_VERSION = '2026-04-20-export-v13';
 
 // ─── State ──────────────────────────────────────────────────────────────────
 
@@ -2551,6 +2551,83 @@ async function exportCurrentPageAsPng() {
   }, 'image/png');
 }
 
+
+function escapeXml(str = '') {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+function strokeToSvgPath(points = []) {
+  if (!points.length) return '';
+  if (points.length === 1) return `M ${points[0].x} ${points[0].y}`;
+  return points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
+}
+
+async function exportCurrentPageAsSvg() {
+  const nb = currentNotebook();
+  const page = currentPage();
+  if (!nb || !page) { alert('Keine Seite aktiv.'); return; }
+  await loadPage(nb.id, page.id, page);
+
+  const bounds = computeStrokeBounds();
+  const margin = 24;
+  const minX = bounds ? bounds.minX - margin : 0;
+  const minY = bounds ? bounds.minY - margin : 0;
+  const width = bounds ? Math.max(1, Math.ceil(bounds.maxX - bounds.minX + margin * 2)) : Math.max(1, Math.round((staticCanvas?.width || 1200) / DPR));
+  const height = bounds ? Math.max(1, Math.ceil(bounds.maxY - bounds.minY + margin * 2)) : Math.max(1, Math.round((staticCanvas?.height || 1600) / DPR));
+  const visibleStrokes = (page.strokes || []).filter(s => strokeCreatedAt(s) > (page.clearedAt || 0));
+
+  let bgMarkup = '<rect width="100%" height="100%" fill="#ffffff"/>';
+  if (page.background === 'grid' || page.background === 'lined') {
+    const spacing = 25;
+    const lines = [];
+    const startY = Math.floor(minY / spacing) * spacing;
+    for (let y = startY; y <= minY + height + spacing; y += spacing) {
+      lines.push(`<line x1="${minX}" y1="${y}" x2="${minX + width}" y2="${y}" stroke="rgba(180,200,220,0.4)" stroke-width="0.5"/>`);
+    }
+    if (page.background === 'grid') {
+      const startX = Math.floor(minX / spacing) * spacing;
+      for (let x = startX; x <= minX + width + spacing; x += spacing) {
+        lines.push(`<line x1="${x}" y1="${minY}" x2="${x}" y2="${minY + height}" stroke="rgba(180,200,220,0.35)" stroke-width="0.5"/>`);
+      }
+    }
+    bgMarkup += lines.join('');
+  }
+
+  const svgParts = [];
+  const eraserMaskParts = ['<mask id="eraser-mask"><rect width="100%" height="100%" fill="white"/>'];
+  for (const stroke of visibleStrokes) {
+    const pts = stroke.points || [];
+    if (pts.length < 2) continue;
+    const path = strokeToSvgPath(pts);
+    const widthPx = stroke.tool === 'eraser' ? stroke.size * 3 : stroke.size;
+    if (stroke.tool === 'eraser') {
+      eraserMaskParts.push(`<path d="${path}" fill="none" stroke="black" stroke-linecap="round" stroke-linejoin="round" stroke-width="${widthPx}"/>`);
+    } else {
+      svgParts.push(`<path d="${path}" fill="none" stroke="${escapeXml(stroke.color || '#000000')}" stroke-linecap="round" stroke-linejoin="round" stroke-width="${widthPx}"/>`);
+    }
+  }
+  eraserMaskParts.push('</mask>');
+  const hasEraser = visibleStrokes.some(s => s.tool === 'eraser');
+
+  const svg = `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="${minX} ${minY} ${width} ${height}" width="${width}" height="${height}">
+  <title>${escapeXml(nb.name || 'Notizbuch')} – Seite ${currentPageIndex() + 1}</title>
+  <defs>${hasEraser ? eraserMaskParts.join('') : ''}</defs>
+  ${bgMarkup}
+  <g${hasEraser ? ' mask="url(#eraser-mask)"' : ''}>
+    ${svgParts.join('')}
+  </g>
+</svg>`;
+
+  const filename = `${(nb.name || 'notizbuch').replace(/[^a-z0-9-_]+/gi, '_')}-seite-${currentPageIndex() + 1}.svg`;
+  downloadBlob(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }), filename);
+}
+
 function showExportModal() {
   const modal = document.getElementById('export-modal');
   if (modal) modal.classList.remove('hidden');
@@ -2573,6 +2650,11 @@ async function exportApp(mode = null) {
     }
     if (mode === 'png') {
       await exportCurrentPageAsPng();
+      closeExportModal();
+      return;
+    }
+    if (mode === 'svg') {
+      await exportCurrentPageAsSvg();
       closeExportModal();
       return;
     }
@@ -3350,6 +3432,7 @@ function setupEvents() {
   document.getElementById('btn-close-export')?.addEventListener('click', closeExportModal);
   document.getElementById('btn-export-enc')?.addEventListener('click', () => exportApp('enc'));
   document.getElementById('btn-export-png')?.addEventListener('click', () => exportApp('png'));
+  document.getElementById('btn-export-svg')?.addEventListener('click', () => exportApp('svg'));
 
   // Color-Picker
   document.getElementById('btn-color-picker')?.addEventListener('click', toggleColorPicker);
