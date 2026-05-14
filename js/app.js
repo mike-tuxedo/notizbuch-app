@@ -27,7 +27,7 @@ const PEN_SIZES = [
 ];
 
 const BACKGROUNDS = ['grid', 'lined', 'blank'];
-const APP_VERSION = '2026-04-20-debug-fixed-v24';
+const APP_VERSION = '2026-04-20-resync-tuned-v25';
 
 // ─── State ──────────────────────────────────────────────────────────────────
 
@@ -427,6 +427,7 @@ function flushSave() {
 let _sharedPushTimer = null;
 let _sharedWakeTimer = null;
 let _lastSharedResyncAt = 0;
+let _lastHeartbeatAt = 0;
 let _syncDebugStatus = 'idle';
 let _lastSyncActivity = 0;
 
@@ -1637,24 +1638,16 @@ async function resyncSharedNotebook(notebookId, opts = {}) {
     console.warn('[Share] Shared resync fetch fehlgeschlagen:', notebookId, e);
   }
 
-  const metaPayload = buildNotebookMetaPayload(notebookId);
-  if (metaPayload) p2pSendForNotebook('full-sync', metaPayload);
-
-  const currentId = state.currentPageIds[notebookId];
-  if (currentId) {
-    const page = nb.pages.find(p => p.id === currentId);
-    if (page) {
-      for (const stroke of (page.strokes || [])) {
-        p2pSendForNotebook('stroke', { eventId: newEventId(), notebookId, pageId: page.id, stroke });
-      }
-    }
-    await pushSharedNotebook(notebookId, { pageIds: [currentId] });
+  if (opts.sendMeta !== false) {
+    const metaPayload = buildNotebookMetaPayload(notebookId);
+    if (metaPayload) p2pSendForNotebook('full-sync', metaPayload);
   }
 }
 
-async function resyncVisibleSharedNotebooks(reason = 'manual') {
+async function resyncVisibleSharedNotebooks(reason = 'manual', opts = {}) {
   const now = Date.now();
-  if (now - _lastSharedResyncAt < 3000) return;
+  const minInterval = opts.minIntervalMs ?? 15000;
+  if (now - _lastSharedResyncAt < minInterval) return;
   _lastSharedResyncAt = now;
   updateSyncDebug(`shared-resync-all:${reason}`);
   const notebookIds = [];
@@ -1663,7 +1656,7 @@ async function resyncVisibleSharedNotebooks(reason = 'manual') {
     if (!notebookIds.includes(nbId)) notebookIds.push(nbId);
   }
   for (const nbId of notebookIds) {
-    await resyncSharedNotebook(nbId, { reason });
+    await resyncSharedNotebook(nbId, { reason, sendMeta: opts.sendMeta });
   }
 }
 
@@ -3338,8 +3331,13 @@ async function init() {
 
   setInterval(() => {
     if (!state.syncEnabled || document.visibilityState === 'hidden') return;
-    resyncVisibleSharedNotebooks('heartbeat').catch(() => {});
-  }, 8000);
+    const now = Date.now();
+    if (now - _lastHeartbeatAt < 20000) return;
+    _lastHeartbeatAt = now;
+    if (now - _lastSyncActivity > 15000) {
+      resyncVisibleSharedNotebooks('heartbeat', { minIntervalMs: 20000, sendMeta: false }).catch(() => {});
+    }
+  }, 5000);
 
   console.log('[App] Bereit.', state.notebooks.length, 'Notebooks');
 }
@@ -3384,8 +3382,8 @@ async function resync() {
       await startP2P();
     }
 
-    // 5. Geteilte Notebooks nach Wake aggressiv nachziehen
-    await resyncVisibleSharedNotebooks('resync');
+    // 5. Geteilte Notebooks vorsichtig nachziehen (nur Meta/Fetch, kein Stroke-Rebroadcast)
+    await resyncVisibleSharedNotebooks('resync', { minIntervalMs: 10000, sendMeta: true });
 
     // 6. Aktuelle Page an Relay pushen
     pushAllToRelay();
@@ -3411,8 +3409,8 @@ function handleActivityChange(event) {
   resync();
   if (_sharedWakeTimer) clearTimeout(_sharedWakeTimer);
   _sharedWakeTimer = setTimeout(() => {
-    resyncVisibleSharedNotebooks(event.type).catch(e => console.warn('[Share] Wake-Resync fehlgeschlagen:', e));
-  }, 1200);
+    resyncVisibleSharedNotebooks(event.type, { minIntervalMs: 5000, sendMeta: true }).catch(e => console.warn('[Share] Wake-Resync fehlgeschlagen:', e));
+  }, 1500);
 }
 
 function setupEvents() {
