@@ -1490,6 +1490,30 @@
     </div>
   </div>
 
+
+  <div id="console"></div>
+  <style>
+    #console {
+      display: block;
+      position: fixed;
+      z-index: 9999;
+      bottom: 8px;
+      right: 8px;
+      background: rgba(0,0,0,0.78);
+      color: #fff;
+      max-height: 40vh;
+      overflow-y: auto;
+      width: min(320px, calc(100vw - 16px));
+      border-radius: 8px;
+      padding: 8px;
+      font: 11px/1.35 monospace;
+      opacity: 0.92;
+      pointer-events: none;
+      white-space: normal;
+      word-break: break-word;
+    }
+  </style>
+
     <script type="module" src="js/app.js"></script>
 </body>
 
