@@ -27,7 +27,7 @@ const PEN_SIZES = [
 ];
 
 const BACKGROUNDS = ['grid', 'lined', 'blank'];
-const APP_VERSION = '2026-04-20-stroke-normalize-v17';
+const APP_VERSION = '2026-04-20-p2p-forward-v18';
 
 // ─── State ──────────────────────────────────────────────────────────────────
 
@@ -151,6 +151,29 @@ function strokeCreatedAt(stroke) {
   return Number.isFinite(ts) ? ts : 0;
 }
 
+const _seenSyncEvents = new Set();
+
+function newEventId() {
+  return `${Date.now()}-${newId()}`;
+}
+
+function rememberSyncEvent(eventId) {
+  if (!eventId) return false;
+  if (_seenSyncEvents.has(eventId)) return true;
+  _seenSyncEvents.add(eventId);
+  if (_seenSyncEvents.size > 2000) {
+    const first = _seenSyncEvents.values().next().value;
+    if (first) _seenSyncEvents.delete(first);
+  }
+  return false;
+}
+
+function forwardSyncEvent(action, data, roomId, fromPeerId) {
+  if (!roomId) return;
+  if (!data?.eventId) return;
+  p2pSend(action, data, { roomId });
+}
+
 function pageMeta(page) {
   return {
     id: page.id,
@@ -231,6 +254,7 @@ function buildNotebookMetaPayload(notebookId, pageIds = null) {
   if (!nb) return null;
   const allowed = pageIds?.length ? new Set(pageIds) : null;
   return {
+    eventId: newEventId(),
     notebooks: [{
       id: nb.id,
       name: nb.name,
@@ -950,7 +974,7 @@ function undo() {
   if (removed) _undoneIds.add(removed.id);
   redrawStrokes();
   flushSave(); // Sofort speichern — kein Debounce, damit Relay/Sync den neuen Stand hat
-  p2pSendForNotebook('undo', { notebookId: state.currentNotebookId, pageId: page.id, strokeId: removed?.id });
+  p2pSendForNotebook('undo', { eventId: newEventId(), notebookId: state.currentNotebookId, pageId: page.id, strokeId: removed?.id });
 }
 
 /** IDs von per Undo entfernten Strokes — werden bei Union-Merge ignoriert */
@@ -1721,6 +1745,7 @@ function buildFullSyncPayload(opts = {}) {
   const notebookIds = opts.notebookIds || (state.currentNotebookId ? [state.currentNotebookId] : []);
   const includeAllPageStrokes = opts.includeAllPageStrokes ?? false;
   return {
+    eventId: newEventId(),
     notebooks: notebookIds
       .map(nbId => state.notebooks.find(n => n.id === nbId))
       .filter(Boolean)
@@ -1770,7 +1795,10 @@ function _resolveNbId(eventNbId, roomId) {
 }
 
 const _p2pCallbacks = {
-  onStroke({ notebookId, pageId, stroke }, peerId, roomId) {
+  onStroke(payload, peerId, roomId) {
+    if (rememberSyncEvent(payload?.eventId)) return;
+    forwardSyncEvent('stroke', payload, roomId, peerId);
+    let { notebookId, pageId, stroke } = payload;
     notebookId = _resolveNbId(notebookId, roomId);
     const nb = state.notebooks.find(n => n.id === notebookId);
     if (!nb) return;
@@ -1785,7 +1813,10 @@ const _p2pCallbacks = {
     serializeStrokes(page.strokes, notebookId).then(d => savePageData(notebookId, pageId, d));
   },
 
-  onUndo({ notebookId, pageId, strokeId }, peerId, roomId) {
+  onUndo(payload, peerId, roomId) {
+    if (rememberSyncEvent(payload?.eventId)) return;
+    forwardSyncEvent('undo', payload, roomId, peerId);
+    let { notebookId, pageId, strokeId } = payload;
     notebookId = _resolveNbId(notebookId, roomId);
     const nb = state.notebooks.find(n => n.id === notebookId);
     const page = nb?.pages.find(p => p.id === pageId);
@@ -1836,6 +1867,8 @@ const _p2pCallbacks = {
   },
 
   async onFullSync(payload, peerId, roomId) {
+    if (rememberSyncEvent(payload?.eventId)) return;
+    forwardSyncEvent('full-sync', payload, roomId, peerId);
     if (!roomId || roomId === state.masterKeyHash) return; // Main-Room hat eigenen Handler
     if (!payload?.notebooks?.length) return;
     // Shared Full-Sync: notebookId aus Payload kann unterschiedlich sein → per roomId mappen
@@ -1860,6 +1893,7 @@ async function startP2P() {
     onClear: _p2pCallbacks.onClear,
 
     async onFullSync(payload, peerId) {
+      if (rememberSyncEvent(payload?.eventId)) return;
       console.log('[P2P] Full-Sync von', peerId, ':', payload.notebooks?.length, 'Notebooks');
       await applyFullSync(payload);
 
@@ -2887,7 +2921,7 @@ function onPointerUp(e) {
   redrawStrokes();
 
   saveCurrentPage();
-  p2pSendForNotebook('stroke', { notebookId: state.currentNotebookId, pageId: page.id, stroke: newStroke });
+  p2pSendForNotebook('stroke', { eventId: newEventId(), notebookId: state.currentNotebookId, pageId: page.id, stroke: newStroke });
   currentPoints = [];
   lastPoint = null;
 }
