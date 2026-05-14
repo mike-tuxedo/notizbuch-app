@@ -27,7 +27,7 @@ const PEN_SIZES = [
 ];
 
 const BACKGROUNDS = ['grid', 'lined', 'blank'];
-const APP_VERSION = '2026-04-20-clear-shared-v16';
+const APP_VERSION = '2026-04-20-stroke-normalize-v17';
 
 // ─── State ──────────────────────────────────────────────────────────────────
 
@@ -185,6 +185,23 @@ function applyPageMeta(localPage, remotePage) {
   if (!localPage.createdAt && remotePage.createdAt) localPage.createdAt = remotePage.createdAt;
   localPage.clearedAt = Math.max(localPage.clearedAt || 0, remotePage.clearedAt || 0);
   localPage.deletedAt = Math.max(localPage.deletedAt || 0, remotePage.deletedAt || 0);
+}
+
+function normalizePageStrokes(page, incomingStrokes = null) {
+  const existing = new Map();
+  for (const s of (page?.strokes || [])) {
+    if (!s?.id || _undoneIds.has(s.id)) continue;
+    existing.set(s.id, s);
+  }
+  for (const s of (incomingStrokes || [])) {
+    if (!s?.id || _undoneIds.has(s.id)) continue;
+    if (!existing.has(s.id)) existing.set(s.id, s);
+  }
+  const clearedAt = page?.clearedAt || 0;
+  page.strokes = [...existing.values()]
+    .filter(s => strokeCreatedAt(s) > clearedAt)
+    .sort((a, b) => strokeCreatedAt(a) - strokeCreatedAt(b) || String(a.id).localeCompare(String(b.id)));
+  return page.strokes;
 }
 
 function mergeNotebookMetaIntoState(remoteNb) {
@@ -412,15 +429,7 @@ async function _flushSave() {
 async function loadPage(notebookId, pageId, page) {
   const data = await loadPageData(notebookId, pageId);
   const diskStrokes = data ? await deserializeStrokes(data, notebookId) : [];
-  // Union-Merge: OPFS + In-Memory (undone IDs ignorieren)
-  const merged = new Map();
-  for (const s of diskStrokes) { if (!_undoneIds.has(s.id)) merged.set(s.id, s); }
-  for (const s of (page.strokes || [])) { if (!_undoneIds.has(s.id)) merged.set(s.id, s); }
-  // Strokes vor clearedAt filtern (Clear wurde evtl. von anderem Peer gesetzt)
-  const clearedAt = page.clearedAt || 0;
-  page.strokes = [...merged.values()]
-    .filter(s => strokeCreatedAt(s) > clearedAt)
-    .sort((a, b) => strokeCreatedAt(a) - strokeCreatedAt(b) || String(a.id).localeCompare(String(b.id)));
+  normalizePageStrokes(page, diskStrokes);
 }
 
 // ─── Meta Persistence ───────────────────────────────────────────────────────
@@ -952,6 +961,7 @@ async function clearPage() {
   if (!page || isPageDeleted(page)) return;
   page.strokes = [];
   page.clearedAt = Date.now();
+  normalizePageStrokes(page);
   redrawStrokes();
   await saveAppMeta();
   saveCurrentPage();
@@ -1435,16 +1445,10 @@ async function mergeSharedNotebookData(notebookId, nodes) {
       nb.pages.push(page);
       normalizePageOrder(nb);
     }
-    // Union-Merge by ID (undone IDs ignorieren)
-    const existing = new Map(page.strokes.map(s => [s.id, s]));
-    let pageMerged = 0;
-    for (const s of strokes) {
-      if (!existing.has(s.id) && !_undoneIds.has(s.id)) {
-        page.strokes.push(s);
-        merged++;
-        pageMerged++;
-      }
-    }
+    const beforeCount = page.strokes.length;
+    normalizePageStrokes(page, strokes);
+    const pageMerged = Math.max(0, page.strokes.length - beforeCount);
+    merged += pageMerged;
     if (pageMerged > 0) changedPages.add(pageId);
   }
 
@@ -1479,9 +1483,7 @@ async function mergeSharedNotebookData(notebookId, nodes) {
   // Nach Meta-Merge alte Strokes konsequent herausfiltern, damit Clears aus dem Relay alte Page-Blobs nicht wieder sichtbar machen
   for (const page of nb.pages) {
     const before = page.strokes?.length || 0;
-    page.strokes = (page.strokes || [])
-      .filter(s => strokeCreatedAt(s) > (page.clearedAt || 0))
-      .sort((a, b) => strokeCreatedAt(a) - strokeCreatedAt(b) || String(a.id).localeCompare(String(b.id)));
+    normalizePageStrokes(page);
     if ((page.strokes?.length || 0) !== before) changedPages.add(page.id);
   }
 
@@ -1738,14 +1740,7 @@ async function applyFullSync(payload) {
     for (const remotePage of (remoteNb.pages || [])) {
       const localPage = localNb.pages.find(p => p.id === remotePage.id);
       if (!localPage) continue;
-      const effectiveClearedAt = localPage.clearedAt || 0;
-      const existing = new Map((localPage.strokes || []).map(s => [s.id, s]));
-      for (const s of (remotePage.strokes || [])) {
-        if (!existing.has(s.id) && !_undoneIds.has(s.id)) existing.set(s.id, s);
-      }
-      localPage.strokes = [...existing.values()]
-        .filter(s => strokeCreatedAt(s) > effectiveClearedAt)
-        .sort((a, b) => strokeCreatedAt(a) - strokeCreatedAt(b) || String(a.id).localeCompare(String(b.id)));
+      normalizePageStrokes(localPage, remotePage.strokes || []);
     }
   }
 
@@ -1783,8 +1778,7 @@ const _p2pCallbacks = {
     if (!page || isPageDeleted(page)) return;
     if (page.strokes.some(s => s.id === stroke.id)) return;
     if (strokeCreatedAt(stroke) <= (page.clearedAt || 0)) return;
-    page.strokes.push(stroke);
-    page.strokes.sort((a, b) => strokeCreatedAt(a) - strokeCreatedAt(b) || String(a.id).localeCompare(String(b.id)));
+    normalizePageStrokes(page, [stroke]);
     if (notebookId === state.currentNotebookId && pageId === currentPage()?.id) {
       redrawStrokes();
     }
@@ -1799,6 +1793,7 @@ const _p2pCallbacks = {
     if (strokeId) {
       _undoneIds.add(strokeId);
       page.strokes = page.strokes.filter(s => s.id !== strokeId);
+      normalizePageStrokes(page);
     } else {
       page.strokes.pop();
     }
@@ -2888,7 +2883,7 @@ function onPointerUp(e) {
     tool: state.tool === 'eraser' ? 'eraser' : 'pen'
   };
 
-  page.strokes.push(newStroke);
+  normalizePageStrokes(page, [newStroke]);
   redrawStrokes();
 
   saveCurrentPage();
