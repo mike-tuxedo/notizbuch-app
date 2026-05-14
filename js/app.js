@@ -27,7 +27,7 @@ const PEN_SIZES = [
 ];
 
 const BACKGROUNDS = ['grid', 'lined', 'blank'];
-const APP_VERSION = '2026-04-20-perf-v5';
+const APP_VERSION = '2026-04-20-meta-sync-v6';
 
 // ─── State ──────────────────────────────────────────────────────────────────
 
@@ -1625,27 +1625,24 @@ async function pushAllToRelay() {
  */
 function buildFullSyncPayload(opts = {}) {
   const notebookIds = opts.notebookIds || (state.currentNotebookId ? [state.currentNotebookId] : []);
-  const onlyCurrentPage = opts.onlyCurrentPage ?? true;
+  const includeAllPageStrokes = opts.includeAllPageStrokes ?? false;
   return {
     notebooks: notebookIds
       .map(nbId => state.notebooks.find(n => n.id === nbId))
       .filter(Boolean)
       .map(nb => {
         const currentId = state.currentPageIds[nb.id];
-        const pages = onlyCurrentPage && currentId
-          ? nb.pages.filter(p => p.id === currentId)
-          : nb.pages;
         return {
           id: nb.id,
           name: nb.name,
-          pages: pages.map(p => ({
+          pages: nb.pages.map(p => ({
             id: p.id,
             background: p.background || 'grid',
             order: p.order ?? 0,
             createdAt: p.createdAt || 0,
             clearedAt: p.clearedAt || 0,
             deletedAt: p.deletedAt || 0,
-            strokes: (p.strokes || []).map(s => ({
+            strokes: (includeAllPageStrokes || p.id === currentId ? (p.strokes || []) : []).map(s => ({
               id: s.id, points: s.points, color: s.color, size: s.size, tool: s.tool, createdAt: strokeCreatedAt(s)
             }))
           }))
@@ -1845,7 +1842,7 @@ const _p2pCallbacks = {
     if (!nbId) return;
     const nb = state.notebooks.find(n => n.id === nbId);
     if (!nb) return;
-    const payload = buildFullSyncPayload({ notebookIds: [nb.id], onlyCurrentPage: true });
+    const payload = buildFullSyncPayload({ notebookIds: [nb.id] });
     p2pSend('full-sync', payload, { peerId, roomId });
     console.log('[P2P] Shared Full-Sync gesendet @', roomId.slice(0, 8));
   },
@@ -2018,7 +2015,7 @@ async function startP2P() {
       if (!state.connectedPeers.includes(peerId)) state.connectedPeers.push(peerId);
       renderUI();
       // Full-Sync an neuen Peer senden
-      const payload = buildFullSyncPayload({ notebookIds: [state.currentNotebookId], onlyCurrentPage: true });
+      const payload = buildFullSyncPayload({ notebookIds: [state.currentNotebookId] });
       if (payload.notebooks.length > 0) {
         p2pSend('full-sync', payload, { peerId });
         console.log('[P2P] Full-Sync gesendet an', peerId);
@@ -3002,7 +2999,7 @@ async function resync() {
 
     // 4. P2P: nur neu aufbauen wenn keine Peers verbunden (Signaling ist teuer + fragil)
     if (hasPeers()) {
-      const payload = buildFullSyncPayload({ notebookIds: [state.currentNotebookId], onlyCurrentPage: true });
+      const payload = buildFullSyncPayload({ notebookIds: [state.currentNotebookId] });
       if (payload.notebooks.length > 0) p2pSend('full-sync', payload);
       console.log('[App] P2P lebt — Full-Sync gesendet');
     } else {
@@ -3025,7 +3022,7 @@ async function resync() {
  */
 const consoleLog = document.getElementById('console');
 function handleActivityChange(event) {
-  consoleLog.innerText += '\n'+event.type;
+  if (consoleLog) consoleLog.innerText += '\n'+event.type;
   if (!state.syncEnabled) return;
   if (document.visibilityState === 'hidden') return;
   resync();
