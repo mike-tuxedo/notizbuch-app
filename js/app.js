@@ -27,7 +27,7 @@ const PEN_SIZES = [
 ];
 
 const BACKGROUNDS = ['grid', 'lined', 'blank'];
-const APP_VERSION = '2026-04-20-meta-events-v15';
+const APP_VERSION = '2026-04-20-clear-shared-v16';
 
 // ─── State ──────────────────────────────────────────────────────────────────
 
@@ -1476,6 +1476,15 @@ async function mergeSharedNotebookData(notebookId, nodes) {
     } catch (e) { console.warn('[Share] Meta-decrypt fehlgeschlagen:', e); }
   }
 
+  // Nach Meta-Merge alte Strokes konsequent herausfiltern, damit Clears aus dem Relay alte Page-Blobs nicht wieder sichtbar machen
+  for (const page of nb.pages) {
+    const before = page.strokes?.length || 0;
+    page.strokes = (page.strokes || [])
+      .filter(s => strokeCreatedAt(s) > (page.clearedAt || 0))
+      .sort((a, b) => strokeCreatedAt(a) - strokeCreatedAt(b) || String(a.id).localeCompare(String(b.id)));
+    if ((page.strokes?.length || 0) !== before) changedPages.add(page.id);
+  }
+
   // Strokes lokal speichern (OPFS) damit sie persistent sind
   for (const pageId of changedPages) {
     const page = nb.pages.find(p => p.id === pageId);
@@ -1485,7 +1494,7 @@ async function mergeSharedNotebookData(notebookId, nodes) {
     }
   }
 
-  if (merged > 0) {
+  if (merged > 0 || changedPages.size > 0) {
     console.log(`[Share] ${merged} Strokes aus Relay gemerged für Notebook ${notebookId}`);
     // Aktuelle Seite neu zeichnen falls betroffen
     if (notebookId === state.currentNotebookId) {
