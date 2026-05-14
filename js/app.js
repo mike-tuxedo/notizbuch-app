@@ -27,7 +27,7 @@ const PEN_SIZES = [
 ];
 
 const BACKGROUNDS = ['grid', 'lined', 'blank'];
-const APP_VERSION = '2026-04-20-soft-delete-v3';
+const APP_VERSION = '2026-04-20-soft-delete-v4';
 
 // ─── State ──────────────────────────────────────────────────────────────────
 
@@ -145,6 +145,12 @@ function isPageDeleted(page = currentPage()) {
   return !!(page?.deletedAt);
 }
 
+function strokeCreatedAt(stroke) {
+  if (Number.isFinite(stroke?.createdAt)) return stroke.createdAt;
+  const ts = Number(stroke?.id);
+  return Number.isFinite(ts) ? ts : 0;
+}
+
 /** @returns {{id: string, strokes: Array, background: string}|undefined} */
 function currentPage() {
   const nb = currentNotebook();
@@ -237,7 +243,8 @@ async function serializeStrokes(strokes, notebookId) {
     points: roundPoints(s.points || []),
     color: s.color,
     size: s.size,
-    tool: s.tool || 'pen'
+    tool: s.tool || 'pen',
+    createdAt: strokeCreatedAt(s)
   })));
   const plain = new TextEncoder().encode(json);
   try {
@@ -326,8 +333,8 @@ async function loadPage(notebookId, pageId, page) {
   // Strokes vor clearedAt filtern (Clear wurde evtl. von anderem Peer gesetzt)
   const clearedAt = page.clearedAt || 0;
   page.strokes = [...merged.values()]
-    .filter(s => Number(s.id) > clearedAt)
-    .sort((a, b) => Number(a.id) - Number(b.id));
+    .filter(s => strokeCreatedAt(s) > clearedAt)
+    .sort((a, b) => strokeCreatedAt(a) - strokeCreatedAt(b) || String(a.id).localeCompare(String(b.id)));
 }
 
 // ─── Meta Persistence ───────────────────────────────────────────────────────
@@ -549,7 +556,7 @@ function computeStrokeBounds() {
   const strokes = page?.strokes;
   if (!strokes?.length) return null;
   const clearedAt = page.clearedAt || 0;
-  const visible = strokes.filter(s => Number(s.id) > clearedAt);
+  const visible = strokes.filter(s => strokeCreatedAt(s) > clearedAt);
   if (!visible.length) return null;
 
   // Grobe Bounds aus Stroke-Daten (für Canvas-Größe)
@@ -824,7 +831,7 @@ async function createTestNotebook() {
     for (let j = 0; j < 8; j++) {
       points.push({ x: x + j * 4 + Math.random() * 2, y: y + Math.sin(j) * 10 + Math.random() * 2 });
     }
-    strokes.push({ id: String(Date.now() + i + 2), points: roundPoints(points), color: '#000000', size: 2, tool: 'pen' });
+    strokes.push({ id: newId(), createdAt: Date.now() + i + 2, points: roundPoints(points), color: '#000000', size: 2, tool: 'pen' });
   }
   state.notebooks.push({
     id: nbId,
@@ -1629,7 +1636,7 @@ function buildFullSyncPayload() {
         clearedAt: p.clearedAt || 0,
         deletedAt: p.deletedAt || 0,
         strokes: (p.strokes || []).map(s => ({
-          id: s.id, points: s.points, color: s.color, size: s.size, tool: s.tool
+          id: s.id, points: s.points, color: s.color, size: s.size, tool: s.tool, createdAt: strokeCreatedAt(s)
         }))
       }))
     }))
@@ -1690,8 +1697,8 @@ async function applyFullSync(payload) {
             if (!existing.has(s.id) && !_undoneIds.has(s.id)) existing.set(s.id, s);
           }
           localPage.strokes = [...existing.values()]
-            .filter(s => Number(s.id) > effectiveClearedAt)
-            .sort((a, b) => Number(a.id) - Number(b.id));
+            .filter(s => strokeCreatedAt(s) > effectiveClearedAt)
+            .sort((a, b) => strokeCreatedAt(a) - strokeCreatedAt(b) || String(a.id).localeCompare(String(b.id)));
         }
       }
       normalizePageOrder(localNb);
@@ -1732,7 +1739,9 @@ const _p2pCallbacks = {
     const page = nb.pages.find(p => p.id === pageId);
     if (!page || isPageDeleted(page)) return;
     if (page.strokes.some(s => s.id === stroke.id)) return;
+    if (strokeCreatedAt(stroke) <= (page.clearedAt || 0)) return;
     page.strokes.push(stroke);
+    page.strokes.sort((a, b) => strokeCreatedAt(a) - strokeCreatedAt(b) || String(a.id).localeCompare(String(b.id)));
     if (notebookId === state.currentNotebookId && pageId === currentPage()?.id) {
       redrawStrokes();
     }
@@ -1835,7 +1844,7 @@ const _p2pCallbacks = {
           order: p.order ?? 0,
           clearedAt: p.clearedAt || 0,
           strokes: (p.strokes || []).map(s => ({
-            id: s.id, points: s.points, color: s.color, size: s.size, tool: s.tool || 'pen'
+            id: s.id, points: s.points, color: s.color, size: s.size, tool: s.tool || 'pen', createdAt: strokeCreatedAt(s)
           }))
         }))
       }]
@@ -1896,7 +1905,7 @@ async function startP2P() {
               } else if (kp) {
                 const existing = new Map(kp.strokes.map(s => [s.id, s]));
                 for (const s of (dp.strokes || [])) { if (!existing.has(s.id)) existing.set(s.id, s); }
-                kp.strokes = [...existing.values()].sort((a, b) => Number(a.id) - Number(b.id));
+                kp.strokes = [...existing.values()].sort((a, b) => strokeCreatedAt(a) - strokeCreatedAt(b) || String(a.id).localeCompare(String(b.id)));
               }
             }
             toRemove.push(dup.id);
@@ -2622,9 +2631,10 @@ function onPointerUp(e) {
   const page = currentPage();
   if (!page || isPageDeleted(page) || currentPoints.length < 2) { currentPoints = []; lastPoint = null; return; }
 
-  const strokeId = String(Date.now());
+  const strokeId = newId();
   const newStroke = {
     id: strokeId,
+    createdAt: Date.now(),
     points: roundPoints(currentPoints),
     color: state.color,
     size: PEN_SIZES[state.penSizeIndex].size,
