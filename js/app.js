@@ -27,7 +27,7 @@ const PEN_SIZES = [
 ];
 
 const BACKGROUNDS = ['grid', 'lined', 'blank'];
-const APP_VERSION = '2026-04-20-export-v10';
+const APP_VERSION = '2026-04-20-export-v11';
 
 // ─── State ──────────────────────────────────────────────────────────────────
 
@@ -2517,17 +2517,19 @@ async function exportCurrentPageAsPng() {
   await loadPage(nb.id, page.id, page);
 
   const bounds = computeStrokeBounds();
-  const margin = 40;
-  const contentW = Math.max(1200, bounds ? Math.ceil(bounds.maxX - bounds.minX + margin * 2) : 1200);
-  const contentH = Math.max(1600, bounds ? Math.ceil(bounds.maxY - bounds.minY + margin * 2) : 1600);
-  const offsetX = bounds ? margin - bounds.minX : margin;
-  const offsetY = bounds ? margin - bounds.minY : margin;
+  const margin = 24;
+  const fallbackW = Math.max(1, Math.round((staticCanvas?.width || 1200) / DPR));
+  const fallbackH = Math.max(1, Math.round((staticCanvas?.height || 1600) / DPR));
+  const contentW = bounds ? Math.max(1, Math.ceil(bounds.maxX - bounds.minX + margin * 2)) : fallbackW;
+  const contentH = bounds ? Math.max(1, Math.ceil(bounds.maxY - bounds.minY + margin * 2)) : fallbackH;
+  const offsetX = bounds ? margin - bounds.minX : 0;
+  const offsetY = bounds ? margin - bounds.minY : 0;
 
   const canvas = document.createElement('canvas');
   canvas.width = contentW;
   canvas.height = contentH;
   const ctx = canvas.getContext('2d');
-  ctx.fillStyle = '#f5f5f0';
+  ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, contentW, contentH);
   drawBackground(ctx, contentW, contentH, page.background || 'grid', offsetX, offsetY, 1);
   ctx.save();
