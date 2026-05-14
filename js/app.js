@@ -27,7 +27,7 @@ const PEN_SIZES = [
 ];
 
 const BACKGROUNDS = ['grid', 'lined', 'blank'];
-const APP_VERSION = '2026-04-20-meta-sync-v6';
+const APP_VERSION = '2026-04-20-qr-scan-v7';
 
 // ─── State ──────────────────────────────────────────────────────────────────
 
@@ -2115,6 +2115,120 @@ function toggleSidebar() {
 
 // ─── Share Modal ────────────────────────────────────────────────────────────
 
+
+let _scanStream = null;
+let _scanTimer = null;
+
+async function processInviteUrl(url) {
+  if (!url || !/#[^\s]+/.test(url)) throw new Error('Kein gültiger Invite-Link');
+  const prevHash = location.hash;
+  try {
+    const u = new URL(url, location.origin);
+    history.replaceState(null, '', location.pathname + u.hash);
+    const invite = await parseInviteLink();
+    history.replaceState(null, '', location.pathname + prevHash);
+    if (!invite) throw new Error('QR-Code enthält keinen gültigen Notebook-Link');
+    await handleInvite(invite);
+    closeScanModal();
+    alert('Geteiltes Notizbuch hinzugefügt.');
+  } catch (e) {
+    history.replaceState(null, '', location.pathname + prevHash);
+    throw e;
+  }
+}
+
+async function scanFrame() {
+  const video = document.getElementById('scan-video');
+  const status = document.getElementById('scan-status');
+  if (!_scanStream || !video || video.readyState < 2) return;
+  try {
+    if ('BarcodeDetector' in window) {
+      const detector = new BarcodeDetector({ formats: ['qr_code'] });
+      const codes = await detector.detect(video);
+      if (codes?.length && codes[0].rawValue) {
+        if (status) status.textContent = 'QR-Code erkannt…';
+        await processInviteUrl(codes[0].rawValue);
+        return;
+      }
+    }
+  } catch {}
+  _scanTimer = setTimeout(scanFrame, 500);
+}
+
+async function startScanCamera() {
+  const video = document.getElementById('scan-video');
+  const status = document.getElementById('scan-status');
+  try {
+    stopScanCamera();
+    _scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
+    if (video) {
+      video.srcObject = _scanStream;
+      video.style.display = 'block';
+      await video.play().catch(() => {});
+    }
+    if (status) status.textContent = 'QR-Code vor die Kamera halten';
+    scanFrame();
+  } catch (e) {
+    if (status) status.textContent = 'Kamera konnte nicht gestartet werden.';
+  }
+}
+
+function stopScanCamera() {
+  if (_scanTimer) { clearTimeout(_scanTimer); _scanTimer = null; }
+  if (_scanStream) {
+    _scanStream.getTracks().forEach(t => t.stop());
+    _scanStream = null;
+  }
+  const video = document.getElementById('scan-video');
+  if (video) {
+    video.pause?.();
+    video.srcObject = null;
+    video.style.display = 'none';
+  }
+}
+
+function openScanModal() {
+  document.getElementById('scan-modal')?.classList.remove('hidden');
+  const status = document.getElementById('scan-status');
+  if (status) status.textContent = 'Kamera wird vorbereitet…';
+  startScanCamera();
+}
+
+function closeScanModal() {
+  stopScanCamera();
+  document.getElementById('scan-modal')?.classList.add('hidden');
+}
+
+async function scanImageFile() {
+  const input = Object.assign(document.createElement('input'), { type: 'file', accept: 'image/*' });
+  input.onchange = async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    const status = document.getElementById('scan-status');
+    try {
+      if (!('BarcodeDetector' in window)) throw new Error('BarcodeDetector nicht verfügbar');
+      const bitmap = await createImageBitmap(file);
+      const detector = new BarcodeDetector({ formats: ['qr_code'] });
+      const codes = await detector.detect(bitmap);
+      if (!codes?.length?.valueOf()) throw new Error('Kein QR-Code gefunden');
+      await processInviteUrl(codes[0].rawValue);
+    } catch (e) {
+      if (status) status.textContent = 'Bild konnte nicht gelesen werden. Nutze alternativ Link einfügen.';
+    }
+  };
+  input.click();
+}
+
+async function pasteInviteLink() {
+  const url = prompt('Invite-Link oder QR-Inhalt einfügen:');
+  if (!url) return;
+  try {
+    await processInviteUrl(url.trim());
+  } catch (e) {
+    alert(e.message || 'Ungültiger Invite-Link');
+  }
+}
+
 /** Share-Modal öffnen — Notebook-Invite-Link mit NotebookKey im Fragment. */
 async function openShareModal() {
   const modal = document.getElementById('share-modal');
@@ -3101,6 +3215,7 @@ function setupEvents() {
 
   // Share
   document.getElementById('btn-share')?.addEventListener('click', openShareModal);
+  document.getElementById('btn-scan-share')?.addEventListener('click', openScanModal);
   document.getElementById('btn-sync-link')?.addEventListener('click', showSyncLink);
   document.getElementById('btn-export')?.addEventListener('click', exportApp);
   document.getElementById('btn-import')?.addEventListener('click', importApp);
@@ -3115,6 +3230,10 @@ function setupEvents() {
     document.getElementById('mobile-color-menu')?.classList.add('hidden');
   });
   document.getElementById('btn-close-share')?.addEventListener('click', closeShareModal);
+  document.getElementById('btn-close-scan')?.addEventListener('click', closeScanModal);
+  document.getElementById('btn-start-scan')?.addEventListener('click', startScanCamera);
+  document.getElementById('btn-scan-image')?.addEventListener('click', scanImageFile);
+  document.getElementById('btn-scan-paste')?.addEventListener('click', pasteInviteLink);
   document.getElementById('btn-copy-link')?.addEventListener('click', copyShareLink);
 
   // Color-Picker
