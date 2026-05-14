@@ -27,7 +27,7 @@ const PEN_SIZES = [
 ];
 
 const BACKGROUNDS = ['grid', 'lined', 'blank'];
-const APP_VERSION = '2026-04-20-p2p-forward-v18';
+const APP_VERSION = '2026-04-20-wake-resync-v19';
 
 // ─── State ──────────────────────────────────────────────────────────────────
 
@@ -424,6 +424,8 @@ function flushSave() {
 }
 
 let _sharedPushTimer = null;
+let _sharedWakeTimer = null;
+let _lastSharedResyncAt = 0;
 
 async function _flushSave() {
   _saveTimer = null;
@@ -1611,6 +1613,51 @@ function p2pSendForNotebook(action, data) {
   if (nbId && state.sharedNotebooks.has(nbId)) {
     const nbHash = _sharedRoomMap.get(nbId);
     if (nbHash) p2pSend(action, data, { roomId: nbHash });
+  }
+}
+
+async function resyncSharedNotebook(notebookId, opts = {}) {
+  const nb = state.notebooks.find(n => n.id === notebookId);
+  if (!nb) return;
+  try {
+    await joinSharedNotebookP2P(notebookId);
+  } catch (e) {
+    console.warn('[P2P] Shared rejoin fehlgeschlagen:', notebookId, e);
+  }
+  try {
+    const nbHash = await notebookHash(notebookId);
+    const remoteNodes = await fetchRoom(nbHash);
+    if (remoteNodes) await mergeSharedNotebookData(notebookId, remoteNodes);
+  } catch (e) {
+    console.warn('[Share] Shared resync fetch fehlgeschlagen:', notebookId, e);
+  }
+
+  const metaPayload = buildNotebookMetaPayload(notebookId);
+  if (metaPayload) p2pSendForNotebook('full-sync', metaPayload);
+
+  const currentId = state.currentPageIds[notebookId];
+  if (currentId) {
+    const page = nb.pages.find(p => p.id === currentId);
+    if (page) {
+      for (const stroke of (page.strokes || [])) {
+        p2pSendForNotebook('stroke', { eventId: newEventId(), notebookId, pageId: page.id, stroke });
+      }
+    }
+    await pushSharedNotebook(notebookId, { pageIds: [currentId] });
+  }
+}
+
+async function resyncVisibleSharedNotebooks(reason = 'manual') {
+  const now = Date.now();
+  if (now - _lastSharedResyncAt < 3000) return;
+  _lastSharedResyncAt = now;
+  const notebookIds = [];
+  if (state.currentNotebookId && state.sharedNotebooks.has(state.currentNotebookId)) notebookIds.push(state.currentNotebookId);
+  for (const nbId of state.sharedNotebooks) {
+    if (!notebookIds.includes(nbId)) notebookIds.push(nbId);
+  }
+  for (const nbId of notebookIds) {
+    await resyncSharedNotebook(nbId, { reason });
   }
 }
 
@@ -3250,6 +3297,11 @@ async function init() {
   // 15. P2P-Rooms für geteilte Notebooks beitreten
   joinAllSharedNotebooksP2P().catch(e => console.warn('[P2P] Shared rooms join fehlgeschlagen:', e));
 
+  setInterval(() => {
+    if (!state.syncEnabled || document.visibilityState === 'hidden') return;
+    resyncVisibleSharedNotebooks('heartbeat').catch(() => {});
+  }, 8000);
+
   console.log('[App] Bereit.', state.notebooks.length, 'Notebooks');
 }
 
@@ -3292,7 +3344,10 @@ async function resync() {
       await startP2P();
     }
 
-    // 5. Alle Pages an Relay pushen
+    // 5. Geteilte Notebooks nach Wake aggressiv nachziehen
+    await resyncVisibleSharedNotebooks('resync');
+
+    // 6. Aktuelle Page an Relay pushen
     pushAllToRelay();
 
     console.log('[App] Resync abgeschlossen');
@@ -3312,6 +3367,10 @@ function handleActivityChange(event) {
   if (!state.syncEnabled) return;
   if (document.visibilityState === 'hidden') return;
   resync();
+  if (_sharedWakeTimer) clearTimeout(_sharedWakeTimer);
+  _sharedWakeTimer = setTimeout(() => {
+    resyncVisibleSharedNotebooks(event.type).catch(e => console.warn('[Share] Wake-Resync fehlgeschlagen:', e));
+  }, 1200);
 }
 
 function setupEvents() {
