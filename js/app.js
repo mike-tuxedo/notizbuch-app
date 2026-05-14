@@ -27,7 +27,7 @@ const PEN_SIZES = [
 ];
 
 const BACKGROUNDS = ['grid', 'lined', 'blank'];
-const APP_VERSION = '2026-04-20-export-v9';
+const APP_VERSION = '2026-04-20-export-v10';
 
 // ─── State ──────────────────────────────────────────────────────────────────
 
@@ -2510,7 +2510,7 @@ async function buildEncryptedBackupBundle() {
   return encrypt(masterKey, payload);
 }
 
-async function exportCurrentPageAsJpg() {
+async function exportCurrentPageAsPng() {
   const nb = currentNotebook();
   const page = currentPage();
   if (!nb || !page) { alert('Keine Seite aktiv.'); return; }
@@ -2537,11 +2537,11 @@ async function exportCurrentPageAsJpg() {
   }
   ctx.restore();
 
-  const filename = `${(nb.name || 'notizbuch').replace(/[^a-z0-9-_]+/gi, '_')}-seite-${currentPageIndex() + 1}.jpg`;
+  const filename = `${(nb.name || 'notizbuch').replace(/[^a-z0-9-_]+/gi, '_')}-seite-${currentPageIndex() + 1}.png`;
   canvas.toBlob(blob => {
-    if (!blob) { alert('JPG-Export fehlgeschlagen.'); return; }
+    if (!blob) { alert('PNG-Export fehlgeschlagen.'); return; }
     downloadBlob(blob, filename);
-  }, 'image/jpeg', 0.92);
+  }, 'image/png');
 }
 
 function showExportModal() {
@@ -2554,7 +2554,7 @@ function closeExportModal() {
 }
 
 
-/** Export-Optionen: alle Notizbücher als .enc oder aktuelle Seite als JPG. */
+/** Export-Optionen: alle Notizbücher als .enc oder aktuelle Seite als PNG. */
 async function exportApp(mode = null) {
   try {
     if (!mode) { showExportModal(); return; }
@@ -2564,8 +2564,8 @@ async function exportApp(mode = null) {
       closeExportModal();
       return;
     }
-    if (mode === 'jpg') {
-      await exportCurrentPageAsJpg();
+    if (mode === 'png') {
+      await exportCurrentPageAsPng();
       closeExportModal();
       return;
     }
@@ -3342,7 +3342,7 @@ function setupEvents() {
   document.getElementById('btn-copy-link')?.addEventListener('click', copyShareLink);
   document.getElementById('btn-close-export')?.addEventListener('click', closeExportModal);
   document.getElementById('btn-export-enc')?.addEventListener('click', () => exportApp('enc'));
-  document.getElementById('btn-export-jpg')?.addEventListener('click', () => exportApp('jpg'));
+  document.getElementById('btn-export-png')?.addEventListener('click', () => exportApp('png'));
 
   // Color-Picker
   document.getElementById('btn-color-picker')?.addEventListener('click', toggleColorPicker);
