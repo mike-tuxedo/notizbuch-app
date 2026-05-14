@@ -27,7 +27,7 @@ const PEN_SIZES = [
 ];
 
 const BACKGROUNDS = ['grid', 'lined', 'blank'];
-const APP_VERSION = '2026-04-20-wake-resync-v19';
+const APP_VERSION = '2026-04-20-debug-v20';
 
 // ─── State ──────────────────────────────────────────────────────────────────
 
@@ -276,6 +276,7 @@ function sendNotebookMeta(notebookId, pageIds = null) {
   const payload = buildNotebookMetaPayload(notebookId, pageIds);
   if (!payload) return;
   p2pSendForNotebook('full-sync', payload);
+  markSyncActivity('send:meta');
 }
 
 /** @returns {{id: string, strokes: Array, background: string}|undefined} */
@@ -426,6 +427,8 @@ function flushSave() {
 let _sharedPushTimer = null;
 let _sharedWakeTimer = null;
 let _lastSharedResyncAt = 0;
+let _syncDebugStatus = 'idle';
+let _lastSyncActivity = 0;
 
 async function _flushSave() {
   _saveTimer = null;
@@ -1608,6 +1611,7 @@ function leaveSharedNotebookP2P(notebookId) {
 function p2pSendForNotebook(action, data) {
   // Main-Room (eigene Geräte)
   p2pSend(action, data);
+  markSyncActivity(`send:${action}`);
   // Shared-Room falls Notebook geteilt
   const nbId = data.notebookId || data.id;
   if (nbId && state.sharedNotebooks.has(nbId)) {
@@ -1620,6 +1624,7 @@ async function resyncSharedNotebook(notebookId, opts = {}) {
   const nb = state.notebooks.find(n => n.id === notebookId);
   if (!nb) return;
   try {
+    updateSyncDebug(`shared-resync:${opts.reason || 'manual'}:${notebookId.slice(0,8)}`);
     await joinSharedNotebookP2P(notebookId);
   } catch (e) {
     console.warn('[P2P] Shared rejoin fehlgeschlagen:', notebookId, e);
@@ -1651,6 +1656,7 @@ async function resyncVisibleSharedNotebooks(reason = 'manual') {
   const now = Date.now();
   if (now - _lastSharedResyncAt < 3000) return;
   _lastSharedResyncAt = now;
+  updateSyncDebug(`shared-resync-all:${reason}`);
   const notebookIds = [];
   if (state.currentNotebookId && state.sharedNotebooks.has(state.currentNotebookId)) notebookIds.push(state.currentNotebookId);
   for (const nbId of state.sharedNotebooks) {
@@ -1659,6 +1665,30 @@ async function resyncVisibleSharedNotebooks(reason = 'manual') {
   for (const nbId of notebookIds) {
     await resyncSharedNotebook(nbId, { reason });
   }
+}
+
+function updateSyncDebug(status = _syncDebugStatus) {
+  _syncDebugStatus = status;
+  const box = document.getElementById('console');
+  if (!box) return;
+  const since = _lastSyncActivity ? `${Math.round((Date.now() - _lastSyncActivity) / 1000)}s` : '-';
+  const peers = state.connectedPeers.length ? state.connectedPeers.map(id => id.slice(0, 8)).join(', ') : 'keine';
+  const shared = [...state.sharedNotebooks].map(id => id === state.currentNotebookId ? id.slice(0, 8) + ' *' : id.slice(0, 8)).join(', ') || 'keine';
+  box.innerHTML = [
+    `v ${APP_VERSION}`,
+    `status: ${status}`,
+    `sichtbar: ${document.visibilityState}`,
+    `peers: ${state.connectedPeers.length} [${peers}]`,
+    `aktuelles nb: ${(state.currentNotebookId || '-').slice(0, 8)}`,
+    `shared: ${shared}`,
+    `letzte aktivität: ${since}`,
+    `letzter shared resync: ${_lastSharedResyncAt ? Math.round((Date.now() - _lastSharedResyncAt) / 1000) + 's' : '-'}`
+  ].join('<br>');
+}
+
+function markSyncActivity(status) {
+  _lastSyncActivity = Date.now();
+  updateSyncDebug(status);
 }
 
 /**
@@ -1857,6 +1887,8 @@ const _p2pCallbacks = {
     if (notebookId === state.currentNotebookId && pageId === currentPage()?.id) {
       redrawStrokes();
     }
+    markSyncActivity('recv:stroke');
+    markSyncActivity('recv:undo');
     serializeStrokes(page.strokes, notebookId).then(d => savePageData(notebookId, pageId, d));
   },
 
@@ -1924,6 +1956,7 @@ const _p2pCallbacks = {
     const remote = payload.notebooks[0];
     // Payload-notebookId temporär auf localNbId mappen für applyFullSync
     remote.id = localNbId;
+    markSyncActivity('recv:full-sync-shared');
     await applyFullSync(payload);
     if (localNbId === state.currentNotebookId) {
       const cp = currentPage();
@@ -1942,6 +1975,7 @@ async function startP2P() {
     async onFullSync(payload, peerId) {
       if (rememberSyncEvent(payload?.eventId)) return;
       console.log('[P2P] Full-Sync von', peerId, ':', payload.notebooks?.length, 'Notebooks');
+      markSyncActivity('recv:full-sync-main');
       await applyFullSync(payload);
 
       // Duplikat-Notebooks entfernen: gleicher Name, verschiedene ID → ältere behalten (niedrigere ID = früher erstellt)
@@ -2042,6 +2076,7 @@ async function startP2P() {
     onPeerJoin(peerId) {
       if (!state.connectedPeers.includes(peerId)) state.connectedPeers.push(peerId);
       renderUI();
+      updateSyncDebug('peer-join');
       // Full-Sync an neuen Peer senden
       const payload = buildFullSyncPayload({ notebookIds: [state.currentNotebookId] });
       if (payload.notebooks.length > 0) {
@@ -2053,6 +2088,7 @@ async function startP2P() {
     onPeerLeave(peerId) {
       state.connectedPeers = state.connectedPeers.filter(id => id !== peerId);
       renderUI();
+      updateSyncDebug('peer-leave');
     }
   });
 }
@@ -3113,6 +3149,8 @@ function renderUI() {
     });
   }
 
+  updateSyncDebug();
+
   // Mobile Farb-Trigger Dot
   const mColorDot = document.getElementById('mobile-color-dot');
   if (mColorDot) mColorDot.style.background = state.color;
@@ -3169,6 +3207,7 @@ function renderUI() {
 
 async function init() {
   console.log('[App] Init...', APP_VERSION);
+  updateSyncDebug('init');
 
   // 1. Storage initialisieren
   const storageBackend = await initStorage();
@@ -3314,6 +3353,7 @@ async function resync() {
   if (_resyncRunning) return;
   _resyncRunning = true;
   console.log('[App] Resync gestartet...');
+  updateSyncDebug('resync-start');
   try {
     // 1. Lokale Änderungen sofort speichern
     flushSave();
@@ -3351,6 +3391,7 @@ async function resync() {
     pushAllToRelay();
 
     console.log('[App] Resync abgeschlossen');
+    updateSyncDebug('resync-done');
   } finally {
     _resyncRunning = false;
   }
@@ -3366,6 +3407,7 @@ function handleActivityChange(event) {
   if (consoleLog) consoleLog.innerText += '\n'+event.type;
   if (!state.syncEnabled) return;
   if (document.visibilityState === 'hidden') return;
+  updateSyncDebug(`wake:${event.type}`);
   resync();
   if (_sharedWakeTimer) clearTimeout(_sharedWakeTimer);
   _sharedWakeTimer = setTimeout(() => {

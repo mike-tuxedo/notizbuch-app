@@ -206,7 +206,7 @@
     }
 
     .nb-context-menu.hidden {
-      display: none;
+      display: block;
     }
 
     .nb-context-item {
@@ -1496,16 +1496,18 @@
       display: none;
       position: fixed;
       z-index: 999;
-      bottom: 50px;
-      left: 50%;
-      transform: translateX(-50%);
-      background: #000;
+      bottom: 8px;
+      right: 8px;
+      background: rgba(0,0,0,0.82);
       color: #fff;
-      max-height: 200px;
+      max-height: 40vh;
       overflow-y: auto;
-      width: 400px;
-      border-radius: 5px;
-      padding: 4px;
+      width: min(360px, calc(100vw - 16px));
+      border-radius: 8px;
+      padding: 8px;
+      font: 11px/1.4 monospace;
+      opacity: 0.9;
+      pointer-events: none;
     }
   </style>
 
