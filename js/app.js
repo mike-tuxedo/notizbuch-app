@@ -27,7 +27,7 @@ const PEN_SIZES = [
 ];
 
 const BACKGROUNDS = ['grid', 'lined', 'blank'];
-const APP_VERSION = '2026-04-20-debug-v21';
+const APP_VERSION = '2026-04-20-debug-removed-v22';
 
 // ─── State ──────────────────────────────────────────────────────────────────
 

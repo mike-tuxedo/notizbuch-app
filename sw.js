@@ -1,4 +1,4 @@
-const CACHE_NAME = 'notizbuch-v63';
+const CACHE_NAME = 'notizbuch-v64';
 
 const STATIC_ASSETS = [
   './',
