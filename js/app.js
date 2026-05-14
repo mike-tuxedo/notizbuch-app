@@ -27,7 +27,7 @@ const PEN_SIZES = [
 ];
 
 const BACKGROUNDS = ['grid', 'lined', 'blank'];
-const APP_VERSION = '2026-04-20-export-v11';
+const APP_VERSION = '2026-04-20-export-v12';
 
 // ─── State ──────────────────────────────────────────────────────────────────
 
@@ -2520,8 +2520,12 @@ async function exportCurrentPageAsPng() {
   const margin = 24;
   const fallbackW = Math.max(1, Math.round((staticCanvas?.width || 1200) / DPR));
   const fallbackH = Math.max(1, Math.round((staticCanvas?.height || 1600) / DPR));
-  const contentW = bounds ? Math.max(1, Math.ceil(bounds.maxX - bounds.minX + margin * 2)) : fallbackW;
-  const contentH = bounds ? Math.max(1, Math.ceil(bounds.maxY - bounds.minY + margin * 2)) : fallbackH;
+  const worldW = bounds ? Math.max(1, Math.ceil(bounds.maxX - bounds.minX + margin * 2)) : fallbackW;
+  const worldH = bounds ? Math.max(1, Math.ceil(bounds.maxY - bounds.minY + margin * 2)) : fallbackH;
+  const targetMaxDim = 2560;
+  const exportScale = Math.max(1, targetMaxDim / Math.max(worldW, worldH));
+  const contentW = Math.max(1, Math.round(worldW * exportScale));
+  const contentH = Math.max(1, Math.round(worldH * exportScale));
   const offsetX = bounds ? margin - bounds.minX : 0;
   const offsetY = bounds ? margin - bounds.minY : 0;
 
@@ -2531,8 +2535,9 @@ async function exportCurrentPageAsPng() {
   const ctx = canvas.getContext('2d');
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, contentW, contentH);
-  drawBackground(ctx, contentW, contentH, page.background || 'grid', offsetX, offsetY, 1);
+  drawBackground(ctx, contentW, contentH, page.background || 'grid', offsetX * exportScale, offsetY * exportScale, exportScale);
   ctx.save();
+  ctx.scale(exportScale, exportScale);
   ctx.translate(offsetX, offsetY);
   for (const stroke of (page.strokes || []).filter(s => strokeCreatedAt(s) > (page.clearedAt || 0))) {
     drawStrokeToCanvas(ctx, stroke);
