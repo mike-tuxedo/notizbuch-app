@@ -27,7 +27,7 @@ const PEN_SIZES = [
 ];
 
 const BACKGROUNDS = ['grid', 'lined', 'blank'];
-const APP_VERSION = '2026-04-20-soft-delete-v4';
+const APP_VERSION = '2026-04-20-perf-v5';
 
 // ─── State ──────────────────────────────────────────────────────────────────
 
@@ -311,7 +311,7 @@ async function _flushSave() {
     if (_sharedPushTimer) clearTimeout(_sharedPushTimer);
     _sharedPushTimer = setTimeout(() => {
       _sharedPushTimer = null;
-      pushSharedNotebook(nbId);
+      pushSharedNotebook(nbId, { pageIds: [page.id] });
     }, 3000);
   }
 }
@@ -1412,7 +1412,7 @@ async function mergeSharedNotebookData(notebookId, nodes) {
  * Alle Pages eines geteilten Notebooks an den shared Relay-Room pushen.
  * @param {string} notebookId
  */
-async function pushSharedNotebook(notebookId) {
+async function pushSharedNotebook(notebookId, opts = {}) {
   const nb = state.notebooks.find(n => n.id === notebookId);
   if (!nb) { console.warn('[Share] pushSharedNotebook: notebook nicht gefunden', notebookId); return; }
   const nbHash = await notebookHash(notebookId);
@@ -1434,7 +1434,9 @@ async function pushSharedNotebook(notebookId) {
     blobs.push({ id: 'meta', data: metaEncrypted });
   } catch (e) { console.warn('[Share] Meta-encrypt fehlgeschlagen:', e); }
 
+  const selectedPageIds = opts.pageIds?.length ? new Set(opts.pageIds) : null;
   for (const page of nb.pages) {
+    if (selectedPageIds && !selectedPageIds.has(page.id)) continue;
     if (!page.strokes?.length) continue;
     try {
       const encrypted = await serializeStrokes(page.strokes, notebookId);
@@ -1442,7 +1444,7 @@ async function pushSharedNotebook(notebookId) {
     } catch (e) { console.warn('[Share] Page-encrypt fehlgeschlagen:', page.id, e); }
   }
 
-  console.log('[Share] pushSharedNotebook:', notebookId, '→ Room', nbHash.slice(0, 8), '|', blobs.length, 'Blobs (', nb.pages.length, 'Pages,', nb.pages.reduce((n, p) => n + (p.strokes?.length || 0), 0), 'Strokes total)');
+  console.log('[Share] pushSharedNotebook:', notebookId, '→ Room', nbHash.slice(0, 8), '|', blobs.length, 'Blobs');
   await pushBlobsToRoom(nbHash, blobs);
 }
 
@@ -1602,19 +1604,17 @@ async function mergeRelayData(nodes) {
  */
 async function pushAllToRelay() {
   if (!isRelayConnected()) return;
-  for (const nb of state.notebooks) {
-    for (const p of nb.pages) {
-      try {
-        const data = await serializeStrokes(p.strokes || [], nb.id);
-        relayPut(`p:${nb.id}/${p.id}`, data);
-      } catch {}
-    }
+  const nb = currentNotebook();
+  const page = currentPage();
+  if (!nb || !page) return;
+  try {
+    const data = await serializeStrokes(page.strokes || [], nb.id);
+    relayPut(`p:${nb.id}/${page.id}`, data);
+  } catch {}
+  if (state.sharedNotebooks.has(nb.id)) {
+    await pushSharedNotebook(nb.id, { pageIds: [page.id] });
   }
-  // Geteilte Notebooks auch an shared Relay-Rooms pushen
-  for (const nbId of state.sharedNotebooks) {
-    await pushSharedNotebook(nbId);
-  }
-  console.log('[Relay] Alle Pages gepusht');
+  console.log('[Relay] Aktuelle Page an Relay gepusht');
 }
 
 // ─── P2P Sync Integration ───────────────────────────────────────────────────
@@ -1623,23 +1623,34 @@ async function pushAllToRelay() {
  * Kompletten App-State als Sync-Payload erstellen.
  * @returns {Object}
  */
-function buildFullSyncPayload() {
+function buildFullSyncPayload(opts = {}) {
+  const notebookIds = opts.notebookIds || (state.currentNotebookId ? [state.currentNotebookId] : []);
+  const onlyCurrentPage = opts.onlyCurrentPage ?? true;
   return {
-    notebooks: state.notebooks.map(nb => ({
-      id: nb.id,
-      name: nb.name,
-      pages: nb.pages.map(p => ({
-        id: p.id,
-        background: p.background || 'grid',
-        order: p.order ?? 0,
-        createdAt: p.createdAt || 0,
-        clearedAt: p.clearedAt || 0,
-        deletedAt: p.deletedAt || 0,
-        strokes: (p.strokes || []).map(s => ({
-          id: s.id, points: s.points, color: s.color, size: s.size, tool: s.tool, createdAt: strokeCreatedAt(s)
-        }))
-      }))
-    }))
+    notebooks: notebookIds
+      .map(nbId => state.notebooks.find(n => n.id === nbId))
+      .filter(Boolean)
+      .map(nb => {
+        const currentId = state.currentPageIds[nb.id];
+        const pages = onlyCurrentPage && currentId
+          ? nb.pages.filter(p => p.id === currentId)
+          : nb.pages;
+        return {
+          id: nb.id,
+          name: nb.name,
+          pages: pages.map(p => ({
+            id: p.id,
+            background: p.background || 'grid',
+            order: p.order ?? 0,
+            createdAt: p.createdAt || 0,
+            clearedAt: p.clearedAt || 0,
+            deletedAt: p.deletedAt || 0,
+            strokes: (p.strokes || []).map(s => ({
+              id: s.id, points: s.points, color: s.color, size: s.size, tool: s.tool, createdAt: strokeCreatedAt(s)
+            }))
+          }))
+        };
+      })
   };
 }
 
@@ -1834,21 +1845,7 @@ const _p2pCallbacks = {
     if (!nbId) return;
     const nb = state.notebooks.find(n => n.id === nbId);
     if (!nb) return;
-    const payload = {
-      notebooks: [{
-        id: nb.id,
-        name: nb.name,
-        pages: nb.pages.map(p => ({
-          id: p.id,
-          background: p.background || 'grid',
-          order: p.order ?? 0,
-          clearedAt: p.clearedAt || 0,
-          strokes: (p.strokes || []).map(s => ({
-            id: s.id, points: s.points, color: s.color, size: s.size, tool: s.tool || 'pen', createdAt: strokeCreatedAt(s)
-          }))
-        }))
-      }]
-    };
+    const payload = buildFullSyncPayload({ notebookIds: [nb.id], onlyCurrentPage: true });
     p2pSend('full-sync', payload, { peerId, roomId });
     console.log('[P2P] Shared Full-Sync gesendet @', roomId.slice(0, 8));
   },
@@ -2021,7 +2018,7 @@ async function startP2P() {
       if (!state.connectedPeers.includes(peerId)) state.connectedPeers.push(peerId);
       renderUI();
       // Full-Sync an neuen Peer senden
-      const payload = buildFullSyncPayload();
+      const payload = buildFullSyncPayload({ notebookIds: [state.currentNotebookId], onlyCurrentPage: true });
       if (payload.notebooks.length > 0) {
         p2pSend('full-sync', payload, { peerId });
         console.log('[P2P] Full-Sync gesendet an', peerId);
@@ -3005,7 +3002,7 @@ async function resync() {
 
     // 4. P2P: nur neu aufbauen wenn keine Peers verbunden (Signaling ist teuer + fragil)
     if (hasPeers()) {
-      const payload = buildFullSyncPayload();
+      const payload = buildFullSyncPayload({ notebookIds: [state.currentNotebookId], onlyCurrentPage: true });
       if (payload.notebooks.length > 0) p2pSend('full-sync', payload);
       console.log('[App] P2P lebt — Full-Sync gesendet');
     } else {
