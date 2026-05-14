@@ -27,7 +27,7 @@ const PEN_SIZES = [
 ];
 
 const BACKGROUNDS = ['grid', 'lined', 'blank'];
-const APP_VERSION = '2026-04-20-resync-tuned-v25';
+const APP_VERSION = '2026-04-20-relay-recovery-v26';
 
 // ─── State ──────────────────────────────────────────────────────────────────
 
@@ -428,6 +428,9 @@ let _sharedPushTimer = null;
 let _sharedWakeTimer = null;
 let _lastSharedResyncAt = 0;
 let _lastHeartbeatAt = 0;
+let _lastRelayMergeAt = 0;
+let _lastP2PInAt = 0;
+let _lastP2POutAt = 0;
 let _syncDebugStatus = 'idle';
 let _lastSyncActivity = 0;
 
@@ -1534,6 +1537,8 @@ async function mergeSharedNotebookData(notebookId, nodes) {
       if (curPage && changedPages.has(curPage.id)) redrawStrokes();
     }
     await saveAppMeta();
+    _lastRelayMergeAt = Date.now();
+    updateSyncDebug('relay-shared-merge');
   }
 }
 
@@ -1667,20 +1672,28 @@ function updateSyncDebug(status = _syncDebugStatus) {
   const since = _lastSyncActivity ? `${Math.round((Date.now() - _lastSyncActivity) / 1000)}s` : '-';
   const peers = state.connectedPeers.length ? state.connectedPeers.map(id => id.slice(0, 8)).join(', ') : 'keine';
   const shared = [...state.sharedNotebooks].map(id => id === state.currentNotebookId ? id.slice(0, 8) + ' *' : id.slice(0, 8)).join(', ') || 'keine';
+  const p2pIn = _lastP2PInAt ? `${Math.round((Date.now() - _lastP2PInAt) / 1000)}s` : '-';
+  const p2pOut = _lastP2POutAt ? `${Math.round((Date.now() - _lastP2POutAt) / 1000)}s` : '-';
+  const relayIn = _lastRelayMergeAt ? `${Math.round((Date.now() - _lastRelayMergeAt) / 1000)}s` : '-';
   box.innerHTML = [
     `v ${APP_VERSION}`,
     `status: ${status}`,
     `sichtbar: ${document.visibilityState}`,
     `peers: ${state.connectedPeers.length} [${peers}]`,
+    `relay: ${isRelayConnected() ? 'verbunden' : 'weg'}`,
     `aktuelles nb: ${(state.currentNotebookId || '-').slice(0, 8)}`,
     `shared: ${shared}`,
     `letzte aktivität: ${since}`,
+    `p2p in/out: ${p2pIn} / ${p2pOut}`,
+    `relay merge: ${relayIn}`,
     `letzter shared resync: ${_lastSharedResyncAt ? Math.round((Date.now() - _lastSharedResyncAt) / 1000) + 's' : '-'}`
   ].join('<br>');
 }
 
 function markSyncActivity(status) {
   _lastSyncActivity = Date.now();
+  if (status?.startsWith('send:')) _lastP2POutAt = _lastSyncActivity;
+  if (status?.startsWith('recv:')) _lastP2PInAt = _lastSyncActivity;
   updateSyncDebug(status);
 }
 
@@ -1784,6 +1797,8 @@ async function mergeRelayData(nodes) {
   }
 
   await applyFullSync(payload);
+  _lastRelayMergeAt = Date.now();
+  updateSyncDebug('relay-merge');
   console.log('[Relay] Daten gemerged:', payload.notebooks.length, 'Notebooks');
 }
 
@@ -3329,15 +3344,6 @@ async function init() {
   // 15. P2P-Rooms für geteilte Notebooks beitreten
   joinAllSharedNotebooksP2P().catch(e => console.warn('[P2P] Shared rooms join fehlgeschlagen:', e));
 
-  setInterval(() => {
-    if (!state.syncEnabled || document.visibilityState === 'hidden') return;
-    const now = Date.now();
-    if (now - _lastHeartbeatAt < 20000) return;
-    _lastHeartbeatAt = now;
-    if (now - _lastSyncActivity > 15000) {
-      resyncVisibleSharedNotebooks('heartbeat', { minIntervalMs: 20000, sendMeta: false }).catch(() => {});
-    }
-  }, 5000);
 
   console.log('[App] Bereit.', state.notebooks.length, 'Notebooks');
 }
@@ -3383,7 +3389,7 @@ async function resync() {
     }
 
     // 5. Geteilte Notebooks vorsichtig nachziehen (nur Meta/Fetch, kein Stroke-Rebroadcast)
-    await resyncVisibleSharedNotebooks('resync', { minIntervalMs: 10000, sendMeta: true });
+    await resyncVisibleSharedNotebooks('resync', { minIntervalMs: 10000, sendMeta: false });
 
     // 6. Aktuelle Page an Relay pushen
     pushAllToRelay();
@@ -3409,7 +3415,7 @@ function handleActivityChange(event) {
   resync();
   if (_sharedWakeTimer) clearTimeout(_sharedWakeTimer);
   _sharedWakeTimer = setTimeout(() => {
-    resyncVisibleSharedNotebooks(event.type, { minIntervalMs: 5000, sendMeta: true }).catch(e => console.warn('[Share] Wake-Resync fehlgeschlagen:', e));
+    resyncVisibleSharedNotebooks(event.type, { minIntervalMs: 5000, sendMeta: false }).catch(e => console.warn('[Share] Wake-Resync fehlgeschlagen:', e));
   }, 1500);
 }
 
