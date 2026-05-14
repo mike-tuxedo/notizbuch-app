@@ -27,7 +27,7 @@ const PEN_SIZES = [
 ];
 
 const BACKGROUNDS = ['grid', 'lined', 'blank'];
-const APP_VERSION = '2026-04-20-qr-scan-v7';
+const APP_VERSION = '2026-04-20-clear-fix-v8';
 
 // ─── State ──────────────────────────────────────────────────────────────────
 
@@ -861,12 +861,13 @@ function undo() {
 /** IDs von per Undo entfernten Strokes — werden bei Union-Merge ignoriert */
 const _undoneIds = new Set();
 
-function clearPage() {
+async function clearPage() {
   const page = currentPage();
   if (!page || isPageDeleted(page)) return;
   page.strokes = [];
   page.clearedAt = Date.now();
   redrawStrokes();
+  await saveAppMeta();
   saveCurrentPage();
   p2pSendForNotebook('clear', { notebookId: state.currentNotebookId, pageId: page.id, clearedAt: page.clearedAt });
 }
@@ -1374,12 +1375,13 @@ async function mergeSharedNotebookData(notebookId, nodes) {
         for (const sp of sharedMeta.pages) {
           const existingPage = nb.pages.find(p => p.id === sp.id);
           if (!existingPage) {
-            nb.pages.push({ id: sp.id, strokes: [], background: sp.background || 'grid', order: sp.order ?? nb.pages.length, createdAt: sp.createdAt || 0, deletedAt: sp.deletedAt || 0 });
+            nb.pages.push({ id: sp.id, strokes: [], background: sp.background || 'grid', order: sp.order ?? nb.pages.length, createdAt: sp.createdAt || 0, clearedAt: sp.clearedAt || 0, deletedAt: sp.deletedAt || 0 });
             normalizePageOrder(nb);
           } else {
             if (typeof sp.order === 'number') existingPage.order = sp.order;
             if (sp.background) existingPage.background = sp.background;
             if (!existingPage.createdAt && sp.createdAt) existingPage.createdAt = sp.createdAt;
+            existingPage.clearedAt = Math.max(existingPage.clearedAt || 0, sp.clearedAt || 0);
             existingPage.deletedAt = Math.max(existingPage.deletedAt || 0, sp.deletedAt || 0);
           }
         }
@@ -1429,7 +1431,7 @@ async function pushSharedNotebook(notebookId, opts = {}) {
   const blobs = [];
   try {
     const nbKey = await getNotebookKey(notebookId);
-    const meta = { name: nb.name, pages: nb.pages.map(p => ({ id: p.id, background: p.background, order: p.order, createdAt: p.createdAt || 0, deletedAt: p.deletedAt || 0 })) };
+    const meta = { name: nb.name, pages: nb.pages.map(p => ({ id: p.id, background: p.background, order: p.order, createdAt: p.createdAt || 0, clearedAt: p.clearedAt || 0, deletedAt: p.deletedAt || 0 })) };
     const metaEncrypted = await encrypt(nbKey, JSON.stringify(meta));
     blobs.push({ id: 'meta', data: metaEncrypted });
   } catch (e) { console.warn('[Share] Meta-encrypt fehlgeschlagen:', e); }
@@ -1777,8 +1779,9 @@ const _p2pCallbacks = {
     const page = nb?.pages.find(p => p.id === pageId);
     if (!page || isPageDeleted(page)) return;
     page.strokes = [];
-    page.clearedAt = clearedAt || Date.now();
+    page.clearedAt = Math.max(page.clearedAt || 0, clearedAt || Date.now());
     if (notebookId === state.currentNotebookId && pageId === currentPage()?.id) redrawStrokes();
+    saveAppMeta();
     serializeStrokes(page.strokes, notebookId).then(d => savePageData(notebookId, pageId, d));
   },
 
@@ -2842,6 +2845,10 @@ function renderUI() {
     delPageBtn.title = deletedPage ? 'Seite wiederherstellen' : 'Seite löschen';
     delPageBtn.classList.toggle('danger', !deletedPage);
     delPageBtn.classList.toggle('active', deletedPage);
+    const delIcon = delPageBtn.querySelector('.page-delete-icon');
+    const restoreIcon = delPageBtn.querySelector('.page-restore-icon');
+    if (delIcon) delIcon.style.display = deletedPage ? 'none' : '';
+    if (restoreIcon) restoreIcon.style.display = deletedPage ? '' : 'none';
   }
 
   const clearBtn = document.getElementById('btn-clear');
