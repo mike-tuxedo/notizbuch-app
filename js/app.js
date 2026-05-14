@@ -27,7 +27,7 @@ const PEN_SIZES = [
 ];
 
 const BACKGROUNDS = ['grid', 'lined', 'blank'];
-const APP_VERSION = '2026-04-20-meta-refactor-v14';
+const APP_VERSION = '2026-04-20-meta-events-v15';
 
 // ─── State ──────────────────────────────────────────────────────────────────
 
@@ -207,6 +207,34 @@ function mergeNotebookMetaIntoState(remoteNb) {
   normalizePageOrder(localNb);
   ensureCurrentPageId(localNb.id);
   return localNb;
+}
+
+function buildNotebookMetaPayload(notebookId, pageIds = null) {
+  const nb = state.notebooks.find(n => n.id === notebookId);
+  if (!nb) return null;
+  const allowed = pageIds?.length ? new Set(pageIds) : null;
+  return {
+    notebooks: [{
+      id: nb.id,
+      name: nb.name,
+      pages: nb.pages
+        .filter(p => !allowed || allowed.has(p.id))
+        .map(pageMeta)
+    }]
+  };
+}
+
+async function applyMetaPayload(payload) {
+  if (!payload?.notebooks?.length) return;
+  for (const remoteNb of payload.notebooks) mergeNotebookMetaIntoState(remoteNb);
+  state.notebooks.sort((a, b) => String(a.id).localeCompare(String(b.id)));
+  await saveAppMeta();
+}
+
+function sendNotebookMeta(notebookId, pageIds = null) {
+  const payload = buildNotebookMetaPayload(notebookId, pageIds);
+  if (!payload) return;
+  p2pSendForNotebook('full-sync', payload);
 }
 
 /** @returns {{id: string, strokes: Array, background: string}|undefined} */
@@ -533,7 +561,7 @@ async function setBackground(bg) {
   page.background = bg;
   redrawBackground();
   await saveAppMeta();
-  p2pSendForNotebook('page-bg', { notebookId: state.currentNotebookId, pageId: page.id, background: bg });
+  sendNotebookMeta(state.currentNotebookId, [page.id]);
   renderUI();
 }
 
@@ -745,7 +773,7 @@ async function nextPage() {
     nb.pages.push({ id: pageId, strokes: [], background: bg, order: nextIdx, createdAt, deletedAt: 0 });
     normalizePageOrder(nb);
     await saveAppMeta();
-    p2pSendForNotebook('page-created', { notebookId: state.currentNotebookId, page: { id: pageId, background: bg, order: nextIdx, createdAt } });
+    sendNotebookMeta(state.currentNotebookId, [pageId]);
   }
 
   await goToPage(nextIdx);
@@ -766,7 +794,7 @@ async function deletePage() {
   flushSave();
   page.deletedAt = Date.now();
   await saveAppMeta();
-  p2pSendForNotebook('page-deleted', { notebookId: state.currentNotebookId, pageId: page.id, deletedAt: page.deletedAt });
+  sendNotebookMeta(state.currentNotebookId, [page.id]);
   if (page.id === currentPage()?.id) {
     clearAllCanvases();
     redrawBackground();
@@ -780,7 +808,7 @@ async function restorePage() {
   if (!page || !page.deletedAt) return;
   page.deletedAt = 0;
   await saveAppMeta();
-  p2pSendForNotebook('page-restored', { notebookId: state.currentNotebookId, pageId: page.id });
+  sendNotebookMeta(state.currentNotebookId, [page.id]);
   clearAllCanvases();
   redrawBackground();
   redrawStrokes();
@@ -819,7 +847,7 @@ async function createNotebook() {
   state.currentPageIds[nbId] = pageId;
   await saveAppMeta();
   p2pSend('nb-created', { id: nbId, name });
-  p2pSend('page-created', { notebookId: nbId, page: { id: pageId, background: 'grid', order: 0, createdAt } });
+  sendNotebookMeta(nbId);
   await selectNotebook(nbId);
 }
 
@@ -927,7 +955,7 @@ async function clearPage() {
   redrawStrokes();
   await saveAppMeta();
   saveCurrentPage();
-  p2pSendForNotebook('clear', { notebookId: state.currentNotebookId, pageId: page.id, clearedAt: page.clearedAt });
+  sendNotebookMeta(state.currentNotebookId, [page.id]);
 }
 
 // ─── Tool Selection ─────────────────────────────────────────────────────────
@@ -1769,56 +1797,13 @@ const _p2pCallbacks = {
     serializeStrokes(page.strokes, notebookId).then(d => savePageData(notebookId, pageId, d));
   },
 
-  onClear({ notebookId, pageId, clearedAt }, peerId, roomId) {
-    notebookId = _resolveNbId(notebookId, roomId);
-    const nb = state.notebooks.find(n => n.id === notebookId);
-    const page = nb?.pages.find(p => p.id === pageId);
-    if (!page || isPageDeleted(page)) return;
-    page.strokes = [];
-    page.clearedAt = Math.max(page.clearedAt || 0, clearedAt || Date.now());
-    if (notebookId === state.currentNotebookId && pageId === currentPage()?.id) redrawStrokes();
-    saveAppMeta();
-    serializeStrokes(page.strokes, notebookId).then(d => savePageData(notebookId, pageId, d));
-  },
+  onClear() {},
 
-  onPageCreated({ notebookId, page }, peerId, roomId) {
-    notebookId = _resolveNbId(notebookId, roomId);
-    const nb = state.notebooks.find(n => n.id === notebookId);
-    if (!nb) return;
-    if (nb.pages.find(p => p.id === page.id)) return;
-    nb.pages.push({ id: page.id, strokes: [], background: page.background || 'grid', order: page.order ?? nb.pages.length, createdAt: page.createdAt || 0, deletedAt: page.deletedAt || 0 });
-    normalizePageOrder(nb);
-    ensureCurrentPageId(notebookId);
-    saveAppMeta();
-    renderUI();
-  },
+  onPageCreated() {},
 
-  onPageDeleted({ notebookId, pageId, deletedAt }, peerId, roomId) {
-    notebookId = _resolveNbId(notebookId, roomId);
-    const nb = state.notebooks.find(n => n.id === notebookId);
-    if (!nb) return;
-    const page = nb.pages.find(p => p.id === pageId);
-    if (!page) return;
-    page.deletedAt = Math.max(page.deletedAt || 0, deletedAt || Date.now());
-    saveAppMeta();
-    if (notebookId === state.currentNotebookId && pageId === currentPage()?.id) {
-      clearAllCanvases(); redrawBackground(); redrawStrokes();
-    }
-    renderUI();
-  },
+  onPageDeleted() {},
 
-  onPageRestored({ notebookId, pageId }, peerId, roomId) {
-    notebookId = _resolveNbId(notebookId, roomId);
-    const nb = state.notebooks.find(n => n.id === notebookId);
-    const page = nb?.pages.find(p => p.id === pageId);
-    if (!page) return;
-    page.deletedAt = 0;
-    saveAppMeta();
-    if (notebookId === state.currentNotebookId && pageId === currentPage()?.id) {
-      clearAllCanvases(); redrawBackground(); redrawStrokes();
-    }
-    renderUI();
-  },
+  onPageRestored() {},
 
   onPageBg({ notebookId, pageId, background }, peerId, roomId) {
     notebookId = _resolveNbId(notebookId, roomId);
@@ -1961,54 +1946,13 @@ async function startP2P() {
       renderUI();
     },
 
-    onPageCreated({ notebookId, page }, peerId) {
-      const nb = state.notebooks.find(n => n.id === notebookId);
-      if (!nb) return;
-      if (nb.pages.find(p => p.id === page.id)) return;
-      nb.pages.push({ id: page.id, strokes: [], background: page.background || 'grid', order: page.order ?? nb.pages.length, createdAt: page.createdAt || 0, deletedAt: page.deletedAt || 0 });
-      normalizePageOrder(nb);
-      ensureCurrentPageId(notebookId);
-      saveAppMeta();
-      renderUI();
-    },
+    onPageCreated() {},
 
-    onPageDeleted({ notebookId, pageId, deletedAt }, peerId) {
-      const nb = state.notebooks.find(n => n.id === notebookId);
-      if (!nb) return;
-      const page = nb.pages.find(p => p.id === pageId);
-      if (!page) return;
-      page.deletedAt = Math.max(page.deletedAt || 0, deletedAt || Date.now());
-      saveAppMeta();
-      if (notebookId === state.currentNotebookId && pageId === currentPage()?.id) {
-        clearAllCanvases(); redrawBackground(); redrawStrokes();
-      }
-      renderUI();
-    },
+    onPageDeleted() {},
 
-    onPageRestored({ notebookId, pageId }, peerId) {
-      const nb = state.notebooks.find(n => n.id === notebookId);
-      const page = nb?.pages.find(p => p.id === pageId);
-      if (!page) return;
-      page.deletedAt = 0;
-      saveAppMeta();
-      if (notebookId === state.currentNotebookId && pageId === currentPage()?.id) {
-        clearAllCanvases(); redrawBackground(); redrawStrokes();
-      }
-      renderUI();
-    },
+    onPageRestored() {},
 
-    onPageBg({ notebookId, pageId, background }, peerId) {
-      const nb = state.notebooks.find(n => n.id === notebookId);
-      if (!nb) return;
-      const page = nb.pages.find(p => p.id === pageId);
-      if (!page) return;
-      page.background = background;
-      saveAppMeta();
-      if (notebookId === state.currentNotebookId && page.id === currentPage()?.id) {
-        redrawBackground();
-      }
-      renderUI();
-    },
+    onPageBg() {},
 
     onPeerJoin(peerId) {
       if (!state.connectedPeers.includes(peerId)) state.connectedPeers.push(peerId);
