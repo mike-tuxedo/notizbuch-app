@@ -27,7 +27,7 @@ const PEN_SIZES = [
 ];
 
 const BACKGROUNDS = ['grid', 'lined', 'blank'];
-const APP_VERSION = '2026-04-20-clear-fix-v8';
+const APP_VERSION = '2026-04-20-export-v9';
 
 // ─── State ──────────────────────────────────────────────────────────────────
 
@@ -2457,20 +2457,118 @@ function showSyncLink() {
 
 // ─── Export / Import ─────────────────────────────────────────────────────────
 
-/** Alle Keys als verschlüsseltes Bundle exportieren (.enc Datei). */
-async function exportApp() {
-  const passphrase = prompt('Passphrase für den Export:');
-  if (!passphrase?.trim()) return;
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = Object.assign(document.createElement('a'), { href: url, download: filename });
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+async function buildEncryptedBackupBundle() {
+  const masterKey = await getMasterCryptoKey();
+  if (!masterKey) throw new Error('Kein MasterKey vorhanden.');
+
+  const notebookKeys = {};
+  for (const nb of state.notebooks) {
+    const key = await getNotebookKey(nb.id);
+    notebookKeys[nb.id] = Array.from(await exportKey(key));
+  }
+
+  const notebooks = [];
+  for (const nb of state.notebooks) {
+    const pages = [];
+    for (const p of nb.pages) {
+      await loadPage(nb.id, p.id, p);
+      pages.push({
+        id: p.id,
+        background: p.background || 'grid',
+        order: p.order ?? 0,
+        createdAt: p.createdAt || 0,
+        clearedAt: p.clearedAt || 0,
+        deletedAt: p.deletedAt || 0,
+        strokes: (p.strokes || []).map(s => ({
+          id: s.id,
+          createdAt: strokeCreatedAt(s),
+          points: roundPoints(s.points || []),
+          color: s.color,
+          size: s.size,
+          tool: s.tool || 'pen'
+        }))
+      });
+    }
+    notebooks.push({ id: nb.id, name: nb.name, pages });
+  }
+
+  const payload = new TextEncoder().encode(JSON.stringify({
+    type: 'notizbuch-backup-v2',
+    exportedAt: new Date().toISOString(),
+    masterKeyHash: state.masterKeyHash,
+    notebookKeys,
+    notebooks
+  }));
+
+  return encrypt(masterKey, payload);
+}
+
+async function exportCurrentPageAsJpg() {
+  const nb = currentNotebook();
+  const page = currentPage();
+  if (!nb || !page) { alert('Keine Seite aktiv.'); return; }
+  await loadPage(nb.id, page.id, page);
+
+  const bounds = computeStrokeBounds();
+  const margin = 40;
+  const contentW = Math.max(1200, bounds ? Math.ceil(bounds.maxX - bounds.minX + margin * 2) : 1200);
+  const contentH = Math.max(1600, bounds ? Math.ceil(bounds.maxY - bounds.minY + margin * 2) : 1600);
+  const offsetX = bounds ? margin - bounds.minX : margin;
+  const offsetY = bounds ? margin - bounds.minY : margin;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = contentW;
+  canvas.height = contentH;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#f5f5f0';
+  ctx.fillRect(0, 0, contentW, contentH);
+  drawBackground(ctx, contentW, contentH, page.background || 'grid', offsetX, offsetY, 1);
+  ctx.save();
+  ctx.translate(offsetX, offsetY);
+  for (const stroke of (page.strokes || []).filter(s => strokeCreatedAt(s) > (page.clearedAt || 0))) {
+    drawStrokeToCanvas(ctx, stroke);
+  }
+  ctx.restore();
+
+  const filename = `${(nb.name || 'notizbuch').replace(/[^a-z0-9-_]+/gi, '_')}-seite-${currentPageIndex() + 1}.jpg`;
+  canvas.toBlob(blob => {
+    if (!blob) { alert('JPG-Export fehlgeschlagen.'); return; }
+    downloadBlob(blob, filename);
+  }, 'image/jpeg', 0.92);
+}
+
+function showExportModal() {
+  const modal = document.getElementById('export-modal');
+  if (modal) modal.classList.remove('hidden');
+}
+
+function closeExportModal() {
+  document.getElementById('export-modal')?.classList.add('hidden');
+}
+
+
+/** Export-Optionen: alle Notizbücher als .enc oder aktuelle Seite als JPG. */
+async function exportApp(mode = null) {
   try {
-    const masterKey = await getMasterCryptoKey();
-    if (!masterKey) { alert('Kein MasterKey vorhanden.'); return; }
-    const bundle = await exportAppBundle(masterKey, state.notebookKeys, passphrase);
-    // Download triggern
-    const blob = new Blob([bundle], { type: 'application/octet-stream' });
-    const url = URL.createObjectURL(blob);
-    const a = Object.assign(document.createElement('a'), { href: url, download: 'notizbuch-backup.enc' });
-    a.click();
-    URL.revokeObjectURL(url);
+    if (!mode) { showExportModal(); return; }
+    if (mode === 'enc') {
+      const bundle = await buildEncryptedBackupBundle();
+      downloadBlob(new Blob([bundle], { type: 'application/octet-stream' }), 'notizbuch-backup.enc');
+      closeExportModal();
+      return;
+    }
+    if (mode === 'jpg') {
+      await exportCurrentPageAsJpg();
+      closeExportModal();
+      return;
+    }
   } catch (e) {
     alert('Export fehlgeschlagen: ' + e.message);
   }
@@ -3224,7 +3322,7 @@ function setupEvents() {
   document.getElementById('btn-share')?.addEventListener('click', openShareModal);
   document.getElementById('btn-scan-share')?.addEventListener('click', openScanModal);
   document.getElementById('btn-sync-link')?.addEventListener('click', showSyncLink);
-  document.getElementById('btn-export')?.addEventListener('click', exportApp);
+  document.getElementById('btn-export')?.addEventListener('click', () => exportApp());
   document.getElementById('btn-import')?.addEventListener('click', importApp);
 
   // Mobile Farb-/Größen-Menüs
@@ -3242,6 +3340,9 @@ function setupEvents() {
   document.getElementById('btn-scan-image')?.addEventListener('click', scanImageFile);
   document.getElementById('btn-scan-paste')?.addEventListener('click', pasteInviteLink);
   document.getElementById('btn-copy-link')?.addEventListener('click', copyShareLink);
+  document.getElementById('btn-close-export')?.addEventListener('click', closeExportModal);
+  document.getElementById('btn-export-enc')?.addEventListener('click', () => exportApp('enc'));
+  document.getElementById('btn-export-jpg')?.addEventListener('click', () => exportApp('jpg'));
 
   // Color-Picker
   document.getElementById('btn-color-picker')?.addEventListener('click', toggleColorPicker);

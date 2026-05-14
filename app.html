@@ -1445,6 +1445,25 @@
     </div>
   </div>
 
+  <!-- Export Modal -->
+  <div class="modal-overlay hidden" id="export-modal">
+    <div class="modal" style="width: 420px;">
+      <div class="modal-header">
+        <h2>Export</h2>
+        <button class="modal-close" id="btn-close-export">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+            <line x1="18" y1="6" x2="6" y2="18" />
+            <line x1="6" y1="6" x2="18" y2="18" />
+          </svg>
+        </button>
+      </div>
+      <div class="modal-body" style="gap: 12px;">
+        <p class="modal-hint" style="text-align:left; width:100%;">Wähle, ob du alle Notizbücher verschlüsselt sichern oder nur die aktuelle Seite als JPG exportieren möchtest.</p>
+        <button class="copy-btn" id="btn-export-enc" style="width:100%; text-align:center; padding:12px;">Alle Notizbücher als .enc</button>
+        <button class="copy-btn" id="btn-export-jpg" style="width:100%; text-align:center; padding:12px; background: transparent; border: 1px solid var(--border-2); color: var(--text);">Aktuelle Seite als JPG</button>
+      </div>
+    </div>
+  </div>
 
   <!-- Scan Share Modal -->
   <div class="modal-overlay hidden" id="scan-modal">
