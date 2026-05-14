@@ -27,7 +27,7 @@ const PEN_SIZES = [
 ];
 
 const BACKGROUNDS = ['grid', 'lined', 'blank'];
-const APP_VERSION = '2026-04-20-export-v13';
+const APP_VERSION = '2026-04-20-meta-refactor-v14';
 
 // ─── State ──────────────────────────────────────────────────────────────────
 
@@ -149,6 +149,64 @@ function strokeCreatedAt(stroke) {
   if (Number.isFinite(stroke?.createdAt)) return stroke.createdAt;
   const ts = Number(stroke?.id);
   return Number.isFinite(ts) ? ts : 0;
+}
+
+function pageMeta(page) {
+  return {
+    id: page.id,
+    background: page.background || 'grid',
+    order: page.order ?? 0,
+    createdAt: page.createdAt || 0,
+    clearedAt: page.clearedAt || 0,
+    deletedAt: page.deletedAt || 0
+  };
+}
+
+function notebookMeta(notebook, opts = {}) {
+  const includePageStrokes = opts.includePageStrokes ?? false;
+  const currentId = state.currentPageIds[notebook.id];
+  return {
+    id: notebook.id,
+    name: notebook.name,
+    pages: notebook.pages.map(page => ({
+      ...pageMeta(page),
+      strokes: includePageStrokes || page.id === currentId
+        ? (page.strokes || []).map(s => ({
+            id: s.id, points: s.points, color: s.color, size: s.size, tool: s.tool, createdAt: strokeCreatedAt(s)
+          }))
+        : []
+    }))
+  };
+}
+
+function applyPageMeta(localPage, remotePage) {
+  if (typeof remotePage.order === 'number') localPage.order = remotePage.order;
+  if (remotePage.background) localPage.background = remotePage.background;
+  if (!localPage.createdAt && remotePage.createdAt) localPage.createdAt = remotePage.createdAt;
+  localPage.clearedAt = Math.max(localPage.clearedAt || 0, remotePage.clearedAt || 0);
+  localPage.deletedAt = Math.max(localPage.deletedAt || 0, remotePage.deletedAt || 0);
+}
+
+function mergeNotebookMetaIntoState(remoteNb) {
+  let localNb = state.notebooks.find(n => n.id === remoteNb.id);
+  if (!localNb) {
+    localNb = { id: remoteNb.id, name: remoteNb.name, pages: [] };
+    state.notebooks.push(localNb);
+  } else if (remoteNb.name) {
+    localNb.name = remoteNb.name;
+  }
+  for (const remotePage of (remoteNb.pages || [])) {
+    let localPage = localNb.pages.find(p => p.id === remotePage.id);
+    if (!localPage) {
+      localPage = { ...pageMeta(remotePage), strokes: remotePage.strokes || [] };
+      localNb.pages.push(localPage);
+    } else {
+      applyPageMeta(localPage, remotePage);
+    }
+  }
+  normalizePageOrder(localNb);
+  ensureCurrentPageId(localNb.id);
+  return localNb;
 }
 
 /** @returns {{id: string, strokes: Array, background: string}|undefined} */
@@ -354,7 +412,7 @@ async function saveAppMeta() {
     notebooks: state.notebooks.map(nb => ({
       id: nb.id,
       name: nb.name,
-      pages: nb.pages.map(p => ({ id: p.id, background: p.background || 'grid', order: p.order ?? 0, createdAt: p.createdAt || 0, clearedAt: p.clearedAt || 0, deletedAt: p.deletedAt || 0 }))
+      pages: nb.pages.map(pageMeta)
     })),
     notebookKeys: nbKeys
   };
@@ -1587,12 +1645,7 @@ async function mergeRelayData(nodes) {
       if (pageBlob instanceof Uint8Array) {
         try { strokes = await deserializeStrokes(pageBlob, nb.id); } catch {}
       }
-      syncNb.pages.push({
-        id: p.id, background: p.background || 'grid', order: p.order ?? 0,
-        createdAt: p.createdAt || 0,
-        clearedAt: p.clearedAt || 0,
-        deletedAt: p.deletedAt || 0, strokes
-      });
+      syncNb.pages.push({ ...pageMeta(p), strokes });
     }
     payload.notebooks.push(syncNb);
   }
@@ -1632,24 +1685,7 @@ function buildFullSyncPayload(opts = {}) {
     notebooks: notebookIds
       .map(nbId => state.notebooks.find(n => n.id === nbId))
       .filter(Boolean)
-      .map(nb => {
-        const currentId = state.currentPageIds[nb.id];
-        return {
-          id: nb.id,
-          name: nb.name,
-          pages: nb.pages.map(p => ({
-            id: p.id,
-            background: p.background || 'grid',
-            order: p.order ?? 0,
-            createdAt: p.createdAt || 0,
-            clearedAt: p.clearedAt || 0,
-            deletedAt: p.deletedAt || 0,
-            strokes: (includeAllPageStrokes || p.id === currentId ? (p.strokes || []) : []).map(s => ({
-              id: s.id, points: s.points, color: s.color, size: s.size, tool: s.tool, createdAt: strokeCreatedAt(s)
-            }))
-          }))
-        };
-      })
+      .map(nb => notebookMeta(nb, { includePageStrokes: includeAllPageStrokes }))
   };
 }
 
@@ -1661,58 +1697,18 @@ async function applyFullSync(payload) {
   if (!payload?.notebooks?.length) return;
 
   for (const remoteNb of payload.notebooks) {
-    const localNb = state.notebooks.find(n => n.id === remoteNb.id);
-    if (!localNb) {
-      // Neues Notebook übernehmen
-      state.notebooks.push({
-        id: remoteNb.id, name: remoteNb.name,
-        pages: remoteNb.pages.map(p => ({
-          id: p.id, background: p.background || 'grid', order: p.order ?? 0,
-          createdAt: p.createdAt || 0,
-          clearedAt: p.clearedAt || 0,
-          deletedAt: p.deletedAt || 0,
-          strokes: p.strokes || []
-        }))
-      });
-      normalizePageOrder(state.notebooks[state.notebooks.length - 1]);
-      ensureCurrentPageId(remoteNb.id);
-    } else {
-      // Bestehendes Notebook: Pages mergen
-      for (const rp of remoteNb.pages) {
-        const localPage = localNb.pages.find(p => p.id === rp.id);
-        if (!localPage) {
-          localNb.pages.push({
-            id: rp.id, background: rp.background || 'grid', order: rp.order ?? 0,
-            createdAt: rp.createdAt || 0,
-            clearedAt: rp.clearedAt || 0,
-            deletedAt: rp.deletedAt || 0,
-            strokes: rp.strokes || []
-          });
-        } else {
-          // Struktur-/Meta-Felder vom Remote übernehmen, damit Reihenfolge geräteübergreifend gleich bleibt
-          if (typeof rp.order === 'number') localPage.order = rp.order;
-          if (rp.background) localPage.background = rp.background;
-          if (!localPage.createdAt && rp.createdAt) localPage.createdAt = rp.createdAt;
-
-          // clearedAt: höheren Wert übernehmen (= neuester Clear gewinnt)
-          const remoteClearedAt = rp.clearedAt || 0;
-          const localClearedAt = localPage.clearedAt || 0;
-          const effectiveClearedAt = Math.max(remoteClearedAt, localClearedAt);
-          localPage.clearedAt = effectiveClearedAt;
-          localPage.deletedAt = Math.max(localPage.deletedAt || 0, rp.deletedAt || 0);
-
-          // Strokes Union-Merge by ID, undone IDs ignorieren, Strokes vor clearedAt entfernen
-          const existing = new Map(localPage.strokes.map(s => [s.id, s]));
-          for (const s of (rp.strokes || [])) {
-            if (!existing.has(s.id) && !_undoneIds.has(s.id)) existing.set(s.id, s);
-          }
-          localPage.strokes = [...existing.values()]
-            .filter(s => strokeCreatedAt(s) > effectiveClearedAt)
-            .sort((a, b) => strokeCreatedAt(a) - strokeCreatedAt(b) || String(a.id).localeCompare(String(b.id)));
-        }
+    const localNb = mergeNotebookMetaIntoState(remoteNb);
+    for (const remotePage of (remoteNb.pages || [])) {
+      const localPage = localNb.pages.find(p => p.id === remotePage.id);
+      if (!localPage) continue;
+      const effectiveClearedAt = localPage.clearedAt || 0;
+      const existing = new Map((localPage.strokes || []).map(s => [s.id, s]));
+      for (const s of (remotePage.strokes || [])) {
+        if (!existing.has(s.id) && !_undoneIds.has(s.id)) existing.set(s.id, s);
       }
-      normalizePageOrder(localNb);
-      ensureCurrentPageId(localNb.id);
+      localPage.strokes = [...existing.values()]
+        .filter(s => strokeCreatedAt(s) > effectiveClearedAt)
+        .sort((a, b) => strokeCreatedAt(a) - strokeCreatedAt(b) || String(a.id).localeCompare(String(b.id)));
     }
   }
 
