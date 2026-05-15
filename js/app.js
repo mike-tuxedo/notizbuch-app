@@ -27,7 +27,7 @@ const PEN_SIZES = [
 ];
 
 const BACKGROUNDS = ['grid', 'lined', 'blank'];
-const APP_VERSION = '2026-04-20-undo-persist-v32';
+const APP_VERSION = '2026-04-20-shared-snapshot-v33';
 const PRESENCE_INTERVAL_MS = 5000;
 const PRESENCE_TIMEOUT_MS = 15000;
 
@@ -1558,11 +1558,16 @@ async function mergeSharedNotebookData(notebookId, nodes) {
       nb.pages.push(page);
       normalizePageOrder(nb);
     }
-    const beforeCount = page.strokes.length;
-    normalizePageStrokes(page, strokes);
-    const pageMerged = Math.max(0, page.strokes.length - beforeCount);
-    merged += pageMerged;
-    if (pageMerged > 0) changedPages.add(pageId);
+    const beforeJson = JSON.stringify(page.strokes || []);
+    // Shared relay page-blob ist ein Snapshot der Seite, kein Event-Log.
+    // Deshalb hier NICHT union-mergen, sondern remote Snapshot + lokale Meta (clearedAt/undone) anwenden.
+    page.strokes = Array.isArray(strokes) ? strokes.slice() : [];
+    normalizePageStrokes(page);
+    const afterJson = JSON.stringify(page.strokes || []);
+    if (beforeJson !== afterJson) {
+      merged++;
+      changedPages.add(pageId);
+    }
   }
 
   // Meta aus shared Room (Notebook-Name, Page-Struktur)
