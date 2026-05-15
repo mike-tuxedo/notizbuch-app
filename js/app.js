@@ -27,7 +27,7 @@ const PEN_SIZES = [
 ];
 
 const BACKGROUNDS = ['grid', 'lined', 'blank'];
-const APP_VERSION = '2026-04-20-host-phase1-v30';
+const APP_VERSION = '2026-04-20-host-failover-v31';
 const PRESENCE_INTERVAL_MS = 5000;
 const PRESENCE_TIMEOUT_MS = 15000;
 
@@ -277,8 +277,10 @@ function prunePresence(notebookId) {
 function recomputeHost(notebookId) {
   const map = prunePresence(notebookId);
   const activeIds = Object.keys(map).sort();
+  const prevHostId = state.hostByNotebook[notebookId] || null;
   const hostId = activeIds[0] || null;
   state.hostByNotebook[notebookId] = hostId;
+  handleHostChange(notebookId, prevHostId, hostId);
   return hostId;
 }
 
@@ -296,10 +298,24 @@ function currentNotebookRole(notebookId = state.currentNotebookId) {
   return hostId === state.deviceId ? 'host' : 'client';
 }
 
-function broadcastPresence() {
+function handleHostChange(notebookId, prevHostId, nextHostId) {
+  if (prevHostId === nextHostId) return;
+  updateSyncDebug(`host-change:${(prevHostId || '-').slice(0,8)}→${(nextHostId || '-').slice(0,8)}`);
+  if (!nextHostId) return;
+  if (nextHostId === state.deviceId || prevHostId === state.deviceId) {
+    setTimeout(() => {
+      resyncVisibleSharedNotebooks('host-change', { minIntervalMs: 1000, sendMeta: true }).catch(() => {});
+    }, 300);
+  }
+}
+
+async function broadcastPresence() {
   const now = Date.now();
   for (const nbId of state.sharedNotebooks) {
     upsertPresence(nbId, state.deviceId, now);
+    if (!_sharedRoomMap.get(nbId)) {
+      try { await joinSharedNotebookP2P(nbId); } catch {}
+    }
     const nbHash = _sharedRoomMap.get(nbId);
     if (nbHash) p2pSend('nb-renamed', { deviceId: state.deviceId, notebookId: nbId, __presence: true, ts: now }, { roomId: nbHash });
   }
@@ -3479,6 +3495,7 @@ function handleActivityChange(event) {
   if (!state.syncEnabled) return;
   if (document.visibilityState === 'hidden') return;
   updateSyncDebug(`wake:${event.type}`);
+  broadcastPresence().catch(() => {});
   resync();
   if (_sharedWakeTimer) clearTimeout(_sharedWakeTimer);
   _sharedWakeTimer = setTimeout(() => {
