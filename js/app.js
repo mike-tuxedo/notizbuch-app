@@ -27,7 +27,7 @@ const PEN_SIZES = [
 ];
 
 const BACKGROUNDS = ['grid', 'lined', 'blank'];
-const APP_VERSION = '2026-04-20-host-failover-v31';
+const APP_VERSION = '2026-04-20-undo-persist-v32';
 const PRESENCE_INTERVAL_MS = 5000;
 const PRESENCE_TIMEOUT_MS = 15000;
 
@@ -1049,14 +1049,21 @@ async function createTestNotebook() {
 
 // ─── Undo / Clear ───────────────────────────────────────────────────────────
 
-function undo() {
+async function undo() {
   const page = currentPage();
   if (!page || !page.strokes.length || isPageDeleted(page)) return;
   const removed = page.strokes.pop();
   if (removed) _undoneIds.add(removed.id);
+  normalizePageStrokes(page);
   redrawStrokes();
-  flushSave(); // Sofort speichern — kein Debounce, damit Relay/Sync den neuen Stand hat
-  p2pSendForNotebook('undo', { eventId: newEventId(), notebookId: state.currentNotebookId, pageId: page.id, strokeId: removed?.id });
+  const notebookId = state.currentNotebookId;
+  const data = await serializeStrokes(page.strokes || [], notebookId);
+  await savePageData(notebookId, page.id, data);
+  relayPut(`p:${notebookId}/${page.id}`, data);
+  if (state.sharedNotebooks.has(notebookId)) {
+    pushSharedNotebook(notebookId, { pageIds: [page.id] }).catch(() => {});
+  }
+  p2pSendForNotebook('undo', { eventId: newEventId(), notebookId, pageId: page.id, strokeId: removed?.id });
 }
 
 /** IDs von per Undo entfernten Strokes — werden bei Union-Merge ignoriert */
