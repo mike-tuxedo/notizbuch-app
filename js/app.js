@@ -27,7 +27,7 @@ const PEN_SIZES = [
 ];
 
 const BACKGROUNDS = ['grid', 'lined', 'blank'];
-const APP_VERSION = '2026-04-20-shared-snapshot-v33';
+const APP_VERSION = '2026-04-20-undo-oplog-v1';
 const PRESENCE_INTERVAL_MS = 5000;
 const PRESENCE_TIMEOUT_MS = 15000;
 
@@ -61,6 +61,7 @@ const state = {
   deviceId: null,
   hostByNotebook: {},
   presenceByNotebook: {},
+  eventSeq: 0,
   /** @type {string|null} Hex-Hash des MasterKeys — bestimmt Room-ID */
   masterKeyHash: null,
   /** @type {Object<string, CryptoKey>} notebookId → NotebookKey (für OPFS-Verschlüsselung) */
@@ -156,6 +157,65 @@ function strokeCreatedAt(stroke) {
   return Number.isFinite(ts) ? ts : 0;
 }
 
+function ensurePageEvents(page) {
+  if (Array.isArray(page.events)) return page.events;
+  const legacyStrokes = Array.isArray(page.strokes) ? page.strokes : [];
+  page.events = legacyStrokes.map((stroke, i) => ({
+    id: `legacy:${stroke.id || i}`,
+    type: 'stroke',
+    createdAt: strokeCreatedAt(stroke),
+    deviceId: stroke.deviceId || 'legacy',
+    seq: i,
+    stroke
+  }));
+  return page.events;
+}
+
+function sortPageEvents(events = []) {
+  return [...events].sort((a, b) => {
+    const ta = Number(a?.createdAt) || 0;
+    const tb = Number(b?.createdAt) || 0;
+    if (ta !== tb) return ta - tb;
+    const da = String(a?.deviceId || '');
+    const db = String(b?.deviceId || '');
+    if (da !== db) return da.localeCompare(db);
+    return (Number(a?.seq) || 0) - (Number(b?.seq) || 0);
+  });
+}
+
+function newPageEvent(type, payload = {}) {
+  state.eventSeq = (state.eventSeq || 0) + 1;
+  return {
+    id: `${state.deviceId || 'device'}:${state.eventSeq}:${Date.now()}`,
+    type,
+    createdAt: Date.now(),
+    deviceId: state.deviceId || 'device',
+    seq: state.eventSeq,
+    ...payload
+  };
+}
+
+function materializePage(page) {
+  ensurePageEvents(page);
+  const clearedAt = page?.clearedAt || 0;
+  const undoneStrokeIds = new Set();
+  const visible = [];
+  for (const event of sortPageEvents(page.events || [])) {
+    if ((Number(event?.createdAt) || 0) <= clearedAt) continue;
+    if (event.type === 'undo' && event.targetStrokeId) {
+      undoneStrokeIds.add(event.targetStrokeId);
+      continue;
+    }
+    if (event.type === 'stroke' && event.stroke) visible.push(event.stroke);
+  }
+  return visible.filter(s => !undoneStrokeIds.has(s.id));
+}
+
+function refreshPageMaterializedState(page) {
+  page.strokes = materializePage(page).sort((a, b) => strokeCreatedAt(a) - strokeCreatedAt(b) || String(a.id).localeCompare(String(b.id)));
+  return page.strokes;
+}
+
 const _seenSyncEvents = new Set();
 
 function newEventId() {
@@ -216,21 +276,23 @@ function applyPageMeta(localPage, remotePage) {
 }
 
 function normalizePageStrokes(page, incomingStrokes = null) {
-  const existing = new Map();
-  for (const s of (page?.strokes || [])) {
-    if (!s?.id || _undoneIds.has(s.id)) continue;
-    existing.set(s.id, s);
+  ensurePageEvents(page);
+  const known = new Set((page.events || []).filter(e => e.type === 'stroke' && e.stroke?.id).map(e => e.stroke.id));
+  for (const stroke of (incomingStrokes || [])) {
+    if (!stroke?.id || known.has(stroke.id) || _undoneIds.has(stroke.id)) continue;
+    page.events.push({
+      id: `import:${stroke.id}`,
+      type: 'stroke',
+      createdAt: strokeCreatedAt(stroke),
+      deviceId: stroke.deviceId || 'import',
+      seq: Number(stroke.seq) || 0,
+      stroke
+    });
+    known.add(stroke.id);
   }
-  for (const s of (incomingStrokes || [])) {
-    if (!s?.id || _undoneIds.has(s.id)) continue;
-    if (!existing.has(s.id)) existing.set(s.id, s);
-  }
-  const clearedAt = page?.clearedAt || 0;
-  page.strokes = [...existing.values()]
-    .filter(s => strokeCreatedAt(s) > clearedAt)
-    .sort((a, b) => strokeCreatedAt(a) - strokeCreatedAt(b) || String(a.id).localeCompare(String(b.id)));
-  return page.strokes;
+  return refreshPageMaterializedState(page);
 }
+
 
 function mergeNotebookMetaIntoState(remoteNb) {
   let localNb = state.notebooks.find(n => n.id === remoteNb.id);
@@ -701,7 +763,8 @@ function redrawStrokes() {
   cacheCtx.setTransform(DPR, 0, 0, DPR, 0, 0);
   cacheCtx.clearRect(0, 0, w / DPR, h / DPR);
 
-  const strokes = currentPage()?.strokes || [];
+  const page = currentPage();
+  const strokes = page ? materializePage(page) : [];
   cacheCtx.save();
   cacheCtx.translate(state.viewX, state.viewY);
   cacheCtx.scale(state.viewScale, state.viewScale);
@@ -754,10 +817,7 @@ function compositeStrokes() {
  */
 function computeStrokeBounds() {
   const page = currentPage();
-  const strokes = page?.strokes;
-  if (!strokes?.length) return null;
-  const clearedAt = page.clearedAt || 0;
-  const visible = strokes.filter(s => strokeCreatedAt(s) > clearedAt);
+  const visible = page ? materializePage(page) : [];
   if (!visible.length) return null;
 
   // Grobe Bounds aus Stroke-Daten (für Canvas-Größe)
@@ -2648,7 +2708,7 @@ async function buildEncryptedBackupBundle() {
         createdAt: p.createdAt || 0,
         clearedAt: p.clearedAt || 0,
         deletedAt: p.deletedAt || 0,
-        strokes: (p.strokes || []).map(s => ({
+        strokes: materializePage(p).map(s => ({
           id: s.id,
           createdAt: strokeCreatedAt(s),
           points: roundPoints(s.points || []),
@@ -2701,7 +2761,7 @@ async function exportCurrentPageAsPng() {
   ctx.save();
   ctx.scale(exportScale, exportScale);
   ctx.translate(offsetX, offsetY);
-  for (const stroke of (page.strokes || []).filter(s => strokeCreatedAt(s) > (page.clearedAt || 0))) {
+  for (const stroke of materializePage(page)) {
     drawStrokeToCanvas(ctx, stroke);
   }
   ctx.restore();
@@ -2741,7 +2801,7 @@ async function exportCurrentPageAsSvg() {
   const minY = bounds ? bounds.minY - margin : 0;
   const width = bounds ? Math.max(1, Math.ceil(bounds.maxX - bounds.minX + margin * 2)) : Math.max(1, Math.round((staticCanvas?.width || 1200) / DPR));
   const height = bounds ? Math.max(1, Math.ceil(bounds.maxY - bounds.minY + margin * 2)) : Math.max(1, Math.round((staticCanvas?.height || 1600) / DPR));
-  const visibleStrokes = (page.strokes || []).filter(s => strokeCreatedAt(s) > (page.clearedAt || 0));
+  const visibleStrokes = materializePage(page);
 
   let bgMarkup = '<rect width="100%" height="100%" fill="#ffffff"/>';
   if (page.background === 'grid' || page.background === 'lined') {
