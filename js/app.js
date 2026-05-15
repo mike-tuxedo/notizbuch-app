@@ -27,7 +27,9 @@ const PEN_SIZES = [
 ];
 
 const BACKGROUNDS = ['grid', 'lined', 'blank'];
-const APP_VERSION = '2026-04-20-relay-recovery-v26';
+const APP_VERSION = '2026-04-20-host-phase1-v29';
+const PRESENCE_INTERVAL_MS = 5000;
+const PRESENCE_TIMEOUT_MS = 15000;
 
 // ─── State ──────────────────────────────────────────────────────────────────
 
@@ -56,6 +58,9 @@ const state = {
   // Sync
   syncEnabled: true,
   connectedPeers: [],
+  deviceId: null,
+  hostByNotebook: {},
+  presenceByNotebook: {},
   /** @type {string|null} Hex-Hash des MasterKeys — bestimmt Room-ID */
   masterKeyHash: null,
   /** @type {Object<string, CryptoKey>} notebookId → NotebookKey (für OPFS-Verschlüsselung) */
@@ -247,6 +252,58 @@ function mergeNotebookMetaIntoState(remoteNb) {
   normalizePageOrder(localNb);
   ensureCurrentPageId(localNb.id);
   return localNb;
+}
+
+function ensureDeviceId() {
+  let id = localStorage.getItem('notizbuch:deviceId');
+  if (!id) {
+    id = crypto.randomUUID();
+    localStorage.setItem('notizbuch:deviceId', id);
+  }
+  state.deviceId = id;
+  return id;
+}
+
+function prunePresence(notebookId) {
+  const map = state.presenceByNotebook[notebookId] || {};
+  const now = Date.now();
+  for (const [deviceId, entry] of Object.entries(map)) {
+    if (!entry?.lastSeen || now - entry.lastSeen > PRESENCE_TIMEOUT_MS) delete map[deviceId];
+  }
+  state.presenceByNotebook[notebookId] = map;
+  return map;
+}
+
+function recomputeHost(notebookId) {
+  const map = prunePresence(notebookId);
+  const activeIds = Object.keys(map).sort();
+  const hostId = activeIds[0] || null;
+  state.hostByNotebook[notebookId] = hostId;
+  return hostId;
+}
+
+function upsertPresence(notebookId, deviceId, lastSeen = Date.now()) {
+  if (!notebookId || !deviceId) return;
+  if (!state.presenceByNotebook[notebookId]) state.presenceByNotebook[notebookId] = {};
+  state.presenceByNotebook[notebookId][deviceId] = { lastSeen };
+  recomputeHost(notebookId);
+}
+
+function currentNotebookRole(notebookId = state.currentNotebookId) {
+  if (!notebookId) return '-';
+  const hostId = state.hostByNotebook[notebookId];
+  if (!hostId || !state.deviceId) return '-';
+  return hostId === state.deviceId ? 'host' : 'client';
+}
+
+function broadcastPresence() {
+  const now = Date.now();
+  for (const nbId of state.sharedNotebooks) {
+    upsertPresence(nbId, state.deviceId, now);
+    const nbHash = _sharedRoomMap.get(nbId);
+    if (nbHash) p2pSend('nb-renamed', { deviceId: state.deviceId, notebookId: nbId, __presence: true, ts: now }, { roomId: nbHash });
+  }
+  updateSyncDebug('presence');
 }
 
 function buildNotebookMetaPayload(notebookId, pageIds = null) {
@@ -1681,7 +1738,9 @@ function updateSyncDebug(status = _syncDebugStatus) {
     `sichtbar: ${document.visibilityState}`,
     `peers: ${state.connectedPeers.length} [${peers}]`,
     `relay: ${isRelayConnected() ? 'verbunden' : 'weg'}`,
+    `device: ${(state.deviceId || '-').slice(0, 8)}`,
     `aktuelles nb: ${(state.currentNotebookId || '-').slice(0, 8)}`,
+    `host: ${((state.hostByNotebook[state.currentNotebookId] || '-')).slice(0, 8)} (${currentNotebookRole()})`,
     `shared: ${shared}`,
     `letzte aktivität: ${since}`,
     `p2p in/out: ${p2pIn} / ${p2pOut}`,
@@ -2066,7 +2125,19 @@ async function startP2P() {
       renderUI();
     },
 
-    onNbRenamed({ id, name }, peerId) {
+    onNbRenamed(payload, peerId) {
+      if (payload?.__presence) {
+        upsertPresence(payload.notebookId, payload.deviceId, payload.ts || Date.now());
+        renderUI();
+        return;
+      }
+      const { id, name } = payload;
+      if (payload?.__presence) {
+        upsertPresence(payload.notebookId, payload.deviceId, payload.ts || Date.now());
+        renderUI();
+        return;
+      }
+      const { id, name } = payload;
       const nb = state.notebooks.find(n => n.id === id);
       if (nb) nb.name = name;
       saveAppMeta();
@@ -3216,6 +3287,8 @@ function renderUI() {
 async function init() {
   console.log('[App] Init...', APP_VERSION);
   updateSyncDebug('init');
+
+  ensureDeviceId();
 
   // 1. Storage initialisieren
   const storageBackend = await initStorage();
