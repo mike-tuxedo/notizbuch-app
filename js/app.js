@@ -27,7 +27,7 @@ const PEN_SIZES = [
 ];
 
 const BACKGROUNDS = ['grid', 'lined', 'blank'];
-const APP_VERSION = '2026-04-20-undo-oplog-v1';
+const APP_VERSION = '2026-04-20-undo-oplog-v2';
 const PRESENCE_INTERVAL_MS = 5000;
 const PRESENCE_TIMEOUT_MS = 15000;
 
@@ -500,16 +500,21 @@ function getClientName() {
  * @param {string} notebookId
  * @returns {Promise<Uint8Array>}
  */
-async function serializeStrokes(strokes, notebookId) {
-  const json = JSON.stringify(strokes.map(s => ({
-    id: s.id,
-    points: roundPoints(s.points || []),
-    color: s.color,
-    size: s.size,
-    tool: s.tool || 'pen',
-    createdAt: strokeCreatedAt(s)
-  })));
-  const plain = new TextEncoder().encode(json);
+async function serializePageData(page, notebookId) {
+  ensurePageEvents(page);
+  const payload = {
+    version: 2,
+    events: sortPageEvents(page.events || []).map(event => event.type === 'stroke' ? ({
+      ...event,
+      stroke: {
+        ...event.stroke,
+        points: roundPoints(event.stroke?.points || []),
+        tool: event.stroke?.tool || 'pen',
+        createdAt: strokeCreatedAt(event.stroke)
+      }
+    }) : event)
+  };
+  const plain = new TextEncoder().encode(JSON.stringify(payload));
   try {
     const key = await getNotebookKey(notebookId);
     return encrypt(key, plain);
@@ -526,19 +531,34 @@ async function serializeStrokes(strokes, notebookId) {
  * @param {string} notebookId
  * @returns {Promise<Array>}
  */
-async function deserializeStrokes(data, notebookId) {
+async function deserializePageData(data, notebookId) {
+  let parsed = null;
   try {
     const key = await getNotebookKey(notebookId);
     const plainBuf = await decrypt(key, data);
-    return JSON.parse(new TextDecoder().decode(plainBuf));
+    parsed = JSON.parse(new TextDecoder().decode(plainBuf));
   } catch {
-    // Fallback: versuche als plain JSON (für Migration bestehender Daten)
     try {
-      return JSON.parse(new TextDecoder().decode(data));
+      parsed = JSON.parse(new TextDecoder().decode(data));
     } catch {
-      return [];
+      parsed = null;
     }
   }
+  if (!parsed) return { events: [] };
+  if (Array.isArray(parsed)) {
+    return {
+      events: parsed.map((stroke, i) => ({
+        id: `legacy:${stroke.id || i}`,
+        type: 'stroke',
+        createdAt: strokeCreatedAt(stroke),
+        deviceId: stroke.deviceId || 'legacy',
+        seq: i,
+        stroke
+      }))
+    };
+  }
+  if (parsed.version === 2 && Array.isArray(parsed.events)) return parsed;
+  return { events: [] };
 }
 
 // ─── Page Load / Save ───────────────────────────────────────────────────────
@@ -574,7 +594,7 @@ async function _flushSave() {
   const page = currentPage();
   if (!page) return;
   const nbId = state.currentNotebookId;
-  const data = await serializeStrokes(page.strokes || [], nbId);
+  const data = await serializePageData(page, nbId);
   await savePageData(nbId, String(page.id), data);
   relayPut(`p:${nbId}/${page.id}`, data);
   // Geteiltes Notebook: debounced an shared Relay-Room pushen (3s)
@@ -596,8 +616,12 @@ async function _flushSave() {
  */
 async function loadPage(notebookId, pageId, page) {
   const data = await loadPageData(notebookId, pageId);
-  const diskStrokes = data ? await deserializeStrokes(data, notebookId) : [];
-  normalizePageStrokes(page, diskStrokes);
+  const disk = data ? await deserializePageData(data, notebookId) : { events: [] };
+  ensurePageEvents(page);
+  for (const event of (disk.events || [])) {
+    if (!page.events.some(e => e.id === event.id)) page.events.push(event);
+  }
+  refreshPageMaterializedState(page);
 }
 
 // ─── Meta Persistence ───────────────────────────────────────────────────────
@@ -1117,7 +1141,7 @@ async function undo() {
   normalizePageStrokes(page);
   redrawStrokes();
   const notebookId = state.currentNotebookId;
-  const data = await serializeStrokes(page.strokes || [], notebookId);
+  const data = await serializePageData(page, notebookId);
   await savePageData(notebookId, page.id, data);
   relayPut(`p:${notebookId}/${page.id}`, data);
   if (state.sharedNotebooks.has(notebookId)) {
@@ -1669,7 +1693,7 @@ async function mergeSharedNotebookData(notebookId, nodes) {
   for (const pageId of changedPages) {
     const page = nb.pages.find(p => p.id === pageId);
     if (page) {
-      const data = await serializeStrokes(page.strokes, notebookId);
+      const data = await serializePageData(page, notebookId);
       await savePageData(notebookId, String(pageId), data);
     }
   }
@@ -1718,7 +1742,7 @@ async function pushSharedNotebook(notebookId, opts = {}) {
     if (selectedPageIds && !selectedPageIds.has(page.id)) continue;
     if (!page.strokes?.length) continue;
     try {
-      const encrypted = await serializeStrokes(page.strokes, notebookId);
+      const encrypted = await serializePageData(page, notebookId);
       blobs.push({ id: `p:${page.id}`, data: encrypted });
     } catch (e) { console.warn('[Share] Page-encrypt fehlgeschlagen:', page.id, e); }
   }
@@ -1936,7 +1960,7 @@ async function mergeRelayData(nodes) {
       const pageBlob = nodes[`p:${nb.id}/${p.id}`];
       let strokes = [];
       if (pageBlob instanceof Uint8Array) {
-        try { strokes = await deserializeStrokes(pageBlob, nb.id); } catch {}
+        try { strokes = (await deserializePageData(pageBlob, nb.id)).events?.filter(e => e.type === 'stroke').map(e => e.stroke) || []; } catch {}
       }
       syncNb.pages.push({ ...pageMeta(p), strokes });
     }
@@ -2007,7 +2031,7 @@ async function applyFullSync(payload) {
   // Alle Pages speichern (auch leere — damit Clear-Zustand persistiert wird)
   for (const nb of state.notebooks) {
     for (const p of nb.pages) {
-      await savePageData(nb.id, p.id, await serializeStrokes(p.strokes || [], nb.id));
+      await savePageData(nb.id, p.id, await serializePageData(p, nb.id));
     }
   }
 }
@@ -2044,7 +2068,7 @@ const _p2pCallbacks = {
     }
     markSyncActivity('recv:stroke');
     markSyncActivity('recv:undo');
-    serializeStrokes(page.strokes, notebookId).then(d => savePageData(notebookId, pageId, d));
+    serializePageData(page, notebookId).then(d => savePageData(notebookId, pageId, d));
   },
 
   onUndo(payload, peerId, roomId) {
@@ -2063,7 +2087,7 @@ const _p2pCallbacks = {
       page.strokes.pop();
     }
     if (notebookId === state.currentNotebookId && pageId === currentPage()?.id) redrawStrokes();
-    serializeStrokes(page.strokes, notebookId).then(d => savePageData(notebookId, pageId, d));
+    serializePageData(page, notebookId).then(d => savePageData(notebookId, pageId, d));
   },
 
   onClear() {},
