@@ -27,7 +27,7 @@ const PEN_SIZES = [
 ];
 
 const BACKGROUNDS = ['grid', 'lined', 'blank'];
-const APP_VERSION = '2026-04-20-host-phase1-v29';
+const APP_VERSION = '2026-04-20-host-phase1-v30';
 const PRESENCE_INTERVAL_MS = 5000;
 const PRESENCE_TIMEOUT_MS = 15000;
 
@@ -2126,12 +2126,6 @@ async function startP2P() {
     },
 
     onNbRenamed(payload, peerId) {
-      if (payload?.__presence) {
-        upsertPresence(payload.notebookId, payload.deviceId, payload.ts || Date.now());
-        renderUI();
-        return;
-      }
-      const { id, name } = payload;
       if (payload?.__presence) {
         upsertPresence(payload.notebookId, payload.deviceId, payload.ts || Date.now());
         renderUI();
