@@ -27,7 +27,7 @@ const PEN_SIZES = [
 ];
 
 const BACKGROUNDS = ['grid', 'lined', 'blank'];
-const APP_VERSION = '2026-04-20-undo-oplog-v2';
+const APP_VERSION = '2026-04-20-undo-oplog-v3';
 const PRESENCE_INTERVAL_MS = 5000;
 const PRESENCE_TIMEOUT_MS = 15000;
 
@@ -214,6 +214,15 @@ function materializePage(page) {
 function refreshPageMaterializedState(page) {
   page.strokes = materializePage(page).sort((a, b) => strokeCreatedAt(a) - strokeCreatedAt(b) || String(a.id).localeCompare(String(b.id)));
   return page.strokes;
+}
+
+function applyPageEvent(page, event) {
+  ensurePageEvents(page);
+  if (!event?.id) return false;
+  if (page.events.some(e => e.id === event.id)) return false;
+  page.events.push(event);
+  refreshPageMaterializedState(page);
+  return true;
 }
 
 const _seenSyncEvents = new Set();
@@ -1147,7 +1156,8 @@ async function undo() {
   if (state.sharedNotebooks.has(notebookId)) {
     pushSharedNotebook(notebookId, { pageIds: [page.id] }).catch(() => {});
   }
-  p2pSendForNotebook('undo', { eventId: newEventId(), notebookId, pageId: page.id, strokeId: removed?.id });
+  const pageEvent = page.events[page.events.length - 1];
+  p2pSendForNotebook('undo', { eventId: newEventId(), notebookId, pageId: page.id, strokeId: removed?.id, pageEvent, deviceId: state.deviceId, seq: pageEvent?.seq });
 }
 
 /** IDs von per Undo entfernten Strokes — werden bei Union-Merge ignoriert */
@@ -3189,7 +3199,8 @@ function onPointerUp(e) {
   redrawStrokes();
 
   saveCurrentPage();
-  p2pSendForNotebook('stroke', { eventId: newEventId(), notebookId: state.currentNotebookId, pageId: page.id, stroke: newStroke });
+  const pageEvent = page.events[page.events.length - 1];
+  p2pSendForNotebook('stroke', { eventId: newEventId(), notebookId: state.currentNotebookId, pageId: page.id, stroke: newStroke, pageEvent });
   currentPoints = [];
   lastPoint = null;
 }
