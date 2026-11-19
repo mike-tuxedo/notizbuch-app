@@ -1,4 +1,4 @@
-const CACHE_NAME = 'notizbuch-v78';
+const CACHE_NAME = 'notizbuch-v79';
 
 const STATIC_ASSETS = [
   './',
@@ -54,7 +54,7 @@ self.addEventListener('activate', (event) => {
 });
 
 // Fetch-Strategie:
-//   HTML → Network-first (immer aktuell, Fallback auf Cache)
+//   HTML + js/ → Network-first (immer aktuell, Fallback auf Cache)
 //   Libs → Stale-while-revalidate (schnell, im Hintergrund aktualisiert)
 //   Rest → Cache-first
 self.addEventListener('fetch', (event) => {
@@ -65,8 +65,9 @@ self.addEventListener('fetch', (event) => {
 
   const url = new URL(event.request.url);
 
-  if (url.pathname.endsWith('.html') || url.pathname.endsWith('/')) {
-    // HTML: Network-first → bei Änderungen sofort sichtbar
+  if (url.pathname.endsWith('.html') || url.pathname.endsWith('/') || url.pathname.includes('/js/')) {
+    // HTML + App-Code: Network-first → HTML und JS stammen immer aus demselben Deploy.
+    // (Cache-first für JS hat Geräte auf alten Builds festgehalten.)
     event.respondWith(networkFirst(event.request));
   } else if (url.pathname.includes('/libs/')) {
     // Libs: Stale-while-revalidate → schnell laden, im Hintergrund updaten
