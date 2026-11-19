@@ -4,7 +4,12 @@
 
 import { initStorage, savePageData, loadPageData, deletePageData, deleteNotebookData, saveMeta, loadMeta, clearAll } from './storage.js';
 import { roundPoints, drawStrokeToCanvas, drawBackground } from './canvas.js';
-import { initP2P, send as p2pSend, sendToAll as p2pSendToAll, joinSharedRoom, leaveSharedRoom, leaveRoom, isConnected, hasPeers } from './p2p-sync.js';
+import {
+  initP2P, send as p2pSend, sendToAll as p2pSendToAll,
+  joinSharedRoom, leaveSharedRoom, leaveRoom,
+  isConnected, hasPeers,
+  setIceSettings, getIceStatus, getPeerDiagnostics
+} from './p2p-sync.js';
 import { generateKey, exportKey, importKey, encrypt, decrypt } from './encryption.js';
 import { exportAppBundle, importAppBundle } from './share.js';
 import { initRelay, putBlob as relayPut, deleteBlob as relayDelete, isRelayConnected, fetchRoom, pushBlobsToRoom } from './relay.js';
@@ -27,7 +32,7 @@ const PEN_SIZES = [
 ];
 
 const BACKGROUNDS = ['grid', 'lined', 'blank'];
-const APP_VERSION = '2026-04-20-shared-snapshot-v33';
+const APP_VERSION = '2026-11-19-turn-v34';
 const PRESENCE_INTERVAL_MS = 5000;
 const PRESENCE_TIMEOUT_MS = 15000;
 
@@ -177,6 +182,21 @@ function forwardSyncEvent(action, data, roomId, fromPeerId) {
   if (!roomId) return;
   if (!data?.eventId) return;
   p2pSend(action, data, { roomId });
+}
+
+// Peer-Diagnosen (ICE-Typen) werden im Hintergrund aktualisiert,
+// damit updateSyncDebug synchron bleibt.
+let _peerDiagnostics = [];
+let _peerDiagnosticsTimer = null;
+
+function startPeerDiagnosticsTimer() {
+  if (_peerDiagnosticsTimer) return;
+  _peerDiagnosticsTimer = setInterval(async () => {
+    if (document.visibilityState !== 'visible') return;
+    if (!document.getElementById('console')) return;
+    try { _peerDiagnostics = await getPeerDiagnostics(); } catch {}
+    updateSyncDebug();
+  }, 3000);
 }
 
 function pageMeta(page) {
@@ -408,6 +428,13 @@ function settingsPut(key, value) {
   return new Promise(resolve => {
     settingsDB.transaction('settings', 'readwrite')
       .objectStore('settings').put(value, key).onsuccess = () => resolve();
+  });
+}
+
+function settingsDelete(key) {
+  return new Promise(resolve => {
+    settingsDB.transaction('settings', 'readwrite')
+      .objectStore('settings').delete(key).onsuccess = () => resolve();
   });
 }
 
@@ -1760,10 +1787,13 @@ function updateSyncDebug(status = _syncDebugStatus) {
   const p2pIn = _lastP2PInAt ? `${Math.round((Date.now() - _lastP2PInAt) / 1000)}s` : '-';
   const p2pOut = _lastP2POutAt ? `${Math.round((Date.now() - _lastP2POutAt) / 1000)}s` : '-';
   const relayIn = _lastRelayMergeAt ? `${Math.round((Date.now() - _lastRelayMergeAt) / 1000)}s` : '-';
-  box.innerHTML = [
+  const safePeerId = id => (id || '').toString().replace(/[^a-zA-Z0-9]/g, '').slice(0, 8);
+
+  const lines = [
     `v ${APP_VERSION}`,
     `status: ${status}`,
     `sichtbar: ${document.visibilityState}`,
+    `ice: ${getIceStatus().replace(/[<>&]/g, '')}`,
     `peers: ${state.connectedPeers.length} [${peers}]`,
     `relay: ${isRelayConnected() ? 'verbunden' : 'weg'}`,
     `device: ${(state.deviceId || '-').slice(0, 8)}`,
@@ -1774,7 +1804,14 @@ function updateSyncDebug(status = _syncDebugStatus) {
     `p2p in/out: ${p2pIn} / ${p2pOut}`,
     `relay merge: ${relayIn}`,
     `letzter shared resync: ${_lastSharedResyncAt ? Math.round((Date.now() - _lastSharedResyncAt) / 1000) + 's' : '-'}`
-  ].join('<br>');
+  ];
+
+  for (const d of _peerDiagnostics) {
+    const role = d.isMain ? 'main' : 'shared';
+    lines.push(`↳ ${safePeerId(d.peerId)} ${role} ${d.iceState} ${d.localType}/${d.remoteType} ${d.protocol}`);
+  }
+
+  box.innerHTML = lines.join('<br>');
 }
 
 function markSyncActivity(status) {
@@ -2866,6 +2903,53 @@ function copyShareLink() {
   });
 }
 
+// ─── Verbindungs-Einstellungen (TURN/ICE) ───────────────────────────────────
+
+function openConnectionModal() {
+  const modal = document.getElementById('connection-modal');
+  if (!modal) return;
+  const urlInput = document.getElementById('conn-turn-url');
+  const userInput = document.getElementById('conn-turn-user');
+  const passInput = document.getElementById('conn-turn-pass');
+  const status = document.getElementById('conn-status');
+  settingsGet('device:iceSettings').then(s => {
+    if (urlInput) urlInput.value = s?.turnUrl || '';
+    if (userInput) userInput.value = s?.username || '';
+    if (passInput) passInput.value = s?.credential || '';
+  }).catch(() => {});
+  if (status) status.textContent = getIceStatus();
+  modal.classList.remove('hidden');
+}
+
+function closeConnectionModal() {
+  document.getElementById('connection-modal')?.classList.add('hidden');
+}
+
+async function saveConnectionSettings() {
+  const urlInput = document.getElementById('conn-turn-url');
+  const userInput = document.getElementById('conn-turn-user');
+  const passInput = document.getElementById('conn-turn-pass');
+  const settings = {
+    turnUrl: (urlInput?.value || '').trim(),
+    username: (userInput?.value || '').trim(),
+    credential: (passInput?.value || '').trim()
+  };
+  if (!settings.turnUrl) {
+    // Leere Eingabe = Einstellung entfernen
+    await settingsDelete('device:iceSettings');
+    setIceSettings({});
+  } else {
+    await settingsPut('device:iceSettings', settings);
+    setIceSettings(settings);
+  }
+  // Trystero hält Offer-Pool und geteilte Peer-Verbindungen modulweit mit der
+  // Konfiguration des ersten Room-Beitritts. Ein Rejoin übernimmt neue
+  // ICE-Server daher nicht zuverlässig — nur ein Neuladen tut das.
+  closeConnectionModal();
+  try { flushSave(); } catch {}
+  location.reload();
+}
+
 // ─── Settings Persistence ───────────────────────────────────────────────────
 
 async function saveLocalSettings() {
@@ -3328,6 +3412,18 @@ async function init() {
   // 5. Lokale Settings laden
   const savedCurrentId = await loadLocalSettings();
 
+  // 5a. Gerätelokale ICE-/TURN-Einstellungen laden (vor P2P-Start!)
+  try {
+    const iceSettings = await settingsGet('device:iceSettings') || {};
+    setIceSettings({
+      turnUrl: iceSettings.turnUrl || '',
+      username: iceSettings.username || '',
+      credential: iceSettings.credential || ''
+    });
+  } catch (e) {
+    console.warn('[App] ICE-Einstellungen konnten nicht geladen werden:', e);
+  }
+
   // 5b. Geteilte Notebooks laden
   loadSharedNotebooks();
 
@@ -3439,6 +3535,8 @@ async function init() {
   // 15. P2P-Rooms für geteilte Notebooks beitreten
   joinAllSharedNotebooksP2P().catch(e => console.warn('[P2P] Shared rooms join fehlgeschlagen:', e));
 
+  // 16. Peer-Diagnosen im Hintergrund erfassen (nur wenn Debug-Overlay da)
+  startPeerDiagnosticsTimer();
 
   console.log('[App] Bereit.', state.notebooks.length, 'Notebooks');
 }
@@ -3592,6 +3690,13 @@ function setupEvents() {
   document.getElementById('btn-sync-link')?.addEventListener('click', showSyncLink);
   document.getElementById('btn-export')?.addEventListener('click', () => exportApp());
   document.getElementById('btn-import')?.addEventListener('click', importApp);
+  document.getElementById('btn-connection')?.addEventListener('click', openConnectionModal);
+  document.getElementById('btn-close-connection')?.addEventListener('click', closeConnectionModal);
+  document.getElementById('btn-close-connection-2')?.addEventListener('click', closeConnectionModal);
+  document.getElementById('btn-save-connection')?.addEventListener('click', saveConnectionSettings);
+  document.getElementById('connection-modal')?.addEventListener('click', e => {
+    if (e.target.id === 'connection-modal') closeConnectionModal();
+  });
 
   // Mobile Farb-/Größen-Menüs
   document.getElementById('btn-mobile-color')?.addEventListener('click', () => {

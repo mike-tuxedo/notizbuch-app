@@ -14,10 +14,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Development
 
-No build step. Serve the root directory with any static HTTP server. The dev server in `relay/` does this and adds the relay backend.
+No build step. Serve the root directory with any static HTTP server. The dev server in `dev-server/` does this and adds the relay backend.
 
 ```bash
-cd relay && npm install && node server.js
+cd dev-server && npm install && node server.js
 # → https://localhost:4444/app.html
 ```
 
@@ -43,8 +43,8 @@ js/
 └── share.js          — Export/Import .enc bundle (passphrase-protected)
 
 libs/                 — Vendored third-party libs (iro.js, qrcode.js)
-relay/                — Local dev server (HTTPS + WSS + static files, mkcert)
-relay-plesk/          — Production relay (standalone WebSocket on Plesk)
+dev-server/           — Local dev server (HTTPS + WSS + static files, mkcert)
+backup-relay/         — Production relay (standalone WebSocket on Plesk)
 ```
 
 ## Sync Architecture
@@ -67,13 +67,17 @@ We do NOT host our own Nostr relay. Trystero needs only one working relay for We
 
 `p2p-sync.js` exposes `initP2P` (main), `joinSharedRoom`/`leaveSharedRoom` (per notebook), `send` (target-room aware), `sendToAll`. `p2pSendForNotebook(action, data)` in app.js sends to main + matching shared room.
 
+### TURN / ICE-Einstellungen (device-lokal)
+
+P2P-Verbindungen nutzen standardmäßig Trysteros eingebautes STUN. Hinter strengem NAT braucht es oft ein TURN-Relay. Der Nutzer kann in der Sidebar unter „Verbindung“ einen TURN-Server (`turn:…`/`turns:…` mit Benutzername/Passwort) oder einen HTTPS-Endpunkt eintragen, der kurzlebige `{"iceServers":[…]}`-Zugangsdaten liefert. Die Einstellung wird gerätelokal in IndexedDB (`notizbuch-settings`, Schlüssel `device:iceSettings`) gespeichert — sie wird **nicht** synchronisiert, nicht exportiert und nicht in Share-Links aufgenommen. Beim Speichern werden alle P2P-Rooms mit der neuen Konfiguration neu betreten.
+
 **Actions:** `stroke`, `undo`, `clear`, `full-sync`, `nb-created`, `nb-deleted`, `nb-renamed`, `page-created`, `page-deleted`, `page-bg`
 
 **Cross-user notebook ID mapping:** Sharer and recipient have different local `notebookId` for the same notebook. `_resolveNbId(eventNbId, roomId)` maps incoming events from a shared room to the local notebookId via `notebookHash`.
 
 ### 3. WebSocket Relay (Backup snapshot store)
 
-`wss://notes.mike.fm-media-staging.at` (Plesk-hosted, code in `relay-plesk/`).
+`wss://notes.mike.fm-media-staging.at` (Plesk-hosted, code in `backup-relay/`).
 
 **Purpose:** Encrypted blob storage for offline peers — when a peer comes online later, they fetch missed updates from here.
 
@@ -154,7 +158,7 @@ Drawing pipeline: raw points → Catmull-Rom smoothing → polygon with perpendi
 
 `undo()` removes last stroke + adds ID to `_undoneIds` Set. All union-merge paths (P2P full-sync, relay merge, page load, shared merge) skip strokes in `_undoneIds`. Saves immediately (no debounce) so relay/peers see the new state.
 
-## Relay Server (relay-plesk/)
+## Relay Server (backup-relay/)
 
 Standalone WebSocket on Plesk. **Critical setup:**
 
@@ -163,7 +167,7 @@ Standalone WebSocket on Plesk. **Critical setup:**
 3. Client connects without port: `wss://domain/`. Plesk routes 443 to the Node process internally.
 4. `node-put` with Base64 string (not object) → server replaces, doesn't merge. Ciphertext stored 1:1.
 
-## Local Dev Relay (relay/)
+## Local Dev Relay (dev-server/)
 
 HTTPS + WSS + static files for local development. Needs mkcert certificates:
 

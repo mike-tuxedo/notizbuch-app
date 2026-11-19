@@ -1089,6 +1089,15 @@
           </svg>
           Nur Stift
         </button>
+        <button class="footer-btn" id="btn-connection" title="P2P-Verbindung / TURN-Einstellungen">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round">
+            <path d="M5 12h14" />
+            <path d="M12 5v14" />
+            <circle cx="12" cy="12" r="9" />
+          </svg>
+          Verbindung
+        </button>
         <button class="footer-btn" id="btn-share" title="Notebook teilen">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
             stroke-linecap="round" stroke-linejoin="round">
@@ -1440,6 +1449,48 @@
         <div class="link-row">
           <input class="link-input" type="text" id="share-link" readonly>
           <button class="copy-btn" id="btn-copy-link">Kopieren</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Verbindungs-Einstellungen Modal -->
+  <div class="modal-overlay hidden" id="connection-modal">
+    <div class="modal" style="width: 420px;">
+      <div class="modal-header">
+        <h2>Verbindung</h2>
+        <button class="modal-close" id="btn-close-connection">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+            stroke-linecap="round">
+            <line x1="18" y1="6" x2="6" y2="18" />
+            <line x1="6" y1="6" x2="18" y2="18" />
+          </svg>
+        </button>
+      </div>
+      <div class="modal-body" style="gap: 12px; align-items: stretch;">
+        <p class="modal-hint" style="text-align:left; width:100%;">
+          Direktangabe eines TURN-Servers oder HTTPS-Adresse, die <code>{"iceServers":[…]}</code> liefert.
+          Ohne Eintrag wird nur STUN verwendet. Die Einstellung gilt nur für dieses Gerät. Beim Speichern wird die App neu geladen.
+        </p>
+        <label style="display:flex; flex-direction:column; gap:4px; font-size:12px; color:var(--text-dim);">
+          TURN-Server oder ICE-Endpunkt
+          <input class="link-input" type="text" id="conn-turn-url"
+            placeholder="turn:turn.example.org:3478 oder https://…"
+            style="width:100%; font-family: inherit;">
+        </label>
+        <label style="display:flex; flex-direction:column; gap:4px; font-size:12px; color:var(--text-dim);">
+          Benutzername (nur bei turn:/turns:)
+          <input class="link-input" type="text" id="conn-turn-user" style="width:100%; font-family: inherit;">
+        </label>
+        <label style="display:flex; flex-direction:column; gap:4px; font-size:12px; color:var(--text-dim);">
+          Passwort (nur bei turn:/turns:)
+          <input class="link-input" type="password" id="conn-turn-pass" style="width:100%; font-family: inherit;">
+        </label>
+        <div id="conn-status" style="font-size:12px; color:var(--text-dim); min-height:18px;">-</div>
+        <div class="link-row" style="margin-top:4px;">
+          <button class="copy-btn" id="btn-save-connection" style="flex:1;">Speichern</button>
+          <button class="copy-btn" id="btn-close-connection-2"
+            style="flex:1; background:transparent; border:1px solid var(--border-2); color:var(--text);">Abbrechen</button>
         </div>
       </div>
     </div>
