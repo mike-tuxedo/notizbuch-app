@@ -32,7 +32,7 @@ const PEN_SIZES = [
 ];
 
 const BACKGROUNDS = ['grid', 'lined', 'blank'];
-const APP_VERSION = '2026-11-19-oplog-v36';
+const APP_VERSION = '2026-11-19-cleanup-v37';
 const PRESENCE_INTERVAL_MS = 5000;
 const PRESENCE_TIMEOUT_MS = 15000;
 
@@ -296,7 +296,7 @@ function startPeerDiagnosticsTimer() {
   if (_peerDiagnosticsTimer) return;
   _peerDiagnosticsTimer = setInterval(async () => {
     if (document.visibilityState !== 'visible') return;
-    if (!document.getElementById('console')) return;
+    if (!document.getElementById('console') || !isSyncDebugOn()) return;
     try { _peerDiagnostics = await getPeerDiagnostics(); } catch {}
     updateSyncDebug();
   }, 3000);
@@ -1918,10 +1918,26 @@ async function resyncVisibleSharedNotebooks(reason = 'manual', opts = {}) {
   }
 }
 
+/** Sync-Diagnose (Overlay unten rechts) ein-/ausblenden. Gerätelokal gemerkt. */
+function isSyncDebugOn() {
+  return localStorage.getItem('notizbuch:debugOverlay') === '1';
+}
+
+function applySyncDebugVisibility() {
+  document.getElementById('console')?.classList.toggle('debug-off', !isSyncDebugOn());
+}
+
+function toggleSyncDebug() {
+  localStorage.setItem('notizbuch:debugOverlay', isSyncDebugOn() ? '0' : '1');
+  applySyncDebugVisibility();
+  updateSyncDebug();
+}
+
 function updateSyncDebug(status = _syncDebugStatus) {
   _syncDebugStatus = status;
   const box = document.getElementById('console');
   if (!box) return;
+  if (!isSyncDebugOn()) return;
   const since = _lastSyncActivity ? `${Math.round((Date.now() - _lastSyncActivity) / 1000)}s` : '-';
   const peers = state.connectedPeers.length ? state.connectedPeers.map(id => id.slice(0, 8)).join(', ') : 'keine';
   const shared = [...state.sharedNotebooks].map(id => id === state.currentNotebookId ? id.slice(0, 8) + ' *' : id.slice(0, 8)).join(', ') || 'keine';
@@ -3848,6 +3864,8 @@ function setupEvents() {
   document.getElementById('btn-export')?.addEventListener('click', () => exportApp());
   document.getElementById('btn-import')?.addEventListener('click', importApp);
   document.getElementById('btn-connection')?.addEventListener('click', openConnectionModal);
+  document.getElementById('status-row')?.addEventListener('click', toggleSyncDebug);
+  applySyncDebugVisibility();
   document.getElementById('btn-close-connection')?.addEventListener('click', closeConnectionModal);
   document.getElementById('btn-close-connection-2')?.addEventListener('click', closeConnectionModal);
   document.getElementById('btn-save-connection')?.addEventListener('click', saveConnectionSettings);

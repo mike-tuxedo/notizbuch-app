@@ -1077,7 +1077,7 @@
       </div>
 
       <div class="sidebar-footer">
-        <div class="status-row">
+        <div class="status-row" id="status-row" title="Klick: Sync-Diagnose ein/aus" style="cursor:pointer;">
           <span class="status-dot" id="status-dot"></span>
           <span class="peer-label" id="peer-count"></span>
         </div>
@@ -1542,7 +1542,7 @@
   </div>
 
 
-  <div id="console"></div>
+  <div id="console" class="debug-off"></div>
   <style>
     #console {
       display: block;
@@ -1563,6 +1563,7 @@
       white-space: normal;
       word-break: break-word;
     }
+    #console.debug-off { display: none; }
   </style>
 
     <script type="module" src="js/app.js"></script>

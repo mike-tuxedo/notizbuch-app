@@ -53,10 +53,9 @@ Three independent layers — **P2P for live sync, Relay for offline backup**:
 
 ### 1. Nostr Relays (Signaling only)
 
-5 public Nostr relays for **Trystero peer discovery only**:
-`damus.io`, `nos.lol`, `nostr.wine`, `primal.net`, `purplepag.es`
+Public Nostr relays are used for **Trystero peer discovery only**. We pass no relay list: Trystero (pinned to 0.24.0) picks from its built-in defaults, deterministically per `appId`, so all devices use the same relays.
 
-We do NOT host our own Nostr relay. Trystero needs only one working relay for WebRTC signaling. List in `js/p2p-sync.js`.
+We do NOT host our own Nostr relay. A custom list would go in `relayConfig: { urls: [...] }` (not `relayUrls`, which 0.24 ignores). Verify each URL first — many public relays reject events.
 
 ### 2. WebRTC P2P (Trystero, Multi-Room)
 
@@ -204,9 +203,22 @@ LAN-IP changes per WiFi → cert must be regenerated. For mobile tests: install 
 - **Concurrent shared edits** are race-prone (~500ms window between fetch and push). Sub-second simultaneous strokes from two peers can lose one. Acceptable for typical async editing.
 - **Empty pages** in shared notebooks: `pushSharedNotebook` pushes pages that have events (a page whose strokes were all undone has events but zero strokes). Empty pages without events still exist only in meta. Recipient creates them from meta.
 - **Firefox Stable + OPFS:** `GetDirectory` throws `SecurityError`. Falls back to IndexedDB.
-- **Public Nostr relays go offline.** List in `p2p-sync.js` needs occasional pruning. Trystero needs only one working relay.
+- **Public Nostr relays go offline.** Trystero's default list is used; if peers stop finding each other, check signaling first (see `relayConfig` note above).
 - **Firefox `network.websocket.enabled`** can be reset to `false` by updates/profile reset → all WebSockets fail.
 
 ## Commit Convention
 
 Imperative, lowercase, concise. Examples: "Add pen-only mode toggle", "Fix shared notebook sync", "Remove dead Nostr relays".
+
+## Debugging & Tests
+
+- **Sync-Diagnose-Overlay** (unten rechts): standardmäßig aus. Klick auf die Statuszeile in der Sidebar schaltet es um (`localStorage notizbuch:debugOverlay`). Zeigt Version, ICE-Quelle, pro Peer den Candidate-Typ (`relay` = über TURN) und `striche: N (events: M)` der aktuellen Seite.
+- **Version prüfen:** Erste Overlay-Zeile muss zur `APP_VERSION` in `js/app.js` passen. Der Service Worker liefert HTML und `js/` network-first.
+- **Abnahmetest Sync** (zwei isolierte Chromium-Instanzen, braucht `playwright-core`):
+  ```bash
+  cd dev-server && node server.js &
+  PLAYWRIGHT_CORE=/pfad/zu/node_modules/playwright-core node tests/accept.cjs https://localhost:4444/app.html device
+  PLAYWRIGHT_CORE=... node tests/accept.cjs https://localhost:4444/app.html shared
+  ```
+  Prüft Live-Sync beim Zuschauer, kein Verlust nach Relay-Zyklen, Undo auf beiden Seiten, Zustand nach Reload. Läuft auch gegen die Produktiv-URL.
+- **TURN-Test:** `node tests/turntest.cjs` prüft jeden TURN-Eintrag des ICE-Endpunkts mit erzwungenem Relay.

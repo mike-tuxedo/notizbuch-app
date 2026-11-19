@@ -22,14 +22,10 @@
 /** @type {string} App-ID für Trystero Room-Naming */
 const APP_ID = 'notizbuch-v2';
 
-/** Nostr-Relays für Signaling (Pool — Trystero verbindet zu allen) */
-const NOSTR_RELAYS = [
-  'wss://relay.damus.io',
-  'wss://nos.lol',
-  'wss://nostr.wine',
-  'wss://relay.primal.net',
-  'wss://purplepag.es',
-];
+// Signaling-Relays: Trystero wählt selbst aus seiner Standardliste (pro appId
+// deterministisch, alle Geräte landen also auf denselben Relays). Eine eigene
+// Liste müsste als `relayConfig: { urls: [...] }` übergeben werden — vorher
+// jede URL prüfen, viele öffentliche Nostr-Relays nehmen keine Events an.
 
 const ACTION_NAMES = [
   'stroke', 'undo', 'clear', 'full-sync',
@@ -169,7 +165,7 @@ async function _joinAnyRoom(roomId, callbacks, isMain) {
   try { joinRoom = await ensureTrystero(); }
   catch (e) { console.error('[P2P] Trystero Import fehlgeschlagen:', e); return; }
 
-  const config = { appId: APP_ID, relayUrls: NOSTR_RELAYS };
+  const config = { appId: APP_ID };
   try {
     const iceAddition = await _buildIceAddition();
     Object.assign(config, iceAddition);

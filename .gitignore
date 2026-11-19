@@ -8,7 +8,8 @@ icons/
 iconified/
 iconified.zip
 debug/
-relay/data.json
-relay/package-lock.json
+dev-server/data.json
 .claude/
 .mcp.json
+.playwright-mcp/
+app-current-*.png
