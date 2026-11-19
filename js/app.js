@@ -32,7 +32,7 @@ const PEN_SIZES = [
 ];
 
 const BACKGROUNDS = ['grid', 'lined', 'blank'];
-const APP_VERSION = '2026-11-19-cleanup-v37';
+const APP_VERSION = '2026-11-19-forward-v38';
 const PRESENCE_INTERVAL_MS = 5000;
 const PRESENCE_TIMEOUT_MS = 15000;
 
@@ -281,10 +281,33 @@ function rememberSyncEvent(eventId) {
   return false;
 }
 
+/**
+ * Empfangenes Event an alle anderen weiterreichen (Teilnetze: nicht jeder Peer
+ * ist mit jedem verbunden). Wird pro eventId genau einmal aufgerufen.
+ *
+ * Wichtig: Ein Notizbuch lebt in bis zu zwei Rooms — Haupt-Room (eigene Geräte)
+ * und Shared-Room (andere Personen). Ein Event, das über den einen Room ankommt,
+ * muss auch in den anderen, sonst erreicht z.B. der Strich eines eigenen Geräts
+ * nie den Gast, der nur im Shared-Room ist (und umgekehrt).
+ */
 function forwardSyncEvent(action, data, roomId, fromPeerId) {
   if (!roomId) return;
   if (!data?.eventId) return;
+  // Herkunfts-Room: unverändert weiterreichen
   p2pSend(action, data, { roomId });
+  // Nur seitenbezogene Events wechseln den Room (full-sync bleibt im eigenen)
+  if (action !== 'stroke' && action !== 'undo') return;
+  const localNbId = _resolveNbId(data.notebookId, roomId);
+  if (!localNbId || !state.notebooks.some(n => n.id === localNbId)) return;
+  const fromMain = roomId === state.masterKeyHash;
+  if (fromMain) {
+    // Haupt-Room → Shared-Room (Empfänger lösen die Notizbuch-ID über den Room auf)
+    const nbHash = state.sharedNotebooks.has(localNbId) ? _sharedRoomMap.get(localNbId) : null;
+    if (nbHash) p2pSend(action, data, { roomId: nbHash });
+  } else {
+    // Shared-Room → Haupt-Room: eigene Geräte kennen nur UNSERE Notizbuch-ID
+    p2pSend(action, { ...data, notebookId: localNbId }, { roomId: state.masterKeyHash });
+  }
 }
 
 // Peer-Diagnosen (ICE-Typen) werden im Hintergrund aktualisiert,
