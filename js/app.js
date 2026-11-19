@@ -32,7 +32,7 @@ const PEN_SIZES = [
 ];
 
 const BACKGROUNDS = ['grid', 'lined', 'blank'];
-const APP_VERSION = '2026-11-19-turn-oplog-v35';
+const APP_VERSION = '2026-11-19-oplog-v36';
 const PRESENCE_INTERVAL_MS = 5000;
 const PRESENCE_TIMEOUT_MS = 15000;
 
@@ -205,13 +205,20 @@ function materializePage(page) {
   const clearedAt = page?.clearedAt || 0;
   const undoneStrokeIds = new Set();
   const visible = [];
+  const seenStrokeIds = new Set();
   for (const event of sortPageEvents(page.events || [])) {
-    if ((Number(event?.createdAt) || 0) <= clearedAt) continue;
-    if (event.type === 'undo' && event.targetStrokeId) {
+    if (event.type === 'stroke' && event.stroke) {
+      // Striche vor dem letzten Clear bleiben ausgeblendet
+      if ((Number(event?.createdAt) || 0) <= clearedAt) continue;
+      // Doppelte stroke.id absichern (z.B. legacy/import/device-Duplikat)
+      if (seenStrokeIds.has(event.stroke.id)) continue;
+      seenStrokeIds.add(event.stroke.id);
+      visible.push(event.stroke);
+    } else if (event.type === 'undo' && event.targetStrokeId) {
+      // Undo-Events wirken unabhängig von ihrer Reihenfolge und dürfen
+      // nicht durch die clearedAt-Prüfung verloren gehen.
       undoneStrokeIds.add(event.targetStrokeId);
-      continue;
     }
-    if (event.type === 'stroke' && event.stroke) visible.push(event.stroke);
   }
   return visible.filter(s => !undoneStrokeIds.has(s.id));
 }
@@ -228,6 +235,33 @@ function applyPageEvent(page, event) {
   page.events.push(event);
   refreshPageMaterializedState(page);
   return true;
+}
+
+/**
+ * Events aus Remote-Quellen in eine Seite vereinigen.
+ * - Überspringt bereits bekannte Event-IDs.
+ * - Überspringt stroke-Events, wenn dieselbe stroke.id bereits existiert
+ *   (z.B. legacy:/import:/device-Event für denselben Strich).
+ * - Materialisiert die Seite neu, wenn sich etwas geändert hat.
+ * @returns {boolean} true wenn neue Events hinzugefügt wurden
+ */
+function mergePageEvents(page, events = []) {
+  ensurePageEvents(page);
+  let changed = false;
+  const knownEventIds = new Set(page.events.map(e => e.id));
+  const knownStrokeIds = new Set(page.events.filter(e => e.type === 'stroke' && e.stroke?.id).map(e => e.stroke.id));
+  for (const event of events) {
+    if (!event?.id || knownEventIds.has(event.id)) continue;
+    if (event.type === 'stroke' && event.stroke?.id) {
+      if (knownStrokeIds.has(event.stroke.id)) continue;
+      knownStrokeIds.add(event.stroke.id);
+    }
+    page.events.push(event);
+    knownEventIds.add(event.id);
+    changed = true;
+  }
+  if (changed) refreshPageMaterializedState(page);
+  return changed;
 }
 
 const _seenSyncEvents = new Set();
@@ -285,14 +319,28 @@ function notebookMeta(notebook, opts = {}) {
   return {
     id: notebook.id,
     name: notebook.name,
-    pages: notebook.pages.map(page => ({
-      ...pageMeta(page),
-      strokes: includePageStrokes || page.id === currentId
-        ? (page.strokes || []).map(s => ({
-            id: s.id, points: s.points, color: s.color, size: s.size, tool: s.tool, createdAt: strokeCreatedAt(s)
-          }))
-        : []
-    }))
+    pages: notebook.pages.map(page => {
+      const include = includePageStrokes || page.id === currentId;
+      return {
+        ...pageMeta(page),
+        strokes: include
+          ? (page.strokes || []).map(s => ({
+              id: s.id, points: s.points, color: s.color, size: s.size, tool: s.tool, createdAt: strokeCreatedAt(s)
+            }))
+          : [],
+        events: include
+          ? sortPageEvents(ensurePageEvents(page)).map(event => event.type === 'stroke' ? ({
+              ...event,
+              stroke: {
+                ...event.stroke,
+                points: roundPoints(event.stroke?.points || []),
+                tool: event.stroke?.tool || 'pen',
+                createdAt: strokeCreatedAt(event.stroke)
+              }
+            }) : event)
+          : []
+      };
+    })
   };
 }
 
@@ -308,7 +356,7 @@ function normalizePageStrokes(page, incomingStrokes = null) {
   ensurePageEvents(page);
   const known = new Set((page.events || []).filter(e => e.type === 'stroke' && e.stroke?.id).map(e => e.stroke.id));
   for (const stroke of (incomingStrokes || [])) {
-    if (!stroke?.id || known.has(stroke.id) || _undoneIds.has(stroke.id)) continue;
+    if (!stroke?.id || known.has(stroke.id)) continue;
     page.events.push({
       id: `import:${stroke.id}`,
       type: 'stroke',
@@ -644,20 +692,16 @@ async function _flushSave() {
 }
 
 /**
- * Seite laden: OPFS-Daten mit In-Memory Strokes (von P2P) mergen.
- * Union-Merge by ID — Remote-Strokes die während der Navigation ankamen bleiben erhalten.
+ * Seite laden: OPFS-Daten mit In-Memory Events (von P2P) mergen.
+ * Union-Merge by event.id — Remote-Events die während der Navigation ankamen bleiben erhalten.
  * @param {string} notebookId
  * @param {string} pageId
- * @param {{id: string, strokes: Array}} page - Page-Objekt (wird mutiert)
+ * @param {{id: string, events: Array}} page - Page-Objekt (wird mutiert)
  */
 async function loadPage(notebookId, pageId, page) {
   const data = await loadPageData(notebookId, pageId);
   const disk = data ? await deserializePageData(data, notebookId) : { events: [] };
-  ensurePageEvents(page);
-  for (const event of (disk.events || [])) {
-    if (!page.events.some(e => e.id === event.id)) page.events.push(event);
-  }
-  refreshPageMaterializedState(page);
+  mergePageEvents(page, disk.events || []);
 }
 
 // ─── Meta Persistence ───────────────────────────────────────────────────────
@@ -1144,7 +1188,7 @@ function createDefaultNotebook() {
 async function createTestNotebook() {
   const nbId = newId();
   const pageId = newId();
-  const strokes = [];
+  const events = [];
   for (let i = 0; i < 1000; i++) {
     const y = 20 + (i % 50) * 30;
     const x = 20 + Math.floor(i / 50) * 40;
@@ -1152,18 +1196,28 @@ async function createTestNotebook() {
     for (let j = 0; j < 8; j++) {
       points.push({ x: x + j * 4 + Math.random() * 2, y: y + Math.sin(j) * 10 + Math.random() * 2 });
     }
-    strokes.push({ id: newId(), createdAt: Date.now() + i + 2, points: roundPoints(points), color: '#000000', size: 2, tool: 'pen' });
+    const stroke = { id: newId(), createdAt: Date.now() + i + 2, points: roundPoints(points), color: '#000000', size: 2, tool: 'pen' };
+    events.push({
+      id: `legacy:${stroke.id}`,
+      type: 'stroke',
+      createdAt: stroke.createdAt,
+      deviceId: 'legacy',
+      seq: i,
+      stroke
+    });
   }
+  const page = { id: pageId, strokes: [], events, background: 'grid', order: 0, createdAt: Date.now(), deletedAt: 0 };
+  refreshPageMaterializedState(page);
   state.notebooks.push({
     id: nbId,
-    name: `Testbuch (${strokes.length} Strokes)`,
-    pages: [{ id: pageId, strokes, background: 'grid', order: 0, createdAt: Date.now(), deletedAt: 0 }]
+    name: `Testbuch (${page.strokes.length} Strokes)`,
+    pages: [page]
   });
   state.currentPageIds[nbId] = pageId;
   await saveAppMeta();
   await selectNotebook(nbId);
-  // Strokes sofort speichern
-  const data = await serializeStrokes(strokes, nbId);
+  // Events sofort speichern
+  const data = await serializePageData(page, nbId);
   await savePageData(nbId, pageId, data);
 }
 
@@ -1171,10 +1225,12 @@ async function createTestNotebook() {
 
 async function undo() {
   const page = currentPage();
-  if (!page || !page.strokes.length || isPageDeleted(page)) return;
-  const removed = page.strokes.pop();
-  if (removed) _undoneIds.add(removed.id);
-  normalizePageStrokes(page);
+  if (!page || isPageDeleted(page)) return;
+  refreshPageMaterializedState(page);
+  const lastStroke = page.strokes[page.strokes.length - 1];
+  if (!lastStroke) return;
+  const pageEvent = newPageEvent('undo', { targetStrokeId: lastStroke.id });
+  applyPageEvent(page, pageEvent);
   redrawStrokes();
   const notebookId = state.currentNotebookId;
   const data = await serializePageData(page, notebookId);
@@ -1183,19 +1239,14 @@ async function undo() {
   if (state.sharedNotebooks.has(notebookId)) {
     pushSharedNotebook(notebookId, { pageIds: [page.id] }).catch(() => {});
   }
-  const pageEvent = page.events[page.events.length - 1];
-  p2pSendForNotebook('undo', { eventId: newEventId(), notebookId, pageId: page.id, strokeId: removed?.id, pageEvent, deviceId: state.deviceId, seq: pageEvent?.seq });
+  p2pSendForNotebook('undo', { eventId: newEventId(), notebookId, pageId: page.id, strokeId: lastStroke.id, pageEvent, deviceId: state.deviceId, seq: pageEvent.seq });
 }
-
-/** IDs von per Undo entfernten Strokes — werden bei Union-Merge ignoriert */
-const _undoneIds = new Set();
 
 async function clearPage() {
   const page = currentPage();
   if (!page || isPageDeleted(page)) return;
-  page.strokes = [];
   page.clearedAt = Date.now();
-  normalizePageStrokes(page);
+  refreshPageMaterializedState(page);
   redrawStrokes();
   await saveAppMeta();
   saveCurrentPage();
@@ -1665,27 +1716,22 @@ async function mergeSharedNotebookData(notebookId, nodes) {
     // Pages: key = "p:{pageId}"
     if (!key.startsWith('p:') || !(blob instanceof Uint8Array)) continue;
     const pageId = key.slice(2);
-    let strokes = [];
-    try { strokes = await deserializeStrokes(blob, notebookId); } catch (e) {
+    let disk = { events: [] };
+    try { disk = await deserializePageData(blob, notebookId); } catch (e) {
       console.warn('[Share] Page-decrypt fehlgeschlagen:', pageId, e);
       continue;
     }
-    if (!strokes.length) continue;
+    if (!(disk.events?.length)) continue;
 
     let page = nb.pages.find(p => p.id === pageId);
     if (!page) {
       // Neue Seite erstellen
-      page = { id: pageId, strokes: [], background: 'grid', order: nb.pages.length, createdAt: 0, deletedAt: 0 };
+      page = { id: pageId, strokes: [], events: [], background: 'grid', order: nb.pages.length, createdAt: 0, deletedAt: 0 };
       nb.pages.push(page);
       normalizePageOrder(nb);
     }
-    const beforeJson = JSON.stringify(page.strokes || []);
-    // Shared relay page-blob ist ein Snapshot der Seite, kein Event-Log.
-    // Deshalb hier NICHT union-mergen, sondern remote Snapshot + lokale Meta (clearedAt/undone) anwenden.
-    page.strokes = Array.isArray(strokes) ? strokes.slice() : [];
-    normalizePageStrokes(page);
-    const afterJson = JSON.stringify(page.strokes || []);
-    if (beforeJson !== afterJson) {
+    // Shared relay page-blob enthält das Event-Log: Vereinigung nach Event-ID.
+    if (mergePageEvents(page, disk.events || [])) {
       merged++;
       changedPages.add(pageId);
     }
@@ -1719,10 +1765,10 @@ async function mergeSharedNotebookData(notebookId, nodes) {
     } catch (e) { console.warn('[Share] Meta-decrypt fehlgeschlagen:', e); }
   }
 
-  // Nach Meta-Merge alte Strokes konsequent herausfiltern, damit Clears aus dem Relay alte Page-Blobs nicht wieder sichtbar machen
+  // Nach Meta-Merge Seiten neu materialisieren, da sich clearedAt/deletedAt geändert haben können
   for (const page of nb.pages) {
     const before = page.strokes?.length || 0;
-    normalizePageStrokes(page);
+    refreshPageMaterializedState(page);
     if ((page.strokes?.length || 0) !== before) changedPages.add(page.id);
   }
 
@@ -1777,7 +1823,8 @@ async function pushSharedNotebook(notebookId, opts = {}) {
   const selectedPageIds = opts.pageIds?.length ? new Set(opts.pageIds) : null;
   for (const page of nb.pages) {
     if (selectedPageIds && !selectedPageIds.has(page.id)) continue;
-    if (!page.strokes?.length) continue;
+    // Auch leere Seiten pushen, wenn sie Events haben (z.B. alles per Undo entfernt)
+    if (!(page.events?.length)) continue;
     try {
       const encrypted = await serializePageData(page, notebookId);
       blobs.push({ id: `p:${page.id}`, data: encrypted });
@@ -1882,6 +1929,8 @@ function updateSyncDebug(status = _syncDebugStatus) {
   const p2pOut = _lastP2POutAt ? `${Math.round((Date.now() - _lastP2POutAt) / 1000)}s` : '-';
   const relayIn = _lastRelayMergeAt ? `${Math.round((Date.now() - _lastRelayMergeAt) / 1000)}s` : '-';
   const safePeerId = id => (id || '').toString().replace(/[^a-zA-Z0-9]/g, '').slice(0, 8);
+  const cp = currentPage();
+  const strokeLine = cp ? `striche: ${cp.strokes?.length || 0} (events: ${cp.events?.length || 0})` : 'striche: 0 (events: 0)';
 
   const lines = [
     `v ${APP_VERSION}`,
@@ -1897,6 +1946,7 @@ function updateSyncDebug(status = _syncDebugStatus) {
     `letzte aktivität: ${since}`,
     `p2p in/out: ${p2pIn} / ${p2pOut}`,
     `relay merge: ${relayIn}`,
+    strokeLine,
     `letzter shared resync: ${_lastSharedResyncAt ? Math.round((Date.now() - _lastSharedResyncAt) / 1000) + 's' : '-'}`
   ];
 
@@ -2005,11 +2055,11 @@ async function mergeRelayData(nodes) {
     const syncNb = { id: nb.id, name: nb.name, pages: [] };
     for (const p of nb.pages) {
       const pageBlob = nodes[`p:${nb.id}/${p.id}`];
-      let strokes = [];
+      let events = [];
       if (pageBlob instanceof Uint8Array) {
-        try { strokes = (await deserializePageData(pageBlob, nb.id)).events?.filter(e => e.type === 'stroke').map(e => e.stroke) || []; } catch {}
+        try { events = (await deserializePageData(pageBlob, nb.id)).events || []; } catch {}
       }
-      syncNb.pages.push({ ...pageMeta(p), strokes });
+      syncNb.pages.push({ ...pageMeta(p), events });
     }
     payload.notebooks.push(syncNb);
   }
@@ -2029,7 +2079,7 @@ async function pushAllToRelay() {
   const page = currentPage();
   if (!nb || !page) return;
   try {
-    const data = await serializeStrokes(page.strokes || [], nb.id);
+    const data = await serializePageData(page, nb.id);
     relayPut(`p:${nb.id}/${page.id}`, data);
   } catch {}
   if (state.sharedNotebooks.has(nb.id)) {
@@ -2068,7 +2118,11 @@ async function applyFullSync(payload) {
     for (const remotePage of (remoteNb.pages || [])) {
       const localPage = localNb.pages.find(p => p.id === remotePage.id);
       if (!localPage) continue;
-      normalizePageStrokes(localPage, remotePage.strokes || []);
+      if (remotePage.events?.length) {
+        mergePageEvents(localPage, remotePage.events);
+      } else {
+        normalizePageStrokes(localPage, remotePage.strokes || []);
+      }
     }
   }
 
@@ -2101,37 +2155,45 @@ const _p2pCallbacks = {
   onStroke(payload, peerId, roomId) {
     if (rememberSyncEvent(payload?.eventId)) return;
     forwardSyncEvent('stroke', payload, roomId, peerId);
-    let { notebookId, pageId, stroke } = payload;
+    let { notebookId, pageId, stroke, pageEvent } = payload;
     notebookId = _resolveNbId(notebookId, roomId);
     const nb = state.notebooks.find(n => n.id === notebookId);
     if (!nb) return;
     const page = nb.pages.find(p => p.id === pageId);
     if (!page || isPageDeleted(page)) return;
-    if (page.strokes.some(s => s.id === stroke.id)) return;
-    if (strokeCreatedAt(stroke) <= (page.clearedAt || 0)) return;
-    normalizePageStrokes(page, [stroke]);
+    if (pageEvent) {
+      mergePageEvents(page, [pageEvent]);
+    } else {
+      // Abwärtskompatibilität zu alten Clients, die nur stroke senden
+      normalizePageStrokes(page, [stroke]);
+    }
     if (notebookId === state.currentNotebookId && pageId === currentPage()?.id) {
       redrawStrokes();
     }
     markSyncActivity('recv:stroke');
-    markSyncActivity('recv:undo');
     serializePageData(page, notebookId).then(d => savePageData(notebookId, pageId, d));
   },
 
   onUndo(payload, peerId, roomId) {
     if (rememberSyncEvent(payload?.eventId)) return;
     forwardSyncEvent('undo', payload, roomId, peerId);
-    let { notebookId, pageId, strokeId } = payload;
+    let { notebookId, pageId, strokeId, pageEvent } = payload;
     notebookId = _resolveNbId(notebookId, roomId);
     const nb = state.notebooks.find(n => n.id === notebookId);
     const page = nb?.pages.find(p => p.id === pageId);
-    if (!page || !page.strokes.length || isPageDeleted(page)) return;
-    if (strokeId) {
-      _undoneIds.add(strokeId);
-      page.strokes = page.strokes.filter(s => s.id !== strokeId);
-      normalizePageStrokes(page);
-    } else {
-      page.strokes.pop();
+    if (!page || isPageDeleted(page)) return;
+    if (pageEvent) {
+      mergePageEvents(page, [pageEvent]);
+    } else if (strokeId) {
+      // Abwärtskompatibilität: synthetisches Undo-Event erzeugen
+      mergePageEvents(page, [{
+        id: `undo:${strokeId}`,
+        type: 'undo',
+        targetStrokeId: strokeId,
+        createdAt: Date.now(),
+        deviceId: 'legacy',
+        seq: 0
+      }]);
     }
     if (notebookId === state.currentNotebookId && pageId === currentPage()?.id) redrawStrokes();
     serializePageData(page, notebookId).then(d => savePageData(notebookId, pageId, d));
@@ -2220,15 +2282,15 @@ async function startP2P() {
           const keeper = nbs[0];
           for (let i = 1; i < nbs.length; i++) {
             const dup = nbs[i];
-            // Strokes der Duplikat-Pages in den Keeper mergen
+            // Events der Duplikat-Pages in den Keeper mergen
             for (const dp of dup.pages) {
               const kp = keeper.pages.find(p => p.id === dp.id);
-              if (!kp && dp.strokes?.length > 0) {
+              if (!kp) {
                 keeper.pages.push(dp);
-              } else if (kp) {
-                const existing = new Map(kp.strokes.map(s => [s.id, s]));
-                for (const s of (dp.strokes || [])) { if (!existing.has(s.id)) existing.set(s.id, s); }
-                kp.strokes = [...existing.values()].sort((a, b) => strokeCreatedAt(a) - strokeCreatedAt(b) || String(a.id).localeCompare(String(b.id)));
+              } else if (dp.events?.length) {
+                mergePageEvents(kp, dp.events);
+              } else {
+                normalizePageStrokes(kp, dp.strokes || []);
               }
             }
             toRemove.push(dup.id);
@@ -3279,11 +3341,11 @@ function onPointerUp(e) {
     tool: state.tool === 'eraser' ? 'eraser' : 'pen'
   };
 
-  normalizePageStrokes(page, [newStroke]);
+  const pageEvent = newPageEvent('stroke', { stroke: newStroke });
+  applyPageEvent(page, pageEvent);
   redrawStrokes();
 
   saveCurrentPage();
-  const pageEvent = page.events[page.events.length - 1];
   p2pSendForNotebook('stroke', { eventId: newEventId(), notebookId: state.currentNotebookId, pageId: page.id, stroke: newStroke, pageEvent });
   currentPoints = [];
   lastPoint = null;

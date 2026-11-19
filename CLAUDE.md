@@ -92,7 +92,20 @@ P2P-Verbindungen nutzen standardmäßig Trysteros eingebautes STUN. Hinter stren
 
 **Push patterns:**
 - Main relay: `_flushSave()` debounced 1s after stroke → `relayPut(p:{nbId}/{pageId}, ciphertext)`
-- Shared room: debounced 3s, **fetch-merge-push** (fetch room first, merge, push union — prevents overwriting peer's data)
+- Shared room: debounced 3s, **fetch-merge-push** (fetch room first, merge event union by `event.id`, push merged event log — prevents overwriting peer's data)
+
+## Page Event-Log (single source of truth)
+
+Since version `v2` each page stores an encrypted event-log (`page.events`) instead of a raw stroke array.
+`page.strokes` is only a **materialized view** computed by `materializePage()` / `refreshPageMaterializedState()`.
+
+- Event format: `{ id, type, createdAt, deviceId, seq, ... }`
+- Types: `stroke` (carries `stroke`), `undo` (carries `targetStrokeId`)
+- Storage blob: `{ version: 2, events: [...] }` (legacy stroke arrays are converted to `legacy:` events on read)
+- Merging is always a **union by `event.id`**. Remote data is never replaced; `mergePageEvents()` adds only unknown events.
+- Duplicate strokes are prevented at event-merge time (same `stroke.id`) and defensively in `materializePage()`.
+- `undo()` appends an `undo` event with the `targetStrokeId`. Undo events work regardless of arrival order because `materializePage()` applies all undos after rendering strokes.
+- `clearedAt` still hides stroke events with `createdAt <= clearedAt`; undo events are not affected by the clearedAt check.
 
 ## Key Hierarchy
 
@@ -156,7 +169,7 @@ Drawing pipeline: raw points → Catmull-Rom smoothing → polygon with perpendi
 
 ## Undo
 
-`undo()` removes last stroke + adds ID to `_undoneIds` Set. All union-merge paths (P2P full-sync, relay merge, page load, shared merge) skip strokes in `_undoneIds`. Saves immediately (no debounce) so relay/peers see the new state.
+`undo()` determines the last visible stroke, appends an `undo` event with `targetStrokeId`, and re-materializes the page. Saves immediately (no debounce) so relay/peers see the new state.
 
 ## Relay Server (backup-relay/)
 
@@ -189,7 +202,7 @@ LAN-IP changes per WiFi → cert must be regenerated. For mobile tests: install 
 ## Known Issues / Won't-fix
 
 - **Concurrent shared edits** are race-prone (~500ms window between fetch and push). Sub-second simultaneous strokes from two peers can lose one. Acceptable for typical async editing.
-- **Empty pages** in shared notebooks: `pushSharedNotebook` only pushes pages with strokes. Empty pages exist only in meta. Recipient creates them from meta.
+- **Empty pages** in shared notebooks: `pushSharedNotebook` pushes pages that have events (a page whose strokes were all undone has events but zero strokes). Empty pages without events still exist only in meta. Recipient creates them from meta.
 - **Firefox Stable + OPFS:** `GetDirectory` throws `SecurityError`. Falls back to IndexedDB.
 - **Public Nostr relays go offline.** List in `p2p-sync.js` needs occasional pruning. Trystero needs only one working relay.
 - **Firefox `network.websocket.enabled`** can be reset to `false` by updates/profile reset → all WebSockets fail.
