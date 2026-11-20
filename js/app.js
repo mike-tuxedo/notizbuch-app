@@ -12,7 +12,10 @@ import {
 } from './p2p-sync.js';
 import { generateKey, exportKey, importKey, encrypt, decrypt } from './encryption.js';
 import { exportAppBundle, importAppBundle } from './share.js';
-import { initRelay, putBlob as relayPut, deleteBlob as relayDelete, isRelayConnected, fetchRoom, pushBlobsToRoom } from './relay.js';
+import {
+  initRelay, putBlob as relayPut, deleteBlob as relayDelete, isRelayConnected, fetchRoom, pushBlobsToRoom,
+  openLiveChannel, closeLiveChannel, closeAllLiveChannels, sendLiveEvent, reconnectLiveChannels, liveChannelStatus
+} from './relay.js';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -32,7 +35,7 @@ const PEN_SIZES = [
 ];
 
 const BACKGROUNDS = ['grid', 'lined', 'blank'];
-const APP_VERSION = '2026-11-19-forward-v38';
+const APP_VERSION = '2026-11-20-relaylive-v39';
 const PRESENCE_INTERVAL_MS = 5000;
 const PRESENCE_TIMEOUT_MS = 15000;
 
@@ -294,7 +297,7 @@ function forwardSyncEvent(action, data, roomId, fromPeerId) {
   if (!roomId) return;
   if (!data?.eventId) return;
   // Herkunfts-Room: unverändert weiterreichen
-  p2pSend(action, data, { roomId });
+  syncSend(action, data, { roomId, noRelay: true });
   // Nur seitenbezogene Events wechseln den Room (full-sync bleibt im eigenen)
   if (action !== 'stroke' && action !== 'undo') return;
   const localNbId = _resolveNbId(data.notebookId, roomId);
@@ -303,11 +306,105 @@ function forwardSyncEvent(action, data, roomId, fromPeerId) {
   if (fromMain) {
     // Haupt-Room → Shared-Room (Empfänger lösen die Notizbuch-ID über den Room auf)
     const nbHash = state.sharedNotebooks.has(localNbId) ? _sharedRoomMap.get(localNbId) : null;
-    if (nbHash) p2pSend(action, data, { roomId: nbHash });
+    if (nbHash) syncSend(action, data, { roomId: nbHash, noRelay: true });
   } else {
     // Shared-Room → Haupt-Room: eigene Geräte kennen nur UNSERE Notizbuch-ID
-    p2pSend(action, { ...data, notebookId: localNbId }, { roomId: state.masterKeyHash });
+    syncSend(action, { ...data, notebookId: localNbId }, { roomId: state.masterKeyHash, noRelay: true });
   }
+}
+
+/** Action-Name zu Callback-Name wie in p2p-sync.js. */
+function actionCallbackName(action) {
+  return 'on' + action.split('-').map(s => s.charAt(0).toUpperCase() + s.slice(1)).join('');
+}
+
+/** Schlüssel für einen Room: Main = MasterKey, Shared = NotebookKey. */
+async function _keyForRoom(roomId) {
+  if (roomId === state.masterKeyHash) return getMasterCryptoKey();
+  for (const [nbId, hash] of _sharedRoomMap) {
+    if (hash === roomId) return getNotebookKey(nbId);
+  }
+  return null;
+}
+
+/**
+ * Zentrale Sendefunktion für Sync-Events.
+ * Versendet immer per P2P wie bisher und zusätzlich verschlüsselt über den
+ * Relay-Live-Kanal, falls es sich um einen Broadcast handelt.
+ */
+function syncSend(action, data, opts = {}) {
+  // P2P-Teil
+  if (opts.forNotebook) {
+    p2pSend(action, data);
+    const nbId = data.notebookId || data.id;
+    if (nbId && state.sharedNotebooks.has(nbId)) {
+      const nbHash = _sharedRoomMap.get(nbId);
+      if (nbHash) p2pSend(action, data, { roomId: nbHash });
+    }
+  } else {
+    p2pSend(action, data, opts);
+  }
+
+  // Ausgehende P2P-Aktivität protokollieren (außer Presence).
+  if (!data?.__presence) markSyncActivity('send:' + action);
+
+  // Relay-Teil: nur für Broadcasts ohne gezielten Peer, nicht explizit
+  // abgeschaltet und nie für Presence-Pings.
+  if (opts.peerId || opts.noRelay || data?.__presence) return;
+
+  const rooms = [];
+  if (opts.forNotebook) {
+    rooms.push(state.masterKeyHash);
+    const nbId = data.notebookId || data.id;
+    if (nbId && state.sharedNotebooks.has(nbId)) {
+      const nbHash = _sharedRoomMap.get(nbId);
+      if (nbHash) rooms.push(nbHash);
+    }
+  } else {
+    rooms.push(opts.roomId || state.masterKeyHash);
+  }
+
+  for (const roomId of rooms) {
+    sendRelayEvent(action, data, roomId);
+  }
+}
+
+/** Einzelnes Event über den Relay-Live-Kanal verschlüsselt senden. */
+async function sendRelayEvent(action, data, roomId) {
+  if (!roomId) return;
+  const key = await _keyForRoom(roomId);
+  if (!key) return;
+  const envelope = JSON.stringify({ a: action, d: data });
+  const plain = new TextEncoder().encode(envelope);
+  let cipher;
+  try { cipher = await encrypt(key, plain); } catch { return; }
+  const ok = sendLiveEvent(roomId, cipher);
+  if (ok) markSyncActivity('send:relay:' + action);
+}
+
+/** Eingehendes Relay-Live-Event entschlüsseln und an P2P-Handler weiterleiten. */
+async function onLiveEvent(ciphertext, roomId) {
+  try {
+    const key = await _keyForRoom(roomId);
+    if (!key) return;
+    const plain = await decrypt(key, ciphertext);
+    const envelope = JSON.parse(new TextDecoder().decode(plain));
+    const { a: action, d: data } = envelope;
+    const cbName = actionCallbackName(action);
+    const handler = roomId === state.masterKeyHash ? _mainP2pCallbacks[cbName] : _p2pCallbacks[cbName];
+    if (handler) {
+      handler(data, 'relay', roomId);
+      markSyncActivity('recv:relay:' + action);
+    }
+  } catch {
+    // Fehler still verwerfen — Ciphertext kann von einem fremden Client stammen.
+  }
+}
+
+/** Haupt-Live-Kanal öffnen (eigene Geräte). */
+function openMainLiveChannel() {
+  if (!state.masterKeyHash) return;
+  openLiveChannel(state.masterKeyHash, onLiveEvent);
 }
 
 // Peer-Diagnosen (ICE-Typen) werden im Hintergrund aktualisiert,
@@ -479,7 +576,7 @@ async function broadcastPresence() {
       try { await joinSharedNotebookP2P(nbId); } catch {}
     }
     const nbHash = _sharedRoomMap.get(nbId);
-    if (nbHash) p2pSend('nb-renamed', { deviceId: state.deviceId, notebookId: nbId, __presence: true, ts: now }, { roomId: nbHash });
+    if (nbHash) syncSend('nb-renamed', { deviceId: state.deviceId, notebookId: nbId, __presence: true, ts: now }, { roomId: nbHash });
   }
   updateSyncDebug('presence');
 }
@@ -691,6 +788,7 @@ let _sharedWakeTimer = null;
 let _lastSharedResyncAt = 0;
 let _lastHeartbeatAt = 0;
 let _lastRelayMergeAt = 0;
+let _lastRelayLiveInAt = 0;
 let _lastP2PInAt = 0;
 let _lastP2POutAt = 0;
 let _syncDebugStatus = 'idle';
@@ -1148,7 +1246,7 @@ async function createNotebook() {
   });
   state.currentPageIds[nbId] = pageId;
   await saveAppMeta();
-  p2pSend('nb-created', { id: nbId, name });
+  syncSend('nb-created', { eventId: newEventId(), id: nbId, name });
   sendNotebookMeta(nbId);
   await selectNotebook(nbId);
 }
@@ -1170,7 +1268,7 @@ async function deleteNotebook(nbId) {
     state.currentPageIds[state.currentNotebookId] = state.notebooks[0]?.pages?.[0]?.id || null;
   }
   await saveAppMeta();
-  p2pSend('nb-deleted', { id: nbId });
+  syncSend('nb-deleted', { eventId: newEventId(), id: nbId });
   const page = currentPage();
   if (page) await loadPage(state.currentNotebookId, page.id, page);
   redrawBackground();
@@ -1190,7 +1288,7 @@ async function renameNotebook(nbId, name) {
   if (!nb) return;
   nb.name = name.trim() || nb.name;
   await saveAppMeta();
-  p2pSend('nb-renamed', { id: nbId, name: nb.name });
+  syncSend('nb-renamed', { eventId: newEventId(), id: nbId, name: nb.name });
   renderUI();
 }
 
@@ -1866,6 +1964,7 @@ async function joinSharedNotebookP2P(notebookId) {
   const nbHash = await notebookHash(notebookId);
   _sharedRoomMap.set(notebookId, nbHash);
   await joinSharedRoom(nbHash, _p2pCallbacks);
+  openLiveChannel(nbHash, onLiveEvent);
 }
 
 /** Alle bekannten geteilten Notebooks im P2P verbinden. */
@@ -1881,6 +1980,7 @@ function leaveSharedNotebookP2P(notebookId) {
   const nbHash = _sharedRoomMap.get(notebookId);
   if (nbHash) {
     leaveSharedRoom(nbHash);
+    closeLiveChannel(nbHash);
     _sharedRoomMap.delete(notebookId);
   }
 }
@@ -1891,15 +1991,7 @@ function leaveSharedNotebookP2P(notebookId) {
  * @param {Object} data - muss notebookId enthalten
  */
 function p2pSendForNotebook(action, data) {
-  // Main-Room (eigene Geräte)
-  p2pSend(action, data);
-  markSyncActivity(`send:${action}`);
-  // Shared-Room falls Notebook geteilt
-  const nbId = data.notebookId || data.id;
-  if (nbId && state.sharedNotebooks.has(nbId)) {
-    const nbHash = _sharedRoomMap.get(nbId);
-    if (nbHash) p2pSend(action, data, { roomId: nbHash });
-  }
+  syncSend(action, data, { forNotebook: true });
 }
 
 async function resyncSharedNotebook(notebookId, opts = {}) {
@@ -1967,6 +2059,14 @@ function updateSyncDebug(status = _syncDebugStatus) {
   const p2pIn = _lastP2PInAt ? `${Math.round((Date.now() - _lastP2PInAt) / 1000)}s` : '-';
   const p2pOut = _lastP2POutAt ? `${Math.round((Date.now() - _lastP2POutAt) / 1000)}s` : '-';
   const relayIn = _lastRelayMergeAt ? `${Math.round((Date.now() - _lastRelayMergeAt) / 1000)}s` : '-';
+  const relayLiveIn = _lastRelayLiveInAt ? `${Math.round((Date.now() - _lastRelayLiveInAt) / 1000)}s` : '-';
+  const liveStatus = liveChannelStatus();
+  const unsupported = liveStatus.some(s => s.state === 'nicht unterstützt');
+  const mainEntry = liveStatus.find(s => s.roomKey === state.masterKeyHash);
+  const sharedEntries = liveStatus.filter(s => s.roomKey !== state.masterKeyHash);
+  const relayLiveText = unsupported
+    ? 'nicht unterstützt (alter Server)'
+    : `main ${mainEntry?.state || 'getrennt'}, shared ${sharedEntries.filter(s => s.state === 'verbunden').length}/${sharedEntries.length}`;
   const safePeerId = id => (id || '').toString().replace(/[^a-zA-Z0-9]/g, '').slice(0, 8);
   const cp = currentPage();
   const strokeLine = cp ? `striche: ${cp.strokes?.length || 0} (events: ${cp.events?.length || 0})` : 'striche: 0 (events: 0)';
@@ -1978,12 +2078,14 @@ function updateSyncDebug(status = _syncDebugStatus) {
     `ice: ${getIceStatus().replace(/[<>&]/g, '')}`,
     `peers: ${state.connectedPeers.length} [${peers}]`,
     `relay: ${isRelayConnected() ? 'verbunden' : 'weg'}`,
+    `relay live: ${relayLiveText}`,
     `device: ${(state.deviceId || '-').slice(0, 8)}`,
     `aktuelles nb: ${(state.currentNotebookId || '-').slice(0, 8)}`,
     `host: ${((state.hostByNotebook[state.currentNotebookId] || '-')).slice(0, 8)} (${currentNotebookRole()})`,
     `shared: ${shared}`,
     `letzte aktivität: ${since}`,
     `p2p in/out: ${p2pIn} / ${p2pOut}`,
+    `relay live in: ${relayLiveIn}`,
     `relay merge: ${relayIn}`,
     strokeLine,
     `letzter shared resync: ${_lastSharedResyncAt ? Math.round((Date.now() - _lastSharedResyncAt) / 1000) + 's' : '-'}`
@@ -2000,7 +2102,11 @@ function updateSyncDebug(status = _syncDebugStatus) {
 function markSyncActivity(status) {
   _lastSyncActivity = Date.now();
   if (status?.startsWith('send:')) _lastP2POutAt = _lastSyncActivity;
-  if (status?.startsWith('recv:')) _lastP2PInAt = _lastSyncActivity;
+  if (status?.startsWith('recv:relay:')) {
+    _lastRelayLiveInAt = _lastSyncActivity;
+  } else if (status?.startsWith('recv:')) {
+    _lastP2PInAt = _lastSyncActivity;
+  }
   updateSyncDebug(status);
 }
 
@@ -2209,7 +2315,7 @@ const _p2pCallbacks = {
     if (notebookId === state.currentNotebookId && pageId === currentPage()?.id) {
       redrawStrokes();
     }
-    markSyncActivity('recv:stroke');
+    if (peerId !== 'relay') markSyncActivity('recv:stroke');
     serializePageData(page, notebookId).then(d => savePageData(notebookId, pageId, d));
   },
 
@@ -2246,7 +2352,9 @@ const _p2pCallbacks = {
 
   onPageRestored() {},
 
-  onPageBg({ notebookId, pageId, background }, peerId, roomId) {
+  onPageBg(payload, peerId, roomId) {
+    if (rememberSyncEvent(payload?.eventId)) return;
+    let { notebookId, pageId, background } = payload;
     notebookId = _resolveNbId(notebookId, roomId);
     const nb = state.notebooks.find(n => n.id === notebookId);
     if (!nb) return;
@@ -2268,7 +2376,7 @@ const _p2pCallbacks = {
     const nb = state.notebooks.find(n => n.id === nbId);
     if (!nb) return;
     const payload = buildFullSyncPayload({ notebookIds: [nb.id] });
-    p2pSend('full-sync', payload, { peerId, roomId });
+    syncSend('full-sync', payload, { peerId, roomId, noRelay: true });
     console.log('[P2P] Shared Full-Sync gesendet @', roomId.slice(0, 8));
   },
 
@@ -2283,7 +2391,7 @@ const _p2pCallbacks = {
     const remote = payload.notebooks[0];
     // Payload-notebookId temporär auf localNbId mappen für applyFullSync
     remote.id = localNbId;
-    markSyncActivity('recv:full-sync-shared');
+    if (peerId !== 'relay') markSyncActivity('recv:full-sync-shared');
     await applyFullSync(payload);
     if (localNbId === state.currentNotebookId) {
       const cp = currentPage();
@@ -2293,137 +2401,158 @@ const _p2pCallbacks = {
   },
 };
 
-async function startP2P() {
-  await initP2P(state.masterKeyHash, {
-    onStroke: _p2pCallbacks.onStroke,
-    onUndo: _p2pCallbacks.onUndo,
-    onClear: _p2pCallbacks.onClear,
+const _mainP2pCallbacks = {
+  onStroke: _p2pCallbacks.onStroke,
+  onUndo: _p2pCallbacks.onUndo,
+  onClear: _p2pCallbacks.onClear,
 
-    async onFullSync(payload, peerId) {
-      if (rememberSyncEvent(payload?.eventId)) return;
-      console.log('[P2P] Full-Sync von', peerId, ':', payload.notebooks?.length, 'Notebooks');
-      markSyncActivity('recv:full-sync-main');
-      await applyFullSync(payload);
+  async onFullSync(payload, peerId) {
+    if (rememberSyncEvent(payload?.eventId)) return;
+    console.log('[P2P] Full-Sync von', peerId, ':', payload.notebooks?.length, 'Notebooks');
+    if (peerId !== 'relay') markSyncActivity('recv:full-sync-main');
+    await applyFullSync(payload);
 
-      // Duplikat-Notebooks entfernen: gleicher Name, verschiedene ID → ältere behalten (niedrigere ID = früher erstellt)
-      if (payload.notebooks?.length > 0) {
-        const byName = {};
-        for (const nb of state.notebooks) {
-          if (!byName[nb.name]) byName[nb.name] = [];
-          byName[nb.name].push(nb);
-        }
-        const toRemove = [];
-        for (const [name, nbs] of Object.entries(byName)) {
-          if (nbs.length <= 1) continue;
-          // Ältestes behalten (niedrigste ID = frühester Timestamp)
-          nbs.sort((a, b) => String(a.id) < String(b.id) ? -1 : 1);
-          // Strokes des Ältesten mit den Duplikaten mergen, dann Duplikate löschen
-          const keeper = nbs[0];
-          for (let i = 1; i < nbs.length; i++) {
-            const dup = nbs[i];
-            // Events der Duplikat-Pages in den Keeper mergen
-            for (const dp of dup.pages) {
-              const kp = keeper.pages.find(p => p.id === dp.id);
-              if (!kp) {
-                keeper.pages.push(dp);
-              } else if (dp.events?.length) {
-                mergePageEvents(kp, dp.events);
-              } else {
-                normalizePageStrokes(kp, dp.strokes || []);
-              }
+    // Duplikat-Notebooks entfernen: gleicher Name, verschiedene ID → ältere behalten (niedrigere ID = früher erstellt)
+    if (payload.notebooks?.length > 0) {
+      const byName = {};
+      for (const nb of state.notebooks) {
+        if (!byName[nb.name]) byName[nb.name] = [];
+        byName[nb.name].push(nb);
+      }
+      const toRemove = [];
+      for (const [name, nbs] of Object.entries(byName)) {
+        if (nbs.length <= 1) continue;
+        // Ältestes behalten (niedrigste ID = frühester Timestamp)
+        nbs.sort((a, b) => String(a.id) < String(b.id) ? -1 : 1);
+        // Strokes des Ältesten mit den Duplikaten mergen, dann Duplikate löschen
+        const keeper = nbs[0];
+        for (let i = 1; i < nbs.length; i++) {
+          const dup = nbs[i];
+          // Events der Duplikat-Pages in den Keeper mergen
+          for (const dp of dup.pages) {
+            const kp = keeper.pages.find(p => p.id === dp.id);
+            if (!kp) {
+              keeper.pages.push(dp);
+            } else if (dp.events?.length) {
+              mergePageEvents(kp, dp.events);
+            } else {
+              normalizePageStrokes(kp, dp.strokes || []);
             }
-            toRemove.push(dup.id);
           }
-        }
-        if (toRemove.length > 0) {
-          for (const id of toRemove) {
-            state.notebooks = state.notebooks.filter(n => n.id !== id);
-            delete state.currentPageIds[id];
-            deleteNotebookData(id);
-          }
-          if (!state.notebooks.find(n => n.id === state.currentNotebookId)) {
-            state.currentNotebookId = state.notebooks[0]?.id;
-            state.currentPageIds[state.currentNotebookId] = state.notebooks[0]?.pages?.[0]?.id || null;
-          }
-          await saveAppMeta();
-          console.log('[P2P] Duplikat-Notebooks entfernt:', toRemove.length);
+          toRemove.push(dup.id);
         }
       }
-
-      renderUI();
-      const page = currentPage();
-      if (page) {
-        await loadPage(state.currentNotebookId, page.id, page);
-        redrawStrokes();
+      if (toRemove.length > 0) {
+        for (const id of toRemove) {
+          state.notebooks = state.notebooks.filter(n => n.id !== id);
+          delete state.currentPageIds[id];
+          deleteNotebookData(id);
+        }
+        if (!state.notebooks.find(n => n.id === state.currentNotebookId)) {
+          state.currentNotebookId = state.notebooks[0]?.id;
+          state.currentPageIds[state.currentNotebookId] = state.notebooks[0]?.pages?.[0]?.id || null;
+        }
+        await saveAppMeta();
+        console.log('[P2P] Duplikat-Notebooks entfernt:', toRemove.length);
       }
-    },
-
-    onNbCreated({ id, name }, peerId) {
-      if (state.notebooks.find(n => n.id === id)) return;
-      state.notebooks.push({ id, name, pages: [] });
-      state.currentPageIds[id] = null;
-      saveAppMeta();
-      renderUI();
-      console.log('[P2P] Notebook erstellt von Peer:', name);
-    },
-
-    onNbDeleted({ id }, peerId) {
-      const delNb = state.notebooks.find(n => n.id === id);
-      if (delNb) delNb.pages.forEach(p => relayDelete(`p:${id}/${p.id}`));
-      state.notebooks = state.notebooks.filter(n => n.id !== id);
-      delete state.currentPageIds[id];
-      if (state.currentNotebookId === id && state.notebooks.length > 0) {
-        state.currentNotebookId = state.notebooks[0].id;
-        state.currentPageIds[state.currentNotebookId] = state.notebooks[0]?.pages?.[0]?.id || null;
-        const page = currentPage();
-        if (page) loadPage(state.currentNotebookId, page.id, page).then(() => {
-          redrawBackground(); redrawStrokes();
-        });
-      }
-      deleteNotebookData(id);
-      saveAppMeta();
-      renderUI();
-    },
-
-    onNbRenamed(payload, peerId) {
-      if (payload?.__presence) {
-        upsertPresence(payload.notebookId, payload.deviceId, payload.ts || Date.now());
-        renderUI();
-        return;
-      }
-      const { id, name } = payload;
-      const nb = state.notebooks.find(n => n.id === id);
-      if (nb) nb.name = name;
-      saveAppMeta();
-      renderUI();
-    },
-
-    onPageCreated() {},
-
-    onPageDeleted() {},
-
-    onPageRestored() {},
-
-    onPageBg() {},
-
-    onPeerJoin(peerId) {
-      if (!state.connectedPeers.includes(peerId)) state.connectedPeers.push(peerId);
-      renderUI();
-      updateSyncDebug('peer-join');
-      // Full-Sync an neuen Peer senden
-      const payload = buildFullSyncPayload({ notebookIds: [state.currentNotebookId] });
-      if (payload.notebooks.length > 0) {
-        p2pSend('full-sync', payload, { peerId });
-        console.log('[P2P] Full-Sync gesendet an', peerId);
-      }
-    },
-
-    onPeerLeave(peerId) {
-      state.connectedPeers = state.connectedPeers.filter(id => id !== peerId);
-      renderUI();
-      updateSyncDebug('peer-leave');
     }
-  });
+
+    renderUI();
+    const page = currentPage();
+    if (page) {
+      await loadPage(state.currentNotebookId, page.id, page);
+      redrawStrokes();
+    }
+  },
+
+  onNbCreated(payload, peerId) {
+    if (rememberSyncEvent(payload?.eventId)) return;
+    const { id, name } = payload;
+    if (state.notebooks.find(n => n.id === id)) return;
+    state.notebooks.push({ id, name, pages: [] });
+    state.currentPageIds[id] = null;
+    saveAppMeta();
+    renderUI();
+    console.log('[P2P] Notebook erstellt von Peer:', name);
+  },
+
+  onNbDeleted(payload, peerId) {
+    if (rememberSyncEvent(payload?.eventId)) return;
+    const { id } = payload;
+    const delNb = state.notebooks.find(n => n.id === id);
+    if (delNb) delNb.pages.forEach(p => relayDelete(`p:${id}/${p.id}`));
+    state.notebooks = state.notebooks.filter(n => n.id !== id);
+    delete state.currentPageIds[id];
+    if (state.currentNotebookId === id && state.notebooks.length > 0) {
+      state.currentNotebookId = state.notebooks[0].id;
+      state.currentPageIds[state.currentNotebookId] = state.notebooks[0]?.pages?.[0]?.id || null;
+      const page = currentPage();
+      if (page) loadPage(state.currentNotebookId, page.id, page).then(() => {
+        redrawBackground(); redrawStrokes();
+      });
+    }
+    deleteNotebookData(id);
+    saveAppMeta();
+    renderUI();
+  },
+
+  onNbRenamed(payload, peerId) {
+    if (payload?.__presence) {
+      upsertPresence(payload.notebookId, payload.deviceId, payload.ts || Date.now());
+      renderUI();
+      return;
+    }
+    if (rememberSyncEvent(payload?.eventId)) return;
+    const { id, name } = payload;
+    const nb = state.notebooks.find(n => n.id === id);
+    if (nb) nb.name = name;
+    saveAppMeta();
+    renderUI();
+  },
+
+  onPageCreated() {},
+
+  onPageDeleted() {},
+
+  onPageRestored() {},
+
+  onPageBg(payload, peerId, roomId) {
+    if (rememberSyncEvent(payload?.eventId)) return;
+    let { notebookId, pageId, background } = payload;
+    notebookId = _resolveNbId(notebookId, roomId);
+    const nb = state.notebooks.find(n => n.id === notebookId);
+    if (!nb) return;
+    const page = nb.pages.find(p => p.id === pageId);
+    if (!page || isPageDeleted(page)) return;
+    page.background = background;
+    saveAppMeta();
+    if (notebookId === state.currentNotebookId && page.id === currentPage()?.id) {
+      redrawBackground();
+    }
+    renderUI();
+  },
+
+  onPeerJoin(peerId) {
+    if (!state.connectedPeers.includes(peerId)) state.connectedPeers.push(peerId);
+    renderUI();
+    updateSyncDebug('peer-join');
+    // Full-Sync an neuen Peer senden
+    const payload = buildFullSyncPayload({ notebookIds: [state.currentNotebookId] });
+    if (payload.notebooks.length > 0) {
+      syncSend('full-sync', payload, { peerId, noRelay: true });
+      console.log('[P2P] Full-Sync gesendet an', peerId);
+    }
+  },
+
+  onPeerLeave(peerId) {
+    state.connectedPeers = state.connectedPeers.filter(id => id !== peerId);
+    renderUI();
+    updateSyncDebug('peer-leave');
+  }
+};
+
+async function startP2P() {
+  await initP2P(state.masterKeyHash, _mainP2pCallbacks);
 }
 
 // ─── Pinch-Zoom ─────────────────────────────────────────────────────────────
@@ -3623,6 +3752,9 @@ async function init() {
   // 5b. Geteilte Notebooks laden
   loadSharedNotebooks();
 
+  // 5c. Live-Kanäle öffnen (Haupt-Room)
+  openMainLiveChannel();
+
   // 6. App-Metadaten laden (lokal)
   await loadAppMeta();
 
@@ -3751,6 +3883,9 @@ async function resync() {
     // 1. Lokale Änderungen sofort speichern
     flushSave();
 
+    // 1b. Live-Kanäle neu verbinden falls nötig
+    reconnectLiveChannels();
+
     // 2. Relay: neu verbinden + Daten mergen
     try {
       const relayNodes = await initRelay(state.masterKeyHash);
@@ -3771,7 +3906,7 @@ async function resync() {
     // 4. P2P: nur neu aufbauen wenn keine Peers verbunden (Signaling ist teuer + fragil)
     if (hasPeers()) {
       const payload = buildFullSyncPayload({ notebookIds: [state.currentNotebookId] });
-      if (payload.notebooks.length > 0) p2pSend('full-sync', payload);
+      if (payload.notebooks.length > 0) syncSend('full-sync', payload);
       console.log('[App] P2P lebt — Full-Sync gesendet');
     } else {
       await startP2P();
@@ -3801,6 +3936,7 @@ function handleActivityChange(event) {
   if (!state.syncEnabled) return;
   if (document.visibilityState === 'hidden') return;
   updateSyncDebug(`wake:${event.type}`);
+  reconnectLiveChannels();
   broadcastPresence().catch(() => {});
   resync();
   if (_sharedWakeTimer) clearTimeout(_sharedWakeTimer);

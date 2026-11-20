@@ -49,7 +49,7 @@ backup-relay/         — Production relay (standalone WebSocket on Plesk)
 
 ## Sync Architecture
 
-Three independent layers — **P2P for live sync, Relay for offline backup**:
+Three layers — **P2P is a fast path, Relay adds live sync and offline backup**:
 
 ### 1. Nostr Relays (Signaling only)
 
@@ -59,7 +59,7 @@ We do NOT host our own Nostr relay. A custom list would go in `relayConfig: { ur
 
 ### 2. WebRTC P2P (Trystero, Multi-Room)
 
-**Direct peer-to-peer for live sync** — strokes, undo, page events.
+**Direct peer-to-peer as a fast path** — strokes, undo, page events.
 
 - **Main Room** (`masterKeyHash`): All own devices. Full app-state sync.
 - **Shared Rooms** (one per shared notebook, `notebookHash`): Sharer + recipient(s) of a specific notebook.
@@ -74,24 +74,27 @@ P2P-Verbindungen nutzen standardmäßig Trysteros eingebautes STUN. Hinter stren
 
 **Cross-user notebook ID mapping:** Sharer and recipient have different local `notebookId` for the same notebook. `_resolveNbId(eventNbId, roomId)` maps incoming events from a shared room to the local notebookId via `notebookHash`.
 
-### 3. WebSocket Relay (Backup snapshot store)
+### 3. WebSocket Relay (Live sync + backup snapshot store)
 
 `wss://notes.mike.fm-media-staging.at` (Plesk-hosted, code in `backup-relay/`).
 
-**Purpose:** Encrypted blob storage for offline peers — when a peer comes online later, they fetch missed updates from here.
+**Purpose:**
+1. **Live sync:** Jeder verbundene Client öffnet einen eigenen dauerhaften Kanal pro Room (`join` mit `nosync:true`). Der Server leitet eingehende `event`-Nachrichten (Base64-Ciphertext) sofort an alle anderen Clients im selben Room weiter — ohne Speichern. Damit funktioniert Live-Sync auch ohne WebRTC/P2P.
+2. **Backup blob storage for offline peers** — when a peer comes online later, they fetch missed updates from here.
 
 - Server sees only ciphertext (Base64 strings)
 - 30-day room TTL
-- Message types: `join`, `node-put`, `node-get`, `node-remove`
-- **No broadcast** — just storage and retrieval
+- Message types: `join` (mit `nosync:true` für Live-Kanäle), `event` (Live-Weiterleitung), `node-put`, `node-get`, `node-remove`
+- Alte Server, die `nosync` nicht kennen, antworten mit `sync` statt `joined` → Live wird als "nicht unterstützt" angezeigt, der Blob-Backup-Weg bleibt aber bestehen.
 
 **Two room types** (server doesn't know the difference):
-- `masterKeyHash` → own devices' shared backup
-- `notebookHash` → per-shared-notebook backup (parallel to P2P shared room)
+- `masterKeyHash` → own devices' live channel + backup
+- `notebookHash` → per-shared-notebook live channel + backup (parallel to P2P shared room)
 
 **Push patterns:**
 - Main relay: `_flushSave()` debounced 1s after stroke → `relayPut(p:{nbId}/{pageId}, ciphertext)`
 - Shared room: debounced 3s, **fetch-merge-push** (fetch room first, merge event union by `event.id`, push merged event log — prevents overwriting peer's data)
+- Live events: `syncSend(action, data)` verschlüsselt jede Broadcast-Nachricht zusätzlich mit dem Room-Key und sendet sie über `sendLiveEvent`
 
 ## Page Event-Log (single source of truth)
 
@@ -221,5 +224,10 @@ Imperative, lowercase, concise. Examples: "Add pen-only mode toggle", "Fix share
   PLAYWRIGHT_CORE=... node tests/accept.cjs https://localhost:4444/app.html shared
   ```
   Prüft Live-Sync beim Zuschauer, kein Verlust nach Relay-Zyklen, Undo auf beiden Seiten, Zustand nach Reload. Läuft auch gegen die Produktiv-URL.
+- **Relay-only-Test:** Mit `NO_P2P=1` wird WebRTC im Browser blockiert — der Test muss trotzdem über den Relay-Live-Weg funktionieren:
+  ```bash
+  NO_P2P=1 node tests/accept.cjs https://localhost:4444/app.html device
+  NO_P2P=1 node tests/accept.cjs https://localhost:4444/app.html shared
+  ```
 - **Drei-Peer-Test:** `node tests/three.cjs` baut ein Teilnetz (Handy und Tablet ohne direkte Verbindung) und prüft, dass der mittlere Peer Striche und Undo weiterreicht — auch zwischen Haupt-Room und Shared-Room (`forwardSyncEvent`).
 - **TURN-Test:** `node tests/turntest.cjs` prüft jeden TURN-Eintrag des ICE-Endpunkts mit erzwungenem Relay.

@@ -6,6 +6,9 @@
  *
  * Message-Typen:
  *   join        — Room beitreten, sync-Response mit allen Nodes
+ *                 (mit nosync:true stattdessen nur {type:'joined', live:true})
+ *   event       — Live-Weiterleitung: Ciphertext an alle ANDEREN Clients im Room,
+ *                 wird NICHT gespeichert
  *   node-put    — Node speichern (Merge bei Objects, Replace bei Strings)
  *   node-get    — Einzelnen Node abrufen
  *   node-remove — Node löschen
@@ -19,6 +22,8 @@ const WS_PORT = process.env.PORT || 8080;
 const DATA_FILE = path.join(__dirname, 'data.json');
 const SAVE_DELAY_MS = 2000;
 const MAX_ROOM_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 Tage
+const MAX_EVENT_CHARS = 512 * 1024;   // Obergrenze pro Live-Event (Base64-Zeichen)
+const PING_INTERVAL_MS = 25000;       // hält Proxy-Verbindungen offen, erkennt tote Clients
 
 // ─── Persistenz ─────────────────────────────────────────────────────────────
 
@@ -104,6 +109,8 @@ function broadcastPeerCount(room) {
 const wss = new WebSocket.Server({ port: WS_PORT });
 
 wss.on('connection', (ws) => {
+  ws.isAlive = true;
+  ws.on('pong', () => { ws.isAlive = true; });
   let currentRoom = null;
   let currentRoomKey = null;
 
@@ -123,8 +130,26 @@ wss.on('connection', (ws) => {
         currentRoom = getRoom(currentRoomKey);
         currentRoom.clients.add(ws);
 
-        ws.send(JSON.stringify({ type: 'sync', notebooks: currentRoom.nodes }));
+        if (msg.nosync) {
+          // Live-Kanal: kein Snapshot-Dump, nur Bestätigung
+          ws.send(JSON.stringify({ type: 'joined', live: true }));
+        } else {
+          ws.send(JSON.stringify({ type: 'sync', notebooks: currentRoom.nodes, live: true }));
+        }
         broadcastPeerCount(currentRoom);
+        break;
+      }
+
+      // Live-Weiterleitung: verschlüsseltes Event an alle anderen im Room.
+      // Kein Speichern, kein Einblick — der Server sieht nur Ciphertext.
+      case 'event': {
+        if (!currentRoom || typeof msg.data !== 'string') return;
+        if (msg.data.length > MAX_EVENT_CHARS) return;
+        currentRoom.lastAccess = Date.now();
+        const out = JSON.stringify({ type: 'event', data: msg.data });
+        for (const c of currentRoom.clients) {
+          if (c !== ws && c.readyState === WebSocket.OPEN) c.send(out);
+        }
         break;
       }
 
@@ -168,6 +193,15 @@ wss.on('connection', (ws) => {
     if (currentRoom) currentRoom.clients.delete(ws);
   });
 });
+
+// Keepalive: tote Verbindungen beenden, lebende durch Proxies hindurch offen halten
+setInterval(() => {
+  for (const c of wss.clients) {
+    if (c.isAlive === false) { try { c.terminate(); } catch {} continue; }
+    c.isAlive = false;
+    try { c.ping(); } catch {}
+  }
+}, PING_INTERVAL_MS);
 
 console.log(`[Relay] WebSocket Server läuft auf Port ${WS_PORT}`);
 

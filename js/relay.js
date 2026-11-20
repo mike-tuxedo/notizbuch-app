@@ -1,7 +1,7 @@
 // relay.js — WebSocket Relay Client
-// Speichert verschlüsselte Snapshots als Backup für Offline-Peers.
+// Speichert verschlüsselte Snapshots als Backup für Offline-Peers
+// und leitet Live-Events an alle anderen Clients im Room weiter.
 // Server sieht nur Ciphertext (Base64-encoded Uint8Array).
-// Nutzt den bestehenden relay/server.js mit node-put/node-get/node-remove.
 
 let ws = null;
 let _pendingGets = new Map();
@@ -23,6 +23,19 @@ function fromBase64(b64) {
   return arr;
 }
 
+// ─── Relay URL ───────────────────────────────────────────────────────────────
+
+/**
+ * WebSocket-URL für Relay-Verbindungen.
+ * Lokal: wss://${location.host}, sonst Produktions-Relay.
+ * @returns {string}
+ */
+function relayUrl() {
+  const isLocal = typeof location !== 'undefined' &&
+    (location.hostname === 'localhost' || location.hostname === '127.0.0.1');
+  return isLocal ? `wss://${location.host}` : 'wss://notes.mike.fm-media-staging.at';
+}
+
 // ─── Init ────────────────────────────────────────────────────────────────────
 
 /**
@@ -38,8 +51,7 @@ export function initRelay(roomKey) {
       try { ws.close(); } catch {}
       ws = null;
     }
-    const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
-    const wsUrl = isLocal ? `wss://${location.host}` : 'wss://notes.mike.fm-media-staging.at';
+    const wsUrl = relayUrl();
     try {
       ws = new WebSocket(wsUrl);
     } catch {
@@ -137,8 +149,7 @@ export async function reconnect(roomKey) {
  */
 export function fetchRoom(roomKey) {
   return new Promise(resolve => {
-    const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
-    const wsUrl = isLocal ? `wss://${location.host}` : 'wss://notes.mike.fm-media-staging.at';
+    const wsUrl = relayUrl();
     let tempWs;
     try { tempWs = new WebSocket(wsUrl); } catch { resolve(null); return; }
 
@@ -177,8 +188,7 @@ export function fetchRoom(roomKey) {
 export function pushBlobsToRoom(roomKey, blobs) {
   return new Promise(resolve => {
     if (!blobs.length) { resolve(); return; }
-    const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
-    const wsUrl = isLocal ? `wss://${location.host}` : 'wss://notes.mike.fm-media-staging.at';
+    const wsUrl = relayUrl();
     let tempWs;
     try { tempWs = new WebSocket(wsUrl); } catch { resolve(); return; }
 
@@ -212,4 +222,194 @@ export function pushBlobsToRoom(roomKey, blobs) {
  */
 export function isRelayConnected() {
   return ws?.readyState === WebSocket.OPEN;
+}
+
+// ─── Live Channels ───────────────────────────────────────────────────────────
+
+const _liveChannels = new Map();
+const _BACKOFF_MS = [1000, 2000, 5000, 10000, 30000];
+
+function _setChannelState(roomKey, state) {
+  const ch = _liveChannels.get(roomKey);
+  if (ch) ch.state = state;
+}
+
+function _nextBackoff(index) {
+  return _BACKOFF_MS[Math.min(index, _BACKOFF_MS.length - 1)];
+}
+
+function _clearReconnect(roomKey) {
+  const ch = _liveChannels.get(roomKey);
+  if (ch?.reconnectTimer) {
+    clearTimeout(ch.reconnectTimer);
+    ch.reconnectTimer = null;
+  }
+}
+
+function _openSocket(roomKey, ch) {
+  if (ch.closing) return;
+  _clearReconnect(roomKey);
+  if (ch.ws) {
+    try { ch.ws.close(); } catch {}
+  }
+  const wsUrl = relayUrl();
+  let socket;
+  try {
+    socket = new WebSocket(wsUrl);
+  } catch (e) {
+    console.warn('[Relay Live] WebSocket nicht verfügbar für', roomKey.slice(0, 8));
+    _scheduleReconnect(roomKey, ch);
+    return;
+  }
+  ch.ws = socket;
+  _setChannelState(roomKey, 'verbindet');
+
+  const joinTimeout = setTimeout(() => {
+    if (socket.readyState === WebSocket.OPEN) socket.close();
+  }, 5000);
+
+  socket.onopen = () => {
+    socket.send(JSON.stringify({ type: 'join', room: roomKey, nosync: true }));
+  };
+
+  socket.onmessage = (event) => {
+    let msg;
+    try { msg = JSON.parse(event.data); } catch { return; }
+
+    if (msg.type === 'joined') {
+      clearTimeout(joinTimeout);
+      ch.backoffIndex = 0;
+      ch.liveSupported = msg.live === true;
+      _setChannelState(roomKey, ch.liveSupported ? 'verbunden' : 'nicht unterstützt');
+      console.log('[Relay Live] Verbunden', roomKey.slice(0, 8), ch.liveSupported ? '(live)' : '(alter Server)');
+      return;
+    }
+
+    if (msg.type === 'sync') {
+      // Alter Server: kennt nosync nicht und schickt stattdessen sync.
+      clearTimeout(joinTimeout);
+      ch.liveSupported = false;
+      _setChannelState(roomKey, 'nicht unterstützt');
+      console.log('[Relay Live] Alter Server erkannt', roomKey.slice(0, 8));
+      return;
+    }
+
+    if (msg.type === 'event' && typeof msg.data === 'string') {
+      try {
+        const bytes = fromBase64(msg.data);
+        if (ch.onEvent) ch.onEvent(bytes, roomKey);
+      } catch {}
+    }
+  };
+
+  socket.onclose = () => {
+    clearTimeout(joinTimeout);
+    _setChannelState(roomKey, 'getrennt');
+    _scheduleReconnect(roomKey, ch);
+  };
+
+  socket.onerror = () => {
+    clearTimeout(joinTimeout);
+    _setChannelState(roomKey, 'getrennt');
+    _scheduleReconnect(roomKey, ch);
+  };
+}
+
+function _scheduleReconnect(roomKey, ch) {
+  if (ch.closing || ch.reconnectTimer) return;
+  const delay = _nextBackoff(ch.backoffIndex);
+  ch.reconnectTimer = setTimeout(() => {
+    ch.reconnectTimer = null;
+    ch.backoffIndex = Math.min(ch.backoffIndex + 1, _BACKOFF_MS.length - 1);
+    _openSocket(roomKey, ch);
+  }, delay);
+}
+
+/**
+ * Dauerhaften Live-Kanal für einen Room öffnen.
+ * Mehrfachaufruf für denselben Room aktualisiert nur den Callback.
+ * @param {string} roomKey
+ * @param {(data: Uint8Array, roomKey: string) => void} onEvent
+ */
+export function openLiveChannel(roomKey, onEvent) {
+  const existing = _liveChannels.get(roomKey);
+  if (existing) {
+    existing.onEvent = onEvent;
+    return;
+  }
+  const ch = {
+    ws: null,
+    state: 'verbindet',
+    onEvent,
+    backoffIndex: 0,
+    reconnectTimer: null,
+    liveSupported: true,
+    closing: false
+  };
+  _liveChannels.set(roomKey, ch);
+  _openSocket(roomKey, ch);
+}
+
+/**
+ * Live-Kanal für einen Room schließen (kein Reconnect mehr).
+ * @param {string} roomKey
+ */
+export function closeLiveChannel(roomKey) {
+  const ch = _liveChannels.get(roomKey);
+  if (!ch) return;
+  ch.closing = true;
+  _clearReconnect(roomKey);
+  if (ch.ws) {
+    try { ch.ws.close(); } catch {}
+  }
+  _liveChannels.delete(roomKey);
+}
+
+/** Alle Live-Kanäle schließen. */
+export function closeAllLiveChannels() {
+  for (const roomKey of [..._liveChannels.keys()]) {
+    closeLiveChannel(roomKey);
+  }
+}
+
+/**
+ * Event über den Live-Kanal eines Rooms senden.
+ * @param {string} roomKey
+ * @param {Uint8Array} data
+ * @returns {boolean} true wenn gesendet, false wenn nicht möglich
+ */
+export function sendLiveEvent(roomKey, data) {
+  const ch = _liveChannels.get(roomKey);
+  if (!ch || !ch.liveSupported || ch.state !== 'verbunden') return false;
+  if (!ch.ws || ch.ws.readyState !== WebSocket.OPEN) return false;
+  const b64 = toBase64(data);
+  if (b64.length > 500 * 1024) return false;
+  try {
+    ch.ws.send(JSON.stringify({ type: 'event', data: b64 }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Alle nicht verbundenen Live-Kanäle sofort neu verbinden. */
+export function reconnectLiveChannels() {
+  for (const [roomKey, ch] of _liveChannels) {
+    if (ch.closing) continue;
+    if (ch.state === 'verbunden') continue;
+    ch.backoffIndex = 0;
+    _clearReconnect(roomKey);
+    _openSocket(roomKey, ch);
+  }
+}
+
+/**
+ * Status aller Live-Kanäle abfragen.
+ * @returns {Array<{roomKey: string, state: string}>}
+ */
+export function liveChannelStatus() {
+  return [..._liveChannels.entries()].map(([roomKey, ch]) => ({
+    roomKey,
+    state: ch.state
+  }));
 }

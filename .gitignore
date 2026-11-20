@@ -13,3 +13,4 @@ dev-server/data.json
 .mcp.json
 .playwright-mcp/
 app-current-*.png
+backup-relay/data.json

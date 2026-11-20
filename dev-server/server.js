@@ -266,10 +266,25 @@ wss.on('connection', (ws, req) => {
         if (p) p.room = currentRoomKey;
 
         const nodeCount = Object.keys(currentRoom.nodes).length;
-        ws.send(JSON.stringify({ type: 'sync', notebooks: currentRoom.nodes }));
+        if (msg.nosync) {
+          ws.send(JSON.stringify({ type: 'joined', live: true }));
+        } else {
+          ws.send(JSON.stringify({ type: 'sync', notebooks: currentRoom.nodes, live: true }));
+        }
         logEvent(currentRoomKey, peerId, 'join', `${nodeCount} nodes im Room`);
         broadcastPeerCount(currentRoom);
         broadcastDashboard({ type: 'status', status: getStatus() });
+        break;
+      }
+
+      // Live-Weiterleitung (identisch zu backup-relay/server.js): Ciphertext an alle anderen, kein Speichern.
+      // Mit RELAY_NO_LIVE=1 abgeschaltet, um einen alten Server zu simulieren.
+      case 'event': {
+        if (process.env.RELAY_NO_LIVE) return;
+        if (!currentRoom || typeof msg.data !== 'string') return;
+        if (msg.data.length > 512 * 1024) return;
+        currentRoom.lastAccess = Date.now();
+        broadcast(currentRoom, { type: 'event', data: msg.data }, ws);
         break;
       }
 

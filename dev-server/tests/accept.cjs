@@ -11,6 +11,7 @@ let fails = 0;
   const mk = async () => {
     const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 }, ignoreHTTPSErrors: true });
     await ctx.addInitScript(() => localStorage.setItem('notizbuch:debugOverlay', '1'));
+    if (process.env.NO_P2P) await ctx.addInitScript(() => { RTCPeerConnection.prototype.setRemoteDescription = () => Promise.reject(new Error('WebRTC blockiert (Test)')); });
     const page = await ctx.newPage(); const logs = [];
     page.on('console', m => { const t = m.text(); if (!/WebSocket connection|willReadFrequently|Password field/.test(t)) logs.push(`${m.type()}: ${t.slice(0, 220)}`); });
     page.on('pageerror', e => logs.push('PAGEERROR ' + String(e).slice(0, 300)));
@@ -33,8 +34,9 @@ let fails = 0;
     for (let i = 0; i < n; i++) { await B.page.evaluate(i => document.querySelectorAll('#notebook-list > *')[i].click(), i); await sleep(1500); if (/shared: [^;]*\*/.test(await ov(B.page))) break; }
   }
   let t0 = Date.now(), joined = false;
-  while (Date.now() - t0 < 60000) { const [a, b] = [await ov(A.page), await ov(B.page)]; if (/↳[^;]*connected/.test(a) && /↳[^;]*connected/.test(b)) { joined = true; break; } await sleep(1000); }
-  console.log(`[${MODE}] P2P verbunden:`, joined);
+  while (!process.env.NO_P2P && Date.now() - t0 < 60000) { const [a, b] = [await ov(A.page), await ov(B.page)]; if (/↳[^;]*connected/.test(a) && /↳[^;]*connected/.test(b)) { joined = true; break; } await sleep(1000); }
+  if (process.env.NO_P2P) { await sleep(8000); const [a, b] = [await ov(A.page), await ov(B.page)]; const p2p = /↳[^;]*connected/.test(a) || /↳[^;]*connected/.test(b); console.log(`[${MODE}] OHNE P2P (nur Relay) — P2P wirklich aus:`, !p2p); if (p2p) fails++; }
+  else console.log(`[${MODE}] P2P verbunden:`, joined);
   const cnt = p => p.evaluate(() => { const m = (document.getElementById('console')?.innerText || '').match(/striche: (\d+)/); return m ? Number(m[1]) : -1; });
   let y = 120;
   const draw = async p => { y += 60; const box = await p.evaluate(() => { const c = document.querySelectorAll('canvas')[2].getBoundingClientRect(); return { x: c.x, y: c.y }; });
@@ -54,7 +56,7 @@ let fails = 0;
   if (MODE === 'shared') { const k = await B.page.evaluate(() => document.querySelectorAll('#notebook-list > *').length); for (let i = 0; i < k; i++) { await B.page.evaluate(i => document.querySelectorAll('#notebook-list > *')[i].click(), i); await sleep(1500); if (/shared: [^;]*\*/.test(await ov(B.page))) break; } }
   await check('nach Reload von B', 4);
   await A.page.reload(); await ready(A.page).catch(() => {}); await sleep(8000); await check('nach Reload von A', 4);
-  for (const [nm, X] of [['A', A], ['B', B]]) { const bad = X.logs.filter(l => /PAGEERROR|^error|ReferenceError|TypeError|fehlgeschlagen/.test(l) && !/User-Initiated Abort/.test(l)); if (bad.length) { fails++; console.log(`FAIL Fehler in Konsole ${nm}:\n  ` + bad.slice(0, 8).join('\n  ')); } }
+  for (const [nm, X] of [['A', A], ['B', B]]) { const bad = X.logs.filter(l => /PAGEERROR|^error|ReferenceError|TypeError|fehlgeschlagen/.test(l) && !/User-Initiated Abort|WebRTC blockiert/.test(l)); if (bad.length) { fails++; console.log(`FAIL Fehler in Konsole ${nm}:\n  ` + bad.slice(0, 8).join('\n  ')); } }
   if (process.env.LOGS) { console.log('--- A\n' + A.logs.slice(-30).join('\n')); console.log('--- B\n' + B.logs.slice(-30).join('\n')); }
   await browser.close();
   console.log(fails ? `ERGEBNIS: ${fails} FEHLER` : 'ERGEBNIS: ALLES OK'); process.exit(fails ? 1 : 0);
