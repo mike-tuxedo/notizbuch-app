@@ -14,7 +14,7 @@ import { generateKey, exportKey, importKey, encrypt, decrypt } from './encryptio
 import { exportAppBundle, importAppBundle } from './share.js';
 import {
   initRelay, putBlob as relayPut, deleteBlob as relayDelete, isRelayConnected, fetchRoom, pushBlobsToRoom,
-  setRelayUrl, getCustomRelayUrl, defaultRelayUrl, isValidRelayUrl,
+  setRelayUrl, getCustomRelayUrl, defaultRelayUrl, isValidRelayUrl, relayUrlProblem,
   openLiveChannel, closeLiveChannel, closeAllLiveChannels, sendLiveEvent, reconnectLiveChannels, liveChannelStatus
 } from './relay.js';
 
@@ -38,7 +38,7 @@ const PEN_SIZES = [
 ];
 
 const BACKGROUNDS = ['grid', 'lined', 'blank'];
-const APP_VERSION = '2026-11-20-redesign-v42';
+const APP_VERSION = '2026-11-20-redesign-v43';
 const PRESENCE_INTERVAL_MS = 5000;
 const PRESENCE_TIMEOUT_MS = 15000;
 
@@ -162,6 +162,30 @@ function isPageDeleted(page = currentPage()) {
   return !!(page?.deletedAt);
 }
 
+/**
+ * Vorgemerktes „Seite leeren“ / „Seite löschen“ (Hinweis mit „Rückgängig“ läuft noch).
+ * Wirkt nur in der Anzeige dieses Geräts: page.clearedAt / page.deletedAt bleiben bis zum
+ * Festschreiben unverändert, deshalb geht in der Frist nichts davon in Speicher oder Sync.
+ * @type {{kind: 'clear'|'delete', notebookId: string, pageId: string, at: number, toast: {dismiss: Function}|null}|null}
+ */
+let _pendingPageOp = null;
+
+/** Zeitpunkt eines vorgemerkten Leerens dieser Seite (0 = keins). */
+function pendingClearAt(page) {
+  const op = _pendingPageOp;
+  return op && op.kind === 'clear' && page && op.pageId === page.id ? op.at : 0;
+}
+
+function isPendingDelete(page) {
+  const op = _pendingPageOp;
+  return !!(op && op.kind === 'delete' && page && op.pageId === page.id);
+}
+
+/** Für die Bedienung: gelöscht oder zum Löschen vorgemerkt. Sync-Eingänge prüfen weiter isPageDeleted(). */
+function isPageGone(page = currentPage()) {
+  return isPageDeleted(page) || isPendingDelete(page);
+}
+
 function strokeCreatedAt(stroke) {
   if (Number.isFinite(stroke?.createdAt)) return stroke.createdAt;
   const ts = Number(stroke?.id);
@@ -208,7 +232,8 @@ function newPageEvent(type, payload = {}) {
 
 function materializePage(page) {
   ensurePageEvents(page);
-  const clearedAt = page?.clearedAt || 0;
+  // Ein vorgemerktes Leeren blendet lokal schon aus, steht aber noch nicht in page.clearedAt
+  const clearedAt = Math.max(page?.clearedAt || 0, pendingClearAt(page));
   const undoneStrokeIds = new Set();
   const visible = [];
   const seenStrokeIds = new Set();
@@ -1012,7 +1037,7 @@ function redrawBackground() {
 /** Hintergrund der aktuellen Seite ändern. */
 async function setBackground(bg) {
   const page = currentPage();
-  if (!page || page.background === bg || isPageDeleted(page)) return;
+  if (!page || page.background === bg || isPageGone(page)) return;
   page.background = bg;
   redrawBackground();
   await saveAppMeta();
@@ -1259,7 +1284,7 @@ function scheduleContentBounds(delay = 400) {
 function updateContentHint() {
   let dir = null;
   const b = _contentBounds;
-  if (b && bgCanvas && !isPageDeleted()) {
+  if (b && bgCanvas && !isPageGone()) {
     const w = bgCanvas.width / DPR;
     const h = bgCanvas.height / DPR;
     const s = state.viewScale;
@@ -1294,6 +1319,7 @@ function updateContentHint() {
 async function goToPage(index) {
   const nb = currentNotebook();
   if (!nb || index < 0 || index >= nb.pages.length) return;
+  await commitPendingPageOp();
   flushSave();
   state.currentPageIds[state.currentNotebookId] = nb.pages[index].id;
   const page = currentPage();
@@ -1336,22 +1362,138 @@ async function prevPage() {
   if (idx > 0) await goToPage(idx - 1);
 }
 
-/** Aktuelle Seite löschen (min. 1 Seite muss bleiben). */
-async function deletePage() {
+// ─── Seite leeren / löschen mit „Rückgängig“ ────────────────────────────────
+//
+// clearedAt und deletedAt werden zwischen Geräten per Maximum gemischt
+// (applyPageMeta, mergeSharedNotebookData). Ein einmal verteilter Wert lässt sich
+// deshalb nicht zurücknehmen. Darum wirkt Leeren/Löschen zuerst nur lokal und wird
+// erst festgeschrieben (gespeichert + verteilt), wenn der Hinweis ohne „Rückgängig“
+// abgelaufen ist — oder früher: beim Seiten-/Notizbuchwechsel, beim Verstecken der
+// Seite und beim nächsten eigenen Strich.
+
+const PENDING_OP_KEY = 'notizbuch:pendingPageOp';
+
+function pendingOpPage(op) {
+  const nb = state.notebooks.find(n => n.id === op.notebookId);
+  return nb?.pages.find(p => p.id === op.pageId) || null;
+}
+
+/** Anzeige nach Vormerken/Zurücknehmen/Festschreiben auffrischen (nur wenn die Seite offen ist). */
+function refreshPendingOpView(op, full = false) {
+  const page = pendingOpPage(op);
+  if (!page) return;
+  refreshPageMaterializedState(page);
+  if (op.notebookId !== state.currentNotebookId || page.id !== currentPage()?.id) return;
+  if (full) { clearAllCanvases(); redrawBackground(); }
+  redrawStrokes();
+  renderUI();
+  updateSyncDebug();
+}
+
+/**
+ * Aktuelle Seite leeren oder löschen — sofort sichtbar, mit „Rückgängig“ im Hinweis.
+ * Löschen: mindestens eine Seite muss bleiben.
+ * @param {'clear'|'delete'} kind
+ */
+function startPendingPageOp(kind) {
   const nb = currentNotebook();
   const page = currentPage();
-  if (!nb || !page) return;
-  if (!page.deletedAt && nb.pages.filter(p => !p.deletedAt).length <= 1) return;
-  flushSave();
-  page.deletedAt = Date.now();
-  await saveAppMeta();
-  sendNotebookMeta(state.currentNotebookId, [page.id]);
-  if (page.id === currentPage()?.id) {
-    clearAllCanvases();
-    redrawBackground();
-    redrawStrokes();
+  if (!nb || !page || isPageGone(page)) return;
+  if (kind === 'delete' && nb.pages.filter(p => !isPageGone(p)).length <= 1) return;
+  commitPendingPageOp();
+  if (kind === 'delete') flushSave();
+  const op = { kind, notebookId: nb.id, pageId: page.id, at: Date.now(), toast: null };
+  _pendingPageOp = op;
+  // Merkzettel für den Fall, dass die App in der Frist geschlossen wird (siehe recoverPendingPageOp)
+  try { localStorage.setItem(PENDING_OP_KEY, JSON.stringify({ kind, notebookId: op.notebookId, pageId: op.pageId, at: op.at })); } catch {}
+  refreshPendingOpView(op, kind === 'delete');
+  op.toast = showToast(kind === 'clear' ? 'Seite geleert' : `Seite ${currentPageIndex() + 1} gelöscht`, {
+    key: 'page-op',
+    action: { label: 'Rückgängig', onClick: () => revertPendingPageOp(op) },
+    onExpire: () => commitPendingPageOp(op)
+  });
+}
+
+function forgetPendingOpNote(op) {
+  try {
+    const note = JSON.parse(localStorage.getItem(PENDING_OP_KEY) || 'null');
+    if (!note || (note.pageId === op.pageId && note.at === op.at)) localStorage.removeItem(PENDING_OP_KEY);
+  } catch {
+    try { localStorage.removeItem(PENDING_OP_KEY); } catch {}
   }
-  renderUI();
+}
+
+/** „Rückgängig“ innerhalb der Frist: alter Zustand, ohne Speichern und ohne Sync-Nachricht. */
+function revertPendingPageOp(op = _pendingPageOp) {
+  if (!op || _pendingPageOp !== op) return false;
+  _pendingPageOp = null;
+  forgetPendingOpNote(op);
+  op.toast?.dismiss();
+  refreshPendingOpView(op, op.kind === 'delete');
+  showToast(op.kind === 'clear' ? 'Inhalt wiederhergestellt' : 'Seite wiederhergestellt', { key: 'page-op' });
+  return true;
+}
+
+/**
+ * Vorgemerktes Leeren/Löschen festschreiben: Wert in die Seite übernehmen, Meta speichern, verteilen.
+ * Der Wert steht synchron in der Seite; Speichern und Senden folgen asynchron.
+ */
+async function commitPendingPageOp(op = _pendingPageOp, opts = {}) {
+  if (!op || _pendingPageOp !== op) return;
+  _pendingPageOp = null;
+  op.toast?.dismiss();
+  const page = pendingOpPage(op);
+  if (!page) { forgetPendingOpNote(op); return; }
+  if (op.kind === 'clear') {
+    page.clearedAt = Math.max(page.clearedAt || 0, op.at);
+    // Nach dem Leeren gibt es nichts mehr zu wiederholen
+    clearRedoStack(op.notebookId, page.id);
+    refreshPageMaterializedState(page);
+  } else {
+    page.deletedAt = Math.max(page.deletedAt || 0, op.at);
+  }
+  updateRedoButton();
+  try {
+    await saveAppMeta();
+    // Beim Entladen der Seite bleibt der Merkzettel liegen: Speichern/Senden kann dann
+    // abreißen, der nächste Start holt es nach (recoverPendingPageOp, wirkt nur als Maximum).
+    if (!opts.keepNote) forgetPendingOpNote(op);
+  } catch (e) {
+    console.warn('[App] Leeren/Löschen konnte nicht gespeichert werden:', e);
+  }
+  if (op.kind === 'clear' && op.notebookId === state.currentNotebookId && page.id === currentPage()?.id) saveCurrentPage();
+  sendNotebookMeta(op.notebookId, [page.id]);
+}
+
+/**
+ * Beim Start: Wurde die App geschlossen, während ein Hinweis mit „Rückgängig“ noch lief,
+ * gilt das Leeren/Löschen als gewollt und wird jetzt nachgeholt.
+ */
+async function recoverPendingPageOp() {
+  let note = null;
+  try { note = JSON.parse(localStorage.getItem(PENDING_OP_KEY) || 'null'); } catch {}
+  if (!note) return;
+  const at = Number(note.at) || 0;
+  const page = at && (note.kind === 'clear' || note.kind === 'delete') ? pendingOpPage(note) : null;
+  if (page) {
+    if (note.kind === 'clear') page.clearedAt = Math.max(page.clearedAt || 0, at);
+    else page.deletedAt = Math.max(page.deletedAt || 0, at);
+    await saveAppMeta();
+    announceRecoveredPageOp(note.notebookId, page.id);
+  }
+  try { localStorage.removeItem(PENDING_OP_KEY); } catch {}
+}
+
+/** Nachgeholtes Leeren/Löschen verteilen, sobald der Live-Kanal der eigenen Geräte steht. */
+function announceRecoveredPageOp(notebookId, pageId, tries = 60) {
+  const up = liveChannelStatus().some(ch => ch.roomKey === state.masterKeyHash && ch.state === 'verbunden');
+  if (up || tries <= 0) { sendNotebookMeta(notebookId, [pageId]); return; }
+  setTimeout(() => announceRecoveredPageOp(notebookId, pageId, tries - 1), 500);
+}
+
+/** Aktuelle Seite löschen (min. 1 Seite muss bleiben) — mit „Rückgängig“ im Hinweis. */
+function deletePage() {
+  startPendingPageOp('delete');
 }
 
 async function restorePage() {
@@ -1372,6 +1514,7 @@ async function restorePage() {
  */
 async function selectNotebook(nbId) {
   if (nbId === state.currentNotebookId) return;
+  await commitPendingPageOp();
   flushSave();
   state.currentNotebookId = nbId;
   ensureCurrentPageId(nbId);
@@ -1408,6 +1551,7 @@ async function createNotebook() {
  */
 async function deleteNotebook(nbId) {
   if (state.notebooks.length <= 1) return;
+  await commitPendingPageOp();
   // Relay: alle Pages des Notebooks löschen
   const nb = state.notebooks.find(n => n.id === nbId);
   if (nb) nb.pages.forEach(p => relayDelete(`p:${nbId}/${p.id}`));
@@ -1487,12 +1631,12 @@ function updateRedoButton() {
   const btn = document.getElementById('btn-redo');
   if (!btn) return;
   const page = currentPage();
-  btn.disabled = !page || isPageDeleted(page) || currentRedoStack().length === 0;
+  btn.disabled = !page || isPageGone(page) || !!pendingClearAt(page) || currentRedoStack().length === 0;
 }
 
 async function undo() {
   const page = currentPage();
-  if (!page || isPageDeleted(page)) return;
+  if (!page || isPageGone(page)) return;
   refreshPageMaterializedState(page);
   const lastStroke = page.strokes[page.strokes.length - 1];
   if (!lastStroke) return;
@@ -1517,10 +1661,10 @@ async function undo() {
 /** Letztes eigenes Undo der aktuellen Seite aufheben (Redo-Event anhängen). */
 async function redo() {
   const page = currentPage();
-  if (!page || isPageDeleted(page)) return;
+  if (!page || isPageGone(page)) return;
   const notebookId = state.currentNotebookId;
   const stack = _redoStacks.get(redoStackKey(notebookId, page.id));
-  if (!stack || stack.length === 0) return;
+  if (!stack || stack.length === 0 || pendingClearAt(page)) return;
   const targetEventId = stack.pop();
   updateRedoButton();
   const pageEvent = newPageEvent('redo', { targetEventId });
@@ -1535,17 +1679,9 @@ async function redo() {
   p2pSendForNotebook('redo', { eventId: newEventId(), notebookId, pageId: page.id, pageEvent, deviceId: state.deviceId, seq: pageEvent.seq });
 }
 
-async function clearPage() {
-  const page = currentPage();
-  if (!page || isPageDeleted(page)) return;
-  page.clearedAt = Date.now();
-  // Nach dem Leeren gibt es nichts mehr zu wiederholen
-  clearRedoStack(state.currentNotebookId, page.id);
-  refreshPageMaterializedState(page);
-  redrawStrokes();
-  await saveAppMeta();
-  saveCurrentPage();
-  sendNotebookMeta(state.currentNotebookId, [page.id]);
+/** Aktuelle Seite leeren — mit „Rückgängig“ im Hinweis. Der Redo-Stapel wird beim Festschreiben geleert. */
+function clearPage() {
+  startPendingPageOp('clear');
 }
 
 // ─── Tool Selection ─────────────────────────────────────────────────────────
@@ -1782,7 +1918,7 @@ function setupDialogs() {
 }
 
 /**
- * Rückfrage als Dialog (statt confirm()).
+ * Rückfrage als Dialog — nur vor Unwiderruflichem.
  * @param {{title: string, text: string, okLabel?: string}} opts
  * @returns {Promise<boolean>}
  */
@@ -1796,6 +1932,54 @@ function confirmDialog({ title, text, okLabel = 'Löschen' }) {
     okBtn.onclick = () => { result = true; closeDialog('confirm-modal'); };
     document.getElementById('confirm-cancel').onclick = () => closeDialog('confirm-modal');
     openDialog('confirm-modal', { focus: '#confirm-cancel', onClose: () => resolve(result) });
+  });
+}
+
+/**
+ * Eingabe als Dialog (z. B. Passphrase). „prüfen“ darf eine Fehlermeldung liefern —
+ * dann bleibt der Dialog offen und zeigt sie am Feld.
+ * @param {{title: string, text?: string, label: string, type?: string, okLabel?: string,
+ *          pruefen?: (wert: string) => (string|void|Promise<string|void>)}} opts
+ * @returns {Promise<string|null>} Eingabe oder null bei Abbruch
+ */
+function promptDialog({ title, text = '', label, type = 'text', okLabel = 'OK', pruefen = null }) {
+  return new Promise(resolve => {
+    let result = null;
+    const form = document.getElementById('prompt-form');
+    const input = document.getElementById('prompt-input');
+    const err = document.getElementById('prompt-error');
+    const okBtn = document.getElementById('prompt-ok');
+    const setError = (msg) => {
+      err.textContent = msg || '';
+      input.classList.toggle('error', !!msg);
+      input.setAttribute('aria-invalid', String(!!msg));
+    };
+    document.getElementById('prompt-title').textContent = title;
+    const textEl = document.getElementById('prompt-text');
+    textEl.textContent = text;
+    textEl.hidden = !text;
+    document.getElementById('prompt-label').textContent = label;
+    input.type = type;
+    input.value = '';
+    input.autocomplete = type === 'password' ? 'current-password' : 'off';
+    okBtn.textContent = okLabel;
+    setError('');
+    input.oninput = () => setError('');
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      if (okBtn.disabled) return;
+      const value = input.value;
+      if (!value.trim()) { setError('Bitte etwas eingeben.'); input.focus(); return; }
+      okBtn.disabled = true;
+      let problem = '';
+      try { problem = (await pruefen?.(value)) || ''; } catch (e2) { problem = e2?.message || 'Das hat nicht geklappt.'; }
+      okBtn.disabled = false;
+      if (problem) { setError(problem); input.focus(); input.select(); return; }
+      result = value;
+      closeDialog('prompt-modal');
+    };
+    document.getElementById('prompt-cancel').onclick = () => closeDialog('prompt-modal');
+    openDialog('prompt-modal', { focus: '#prompt-input', onClose: () => { input.value = ''; resolve(result); } });
   });
 }
 
@@ -1865,6 +2049,104 @@ function svgIcon(name) {
   use.setAttribute('href', '#i-' + name);
   svg.appendChild(use);
   return svg;
+}
+
+// ─── Hinweise (Toasts) ──────────────────────────────────────────────────────
+
+const TOAST_MAX = 3;
+
+/**
+ * Kurzen Hinweis unten einblenden — für Erfolgs- und Fehlermeldungen.
+ * Mehrere Hinweise stapeln sich (höchstens 3, der älteste weicht); ein Hinweis mit
+ * gleichem „key“ ersetzt seinen Vorgänger. Verschwindet von selbst; solange Maus oder
+ * Tastaturfokus darauf liegen, bleibt er stehen. Esc im Hinweis schließt ihn.
+ * @param {string} text
+ * @param {{action?: {label: string, onClick: Function}, dauer?: number, key?: string,
+ *          fehler?: boolean, onExpire?: Function}} [opts]
+ *   dauer in ms (Standard 2500, mit Aktion 6000, Fehler 5000);
+ *   onExpire läuft, wenn der Hinweis ohne die Aktion verschwindet.
+ * @returns {{dismiss: Function}}
+ */
+function showToast(text, opts = {}) {
+  const host = document.getElementById('toasts');
+  if (!host) return { dismiss() {} };
+  const { action = null, key = null, fehler = false, onExpire = null } = opts;
+  const dauer = opts.dauer ?? (action ? 6000 : (fehler ? 5000 : 2500));
+  if (key) [...host.children].forEach(t => { if (t.dataset.key === key) t._close?.('replaced'); });
+  while (host.childElementCount >= TOAST_MAX) {
+    const oldest = host.firstElementChild;
+    if (oldest._close) oldest._close('replaced'); else oldest.remove();
+  }
+
+  const el = document.createElement('div');
+  el.className = 'toast' + (fehler ? ' error' : '');
+  if (key) el.dataset.key = key;
+  const label = document.createElement('span');
+  label.textContent = String(text ?? '');
+  el.appendChild(label);
+
+  let timer = null, remaining = dauer, startedAt = 0, closed = false, returnFocus = null;
+  const run = () => {
+    if (closed || timer || !(remaining > 0)) return;
+    startedAt = Date.now();
+    timer = setTimeout(() => close('expired'), remaining);
+  };
+  const pause = () => {
+    if (!timer) return;
+    clearTimeout(timer);
+    timer = null;
+    remaining = Math.max(1500, remaining - (Date.now() - startedAt));
+  };
+  const close = (reason) => {
+    if (closed) return;
+    closed = true;
+    clearTimeout(timer);
+    const hadFocus = el.contains(document.activeElement);
+    el.remove();
+    if (hadFocus && !topDialog()) restoreFocus(returnFocus);
+    try {
+      if (reason === 'action') action?.onClick?.();
+      else onExpire?.(reason);
+    } catch (e) { console.warn('[UI] Hinweis:', e); }
+  };
+  el._close = close;
+
+  if (action) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn';
+    btn.textContent = action.label;
+    btn.addEventListener('click', () => close('action'));
+    el.appendChild(btn);
+  }
+  el.addEventListener('mouseenter', pause);
+  el.addEventListener('mouseleave', () => { if (!el.contains(document.activeElement)) run(); });
+  el.addEventListener('focusin', (e) => { if (!el.contains(e.relatedTarget)) returnFocus = e.relatedTarget; pause(); });
+  el.addEventListener('focusout', (e) => { if (!el.contains(e.relatedTarget)) run(); });
+  el.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    e.preventDefault();
+    e.stopPropagation();
+    close('dismissed');
+  });
+
+  host.appendChild(el);
+  run();
+  return { dismiss: () => close('dismissed') };
+}
+
+/** Hinweis, der ein Neuladen übersteht (z. B. „Sicherung importiert“). */
+function showToastAfterReload(text) {
+  try { sessionStorage.setItem('notizbuch:hinweis', text); } catch {}
+}
+
+function showStoredToast() {
+  try {
+    const text = sessionStorage.getItem('notizbuch:hinweis');
+    if (!text) return;
+    sessionStorage.removeItem('notizbuch:hinweis');
+    showToast(text);
+  } catch {}
 }
 
 // ─── Notizbuch-Liste (Schublade): Zeilen, „⋯“-Menü, Umbenennen, Löschen ─────
@@ -1953,7 +2235,7 @@ function toggleNbMenu(nbId, trigger) {
   menu.querySelector('.menu-item:not(:disabled)')?.focus();
 }
 
-/** Umbenennen direkt in der Zeile (Eingabefeld statt prompt()). Enter/Verlassen speichert, Esc verwirft. */
+/** Umbenennen direkt in der Zeile (Eingabefeld). Enter/Verlassen speichert, Esc verwirft. */
 function startRenameNotebook(nbId) {
   const list = document.getElementById('notebook-list');
   const row = list && [...list.children].find(r => r.dataset.nb === nbId);
@@ -1990,7 +2272,7 @@ function startRenameNotebook(nbId) {
   input.select();
 }
 
-/** Notizbuch löschen — die einzige echte Rückfrage der App. */
+/** Notizbuch löschen — unwiderruflich, deshalb mit Rückfrage. */
 async function requestDeleteNotebook(nbId) {
   const nb = state.notebooks.find(n => n.id === nbId);
   if (!nb || state.notebooks.length <= 1) return;
@@ -3145,7 +3427,7 @@ async function handleScannedCode(text, device) {
   const m = t.match(/#([0-9a-fA-F]{64})$/) || t.match(/^([0-9a-fA-F]{64})$/);
   if (device) {
     if (!m) throw new Error('Das ist kein Geräte-Code.');
-    adoptDeviceKey(m[1].toLowerCase());
+    await adoptDeviceKey(m[1].toLowerCase());
     return;
   }
   if (m) throw new Error('Das ist ein Geräte-Code. Er gehört in Einstellungen → Geräte.');
@@ -3245,7 +3527,7 @@ function setJoinError(msg) {
   if (msg) err.textContent = msg;
 }
 
-/** „Beitreten“: Link aus dem Eingabefeld übernehmen (statt prompt()). */
+/** „Beitreten“: Link aus dem Eingabefeld übernehmen. */
 async function joinFromLinkField() {
   const input = document.getElementById('join-link');
   const btn = document.getElementById('btn-join');
@@ -3266,14 +3548,11 @@ async function joinFromLinkField() {
 }
 
 /**
- * Teilen-Dialog öffnen. Reiter „Einladen“ zeigt QR + Link des aktuellen Notizbuchs
- * (NotebookKey im Fragment), „Beitreten“ nimmt eine Einladung an.
- * @param {'invite'|'join'} [tab]
+ * Reiter „Einladen“ füllen: QR + Link des aktuellen Notizbuchs (NotebookKey im Fragment).
+ * Erst hier wird das Notizbuch als geteilt markiert und sein Shared-Room eröffnet —
+ * also nur, wenn „Einladen“ wirklich angezeigt wird.
  */
-async function openShareModal(tab = 'invite') {
-  const modal = document.getElementById('share-modal');
-  if (!modal) return;
-  const returnFocus = document.activeElement;
+async function prepareShareInvite() {
   const nbId = state.currentNotebookId;
   const nbKey = await getNotebookKey(nbId);
   const nbKeyRaw = await exportKey(nbKey);
@@ -3308,12 +3587,6 @@ async function openShareModal(tab = 'invite') {
       correctLevel: QRCode.CorrectLevel.L
     });
   }
-  const joinInput = document.getElementById('join-link');
-  if (joinInput) joinInput.value = '';
-  setJoinError('');
-  setScanStatus(scanUi('invite'), '');
-  selectTab(document.getElementById('share-dialog'), tab === 'join' ? 'join' : 'invite');
-  openDialog('share-modal', { returnFocus, onClose: stopScanCamera });
 
   // Notebook als geteilt markieren + Daten an shared Relay-Room pushen
   if (!state.sharedNotebooks.has(nbId)) {
@@ -3324,6 +3597,31 @@ async function openShareModal(tab = 'invite') {
   pushSharedNotebook(nbId);
   // P2P-Room für geteiltes Notebook beitreten
   joinSharedNotebookP2P(nbId).catch(e => console.warn('[P2P] Shared join fehlgeschlagen:', e));
+}
+
+/**
+ * Teilen-Dialog öffnen. Reiter „Einladen“ zeigt QR + Link des aktuellen Notizbuchs,
+ * „Beitreten“ nimmt eine Einladung an (und fasst das aktuelle Notizbuch nicht an).
+ * @param {'invite'|'join'} [tab]
+ */
+async function openShareModal(tab = 'invite') {
+  const modal = document.getElementById('share-modal');
+  if (!modal) return;
+  const returnFocus = document.activeElement;
+  const join = tab === 'join';
+  // Reste eines früheren Aufrufs entfernen — „Einladen“ füllt sich erst, wenn es gezeigt wird
+  const linkInput = document.getElementById('share-link');
+  if (linkInput) linkInput.value = '';
+  document.getElementById('qr-container')?.replaceChildren();
+  const nameEl = document.getElementById('share-nb-name');
+  if (nameEl) nameEl.textContent = currentNotebook()?.name || 'Notizbuch';
+  if (!join) await prepareShareInvite();
+  const joinInput = document.getElementById('join-link');
+  if (joinInput) joinInput.value = '';
+  setJoinError('');
+  setScanStatus(scanUi('invite'), '');
+  selectTab(document.getElementById('share-dialog'), join ? 'join' : 'invite');
+  openDialog('share-modal', { returnFocus, onClose: stopScanCamera, focus: join ? '#join-link' : undefined });
 }
 
 function closeShareModal() {
@@ -3509,12 +3807,16 @@ function toggleDeviceScan(force) {
  * Entspricht dem Öffnen des Sync-Links: Die App lädt mit dem Schlüssel im Fragment neu.
  * @param {string} hex - 64 Hex-Zeichen
  */
-function adoptDeviceKey(hex) {
+async function adoptDeviceKey(hex) {
   if (masterKeyRaw && keyHex(masterKeyRaw) === hex) throw new Error('Dieses Gerät nutzt diesen Schlüssel bereits.');
   stopScanCamera();
-  if (!confirm('Schlüssel des anderen Geräts übernehmen?\n\nDieses Gerät zeigt danach dessen Notizbücher. Die bisherigen Notizbücher dieses Geräts gehören zum alten Schlüssel — sichere ihn vorher unter „Daten & Schlüssel“.')) {
-    throw new Error('Abgebrochen.');
-  }
+  const ok = await confirmDialog({
+    title: 'Schlüssel des anderen Geräts übernehmen?',
+    text: 'Dieses Gerät zeigt danach dessen Notizbücher. Die bisherigen Notizbücher dieses Geräts gehören zum alten Schlüssel — sichere ihn vorher unter „Daten & Schlüssel“.',
+    okLabel: 'Übernehmen'
+  });
+  if (!ok) throw new Error('Abgebrochen.');
+  await commitPendingPageOp();
   try { flushSave(); } catch {}
   history.replaceState(null, '', location.pathname + '#' + hex);
   location.reload();
@@ -3578,7 +3880,7 @@ async function buildEncryptedBackupBundle() {
 async function exportCurrentPageAsPng() {
   const nb = currentNotebook();
   const page = currentPage();
-  if (!nb || !page) { alert('Keine Seite aktiv.'); return; }
+  if (!nb || !page) { showToast('Keine Seite aktiv.', { fehler: true }); return; }
   await loadPage(nb.id, page.id, page);
 
   const bounds = computeStrokeBounds();
@@ -3611,8 +3913,9 @@ async function exportCurrentPageAsPng() {
 
   const filename = `${(nb.name || 'notizbuch').replace(/[^a-z0-9-_]+/gi, '_')}-seite-${currentPageIndex() + 1}.png`;
   canvas.toBlob(blob => {
-    if (!blob) { alert('PNG-Export fehlgeschlagen.'); return; }
+    if (!blob) { showToast('PNG-Export fehlgeschlagen.', { fehler: true }); return; }
     downloadBlob(blob, filename);
+    showToast('Seite als PNG gespeichert');
   }, 'image/png');
 }
 
@@ -3635,7 +3938,7 @@ function strokeToSvgPath(points = []) {
 async function exportCurrentPageAsSvg() {
   const nb = currentNotebook();
   const page = currentPage();
-  if (!nb || !page) { alert('Keine Seite aktiv.'); return; }
+  if (!nb || !page) { showToast('Keine Seite aktiv.', { fehler: true }); return; }
   await loadPage(nb.id, page.id, page);
 
   const bounds = computeStrokeBounds();
@@ -3691,6 +3994,7 @@ async function exportCurrentPageAsSvg() {
 
   const filename = `${(nb.name || 'notizbuch').replace(/[^a-z0-9-_]+/gi, '_')}-seite-${currentPageIndex() + 1}.svg`;
   downloadBlob(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }), filename);
+  showToast('Seite als SVG gespeichert');
 }
 
 /**
@@ -3700,19 +4004,26 @@ async function exportCurrentPageAsSvg() {
 async function exportApp(mode) {
   try {
     if (mode === 'enc') {
+      // Ein vorgemerktes Leeren/Löschen gehört in die Sicherung
+      await commitPendingPageOp();
       const bundle = await buildEncryptedBackupBundle();
       downloadBlob(new Blob([bundle], { type: 'application/octet-stream' }), 'notizbuch-backup.enc');
+      showToast('Sicherung exportiert (.enc)');
     } else if (mode === 'png') {
       await exportCurrentPageAsPng();
     } else if (mode === 'svg') {
       await exportCurrentPageAsSvg();
     }
   } catch (e) {
-    alert('Export fehlgeschlagen: ' + e.message);
+    showToast('Export fehlgeschlagen: ' + (e?.message || e), { fehler: true });
   }
 }
 
-/** Verschlüsseltes Bundle importieren — alle Keys installieren. */
+/**
+ * Verschlüsseltes Bundle importieren — alle Keys installieren.
+ * Ablauf: Datei wählen → Passphrase im Dialog (wird dort geprüft) → Rückfrage, weil der
+ * Schlüssel dieses Geräts ersetzt wird → Neuladen.
+ */
 async function importApp() {
   const input = document.createElement('input');
   input.type = 'file';
@@ -3720,14 +4031,37 @@ async function importApp() {
   input.onchange = async () => {
     const file = input.files[0];
     if (!file) return;
-    const passphrase = prompt('Passphrase für den Import:');
-    if (!passphrase?.trim()) return;
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
-      const { masterKey, notebookKeyMap } = await importAppBundle(bytes, passphrase);
-      // MasterKey installieren
+      let bundle = null;
+      const passphrase = await promptDialog({
+        title: 'Sicherung importieren',
+        text: `Datei: ${file.name}`,
+        label: 'Passphrase',
+        type: 'password',
+        okLabel: 'Weiter',
+        pruefen: async (value) => {
+          try {
+            bundle = await importAppBundle(bytes, value);
+          } catch {
+            return 'Die Datei lässt sich damit nicht öffnen — falsche Passphrase oder keine passende Sicherung.';
+          }
+        }
+      });
+      if (!passphrase || !bundle) return;
+      const { masterKey, notebookKeyMap } = bundle;
       const rawMaster = new Uint8Array(await exportKey(masterKey));
       const hash = await computeKeyHash(rawMaster);
+      if (masterKeyRaw && keyHex(masterKeyRaw) !== keyHex(rawMaster)) {
+        const ok = await confirmDialog({
+          title: 'Schlüssel aus der Sicherung übernehmen?',
+          text: 'Der Import ersetzt den Schlüssel dieses Geräts. Es zeigt danach die Notizbücher aus der Sicherung; die bisherigen gehören zum alten Schlüssel — sichere ihn vorher unter „Daten & Schlüssel“.',
+          okLabel: 'Übernehmen'
+        });
+        if (!ok) return;
+      }
+      await commitPendingPageOp();
+      // MasterKey installieren
       saveMasterKeyToStorage(rawMaster, hash);
       // NotebookKeys installieren
       for (const [id, key] of Object.entries(notebookKeyMap)) {
@@ -3735,10 +4069,10 @@ async function importApp() {
         const raw = await exportKey(key);
         localStorage.setItem(`notizbuch:nbKey:${id}`, JSON.stringify(Array.from(raw)));
       }
-      alert('Import erfolgreich! App wird neu geladen.');
+      showToastAfterReload('Sicherung importiert');
       location.reload();
     } catch (e) {
-      alert('Import fehlgeschlagen — falsche Passphrase? ' + e.message);
+      showToast('Import fehlgeschlagen: ' + (e?.message || e), { fehler: true });
     }
   };
   input.click();
@@ -3909,6 +4243,12 @@ async function saveConnectionSettings() {
     relayInput?.focus();
     return;
   }
+  const relayProblem = relay ? relayUrlProblem(relay) : '';
+  if (relayProblem) {
+    setRelayError(relayProblem);
+    relayInput?.focus();
+    return;
+  }
   setRelayError('');
 
   const settings = {
@@ -4022,7 +4362,7 @@ let panStartViewX = 0, panStartViewY = 0;
 let panPointerId = null;
 
 function onPointerDown(e) {
-  if (isPageDeleted()) return;
+  if (isPageGone()) return;
   // Palm-Rejection: Pen erkannt → Touch ignorieren für Zeichnen
   if (e.pointerType === 'pen') {
     state.penDetected = true;
@@ -4174,7 +4514,10 @@ function onPointerUp(e) {
   }
 
   const page = currentPage();
-  if (!page || isPageDeleted(page) || currentPoints.length < 2) { currentPoints = []; lastPoint = null; return; }
+  if (!page || isPageGone(page) || currentPoints.length < 2) { currentPoints = []; lastPoint = null; return; }
+
+  // Ein neuer Strich schreibt ein vorgemerktes Leeren sofort fest (clearedAt liegt vor dem Strich)
+  if (_pendingPageOp) commitPendingPageOp();
 
   const strokeId = newId();
   const newStroke = {
@@ -4207,7 +4550,7 @@ function renderUI() {
 
   // Notebook-Name im Titel-Knopf (öffnet die Notizbuch-Liste)
   const nbName = currentNotebook()?.name || '';
-  const deletedPage = isPageDeleted();
+  const deletedPage = isPageGone();
   const titleSuffix = deletedPage ? ' · gelöscht' : '';
   const titleEl = document.getElementById('notebook-title');
   if (titleEl) titleEl.textContent = nbName + titleSuffix;
@@ -4229,7 +4572,7 @@ function renderUI() {
   // Seiten-Menü: Löschen/Wiederherstellen
   const delPageBtn = document.getElementById('btn-delete-page');
   if (delPageBtn) {
-    delPageBtn.disabled = !deletedPage && currentNotebook()?.pages?.filter(p => !p.deletedAt).length <= 1;
+    delPageBtn.disabled = !deletedPage && currentNotebook()?.pages?.filter(p => !isPageGone(p)).length <= 1;
     const label = deletedPage ? 'Seite wiederherstellen' : 'Seite löschen';
     delPageBtn.title = label;
     delPageBtn.classList.toggle('danger', !deletedPage);
@@ -4415,6 +4758,7 @@ async function init() {
 
   // 6. App-Metadaten laden (lokal)
   await loadAppMeta();
+  await recoverPendingPageOp();
 
   // 6b. Relay: verschlüsselte Snapshots laden und mergen
   try {
@@ -4509,6 +4853,7 @@ async function init() {
 
   // 12. UI rendern
   renderUI();
+  showStoredToast();
 
   // 13. P2P-Sync starten (nicht awaiten — soll im Hintergrund verbinden)
   if (state.syncEnabled) {
@@ -4615,6 +4960,9 @@ function setupEvents() {
 
   window.addEventListener('resize', () => setupCanvases());
   window.addEventListener('beforeunload', () => { flushSave(); saveLocalSettings(); });
+  // Vorgemerktes Leeren/Löschen festschreiben, bevor die Seite verschwindet
+  window.addEventListener('pagehide', () => { commitPendingPageOp(undefined, { keepNote: true }); });
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') commitPendingPageOp(); });
 
   // Bei Tab/Fenster-Fokus: Full-Sync senden (ohne Room-Reconnect)
   document.addEventListener('visibilitychange', e => handleActivityChange(e));
@@ -4650,7 +4998,8 @@ function setupEvents() {
     const key = String(e.key || '').toLowerCase();
     if (key === 'z' && !e.shiftKey) {
       e.preventDefault();
-      undo();
+      // Läuft noch ein Hinweis „Seite geleert/gelöscht“, nimmt Strg+Z zuerst das zurück
+      if (!revertPendingPageOp()) undo();
     } else if ((key === 'z' && e.shiftKey) || (key === 'y' && !e.shiftKey)) {
       e.preventDefault();
       redo();
@@ -4730,13 +5079,15 @@ function setupEvents() {
     if (btn) setPenSize(Number(btn.dataset.size));
   });
 
-  document.getElementById('btn-clear')?.addEventListener('click', () => {
-    if (confirm('Seite wirklich leeren?')) clearPage();
-  });
-  document.getElementById('btn-delete-page')?.addEventListener('click', () => {
-    if (isPageDeleted()) {
-      if (confirm('Gelöschte Seite wiederherstellen?')) restorePage();
-    } else if (confirm('Seite löschen? Sie bleibt auf anderen Geräten als gelöscht markiert und kann wiederhergestellt werden.')) {
+  // Leeren/Löschen ohne Rückfrage: sofort ausführen, Hinweis mit „Rückgängig“
+  document.getElementById('btn-clear')?.addEventListener('click', clearPage);
+  document.getElementById('btn-delete-page')?.addEventListener('click', async () => {
+    if (isPendingDelete(currentPage())) {
+      revertPendingPageOp();
+    } else if (isPageDeleted()) {
+      await restorePage();
+      showToast('Seite wiederhergestellt', { key: 'page-op' });
+    } else {
       deletePage();
     }
   });
@@ -4810,6 +5161,15 @@ function setupEvents() {
   document.getElementById('btn-copy-link')?.addEventListener('click', copyShareLink);
   setupTabs(document.getElementById('share-dialog'), (tab) => {
     if (tab !== 'join') { stopScanCamera(); setScanStatus(scanUi('invite'), ''); }
+    // „Einladen“ wird jetzt gezeigt: Link/QR erzeugen, Notizbuch als geteilt markieren
+    if (tab === 'invite' && !document.getElementById('share-link')?.value) {
+      prepareShareInvite().catch(e => showToast('Einladung konnte nicht erstellt werden: ' + (e?.message || e), { fehler: true }));
+    }
+  });
+  // Schublade: „Notizbuch beitreten“ öffnet direkt den Reiter „Beitreten“
+  document.getElementById('btn-join-notebook')?.addEventListener('click', () => {
+    toggleSidebar(false);
+    openShareModal('join');
   });
   document.getElementById('btn-start-scan')?.addEventListener('click', () => startScanCamera('invite'));
   document.getElementById('btn-scan-image')?.addEventListener('click', () => scanImageFile('invite'));

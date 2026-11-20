@@ -55,6 +55,23 @@ export function isValidRelayUrl(url) {
 }
 
 /**
+ * Grund, warum eine (formal gültige) Relay-Adresse hier nicht funktionieren kann — sonst ''.
+ * Eine https-Seite darf keine unverschlüsselte ws://-Verbindung öffnen (Mixed Content);
+ * ausgenommen sind localhost/127.0.0.1 (lokale Entwicklung).
+ * @param {string} url
+ * @param {{protocol: string, hostname: string}} [loc] - Seite, von der aus verbunden wird
+ * @returns {string}
+ */
+export function relayUrlProblem(url, loc = (typeof location !== 'undefined' ? location : null)) {
+  let u;
+  try { u = new URL(String(url).trim()); } catch { return ''; }
+  if (u.protocol !== 'ws:' || !loc || loc.protocol !== 'https:') return '';
+  const local = h => h === 'localhost' || h === '127.0.0.1';
+  if (local(loc.hostname) || local(u.hostname)) return '';
+  return 'Diese Seite wird über https geladen – der Browser lässt von hier nur verschlüsselte Relay-Adressen zu. Bitte wss:// statt ws:// verwenden.';
+}
+
+/**
  * Eigene Relay-Adresse setzen. Leer oder ungültig = Standard.
  * Wirkt auf alle danach geöffneten Verbindungen; bestehende baut der Aufrufer neu auf.
  * @param {string} url

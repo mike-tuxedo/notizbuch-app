@@ -1121,6 +1121,71 @@
       padding: var(--s2);
     }
 
+    /* ─── Hinweise (Toasts) ──────────────────────────────────────────────── */
+    /* Unten mittig über der Seiten-Pille; liegt über Dialogen, fängt selbst keine Zeiger ab */
+    .toasts {
+      position: fixed;
+      z-index: 300;
+      left: 0;
+      right: 0;
+      bottom: calc(88px + var(--safe-bottom));
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: var(--s2);
+      padding: 0 var(--s3);
+      pointer-events: none;
+    }
+
+    .toast {
+      display: flex;
+      align-items: center;
+      gap: var(--s3);
+      min-height: var(--tap);
+      max-width: min(100%, 520px);
+      padding: var(--s2) var(--s4);
+      background: var(--text);
+      color: var(--surface);
+      border-radius: var(--r-sm);
+      box-shadow: var(--shadow);
+      font-weight: 600;
+      pointer-events: auto;
+      animation: fadeIn 0.2s ease;
+    }
+
+    .toast:has(.btn) {
+      padding-right: var(--s2);
+    }
+
+    .toast.error {
+      border-left: 4px solid var(--danger);
+    }
+
+    .toast .btn {
+      flex: none;
+      min-height: 36px;
+      background: transparent;
+      border-color: transparent;
+      color: inherit;
+      text-decoration: underline;
+    }
+
+    .toast .btn:hover {
+      background: color-mix(in srgb, var(--surface) 16%, transparent);
+    }
+
+    .toast .btn:focus-visible {
+      outline: 2px solid var(--surface);
+      outline-offset: 1px;
+    }
+
+    @media (max-width: 760px) {
+      /* Werkzeuge liegen unten: Hinweis über Werkzeugreihe und Seiten-Pille */
+      .toasts {
+        bottom: calc(var(--bar-h) + var(--tap) + var(--s6) + var(--safe-bottom));
+      }
+    }
+
     /* ─── Dialoge ────────────────────────────────────────────────────────── */
     .modal-overlay {
       position: fixed;
@@ -1136,6 +1201,12 @@
 
     .modal-overlay.hidden {
       display: none;
+    }
+
+    /* Rückfrage und Eingabe können über einem anderen Dialog (Einstellungen) aufgehen */
+    #confirm-modal,
+    #prompt-modal {
+      z-index: 210;
     }
 
     @keyframes fadeIn {
@@ -1583,6 +1654,9 @@
         <button class="menu-item nb-add" id="btn-add-notebook">
           <svg class="i" aria-hidden="true"><use href="#i-plus" /></svg> Neues Notizbuch
         </button>
+        <button class="menu-item" id="btn-join-notebook">
+          <svg class="i" aria-hidden="true"><use href="#i-share" /></svg> Notizbuch beitreten
+        </button>
       </div>
 
       <div class="drawer-foot">
@@ -1818,7 +1892,7 @@
     </div>
   </div>
 
-  <!-- Rückfrage (nur beim Löschen eines Notizbuchs) -->
+  <!-- Rückfrage (nur vor Unwiderruflichem: Notizbuch löschen, Schlüssel ersetzen) -->
   <div class="modal-overlay hidden" id="confirm-modal">
     <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-text" tabindex="-1">
       <h2 id="confirm-title"></h2>
@@ -1828,6 +1902,24 @@
         <button class="btn danger" id="confirm-ok">Löschen</button>
       </div>
     </div>
+  </div>
+
+  <!-- Eingabe (z. B. Passphrase beim Import) -->
+  <div class="modal-overlay hidden" id="prompt-modal">
+    <form class="dialog" id="prompt-form" role="dialog" aria-modal="true" aria-labelledby="prompt-title" tabindex="-1" novalidate>
+      <h2 id="prompt-title"></h2>
+      <p class="muted" id="prompt-text" hidden></p>
+      <div class="field">
+        <label for="prompt-input" id="prompt-label"></label>
+        <input class="input" type="text" id="prompt-input" autocomplete="off" autocapitalize="off" spellcheck="false"
+          aria-describedby="prompt-error">
+        <span class="error-text" id="prompt-error" role="alert"></span>
+      </div>
+      <div class="row end">
+        <button class="btn" type="button" id="prompt-cancel">Abbrechen</button>
+        <button class="btn primary" type="submit" id="prompt-ok">OK</button>
+      </div>
+    </form>
   </div>
 
   <!-- Teilen: Einladen / Beitreten -->
@@ -2051,6 +2143,9 @@
     </div>
   </div>
 
+
+  <!-- Hinweise (Toasts): showToast() -->
+  <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 
   <div id="console" class="debug-off"></div>
   <style>
