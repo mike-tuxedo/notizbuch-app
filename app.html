@@ -832,10 +832,6 @@
       flex-wrap: wrap;
     }
 
-    .row.between {
-      justify-content: space-between;
-    }
-
     .row.end {
       justify-content: flex-end;
     }
@@ -1396,6 +1392,103 @@
       }
     }
 
+    /* ─── Seitenübersicht ────────────────────────────────────────────────── */
+    .pages-sheet {
+      width: min(960px, 100%);
+      height: 100%;
+    }
+
+    .pages-head {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: var(--s3);
+    }
+
+    .pages-head .ttl {
+      flex: 1;
+      min-width: 120px;
+    }
+
+    .thumbs {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: var(--s4);
+      list-style: none;
+      margin: 0;
+      padding: 0;
+    }
+
+    .thumb {
+      display: grid;
+      align-content: start;
+      gap: var(--s2);
+      min-width: 0;
+    }
+
+    .thumb-pic,
+    .thumb .new {
+      display: block;
+      width: 100%;
+      aspect-ratio: 4 / 3;
+      padding: 0;
+      border: 2px solid var(--border-strong);
+      border-radius: var(--r-sm);
+      background: var(--paper);
+      overflow: hidden;
+      cursor: pointer;
+    }
+
+    .thumb-pic canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    button.thumb-pic:hover {
+      border-color: var(--accent);
+    }
+
+    .thumb.current .thumb-pic {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-soft);
+    }
+
+    .thumb .cap {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--s1);
+      min-height: var(--tap);
+      font-weight: 600;
+    }
+
+    .thumb .new {
+      display: grid;
+      place-items: center;
+      background: transparent;
+      border-style: dashed;
+      color: var(--accent);
+    }
+
+    .thumb .new:hover {
+      background: var(--accent-soft);
+    }
+
+    .thumb.gone .thumb-pic {
+      opacity: 0.55;
+      border-style: dashed;
+      cursor: default;
+    }
+
+    @media (max-width: 700px) {
+      .thumbs {
+        grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+        gap: var(--s3);
+      }
+    }
+
     @media (pointer: coarse) {
       .rename-input {
         min-height: var(--tap);
@@ -1768,7 +1861,7 @@
                 <svg class="i" aria-hidden="true"><use href="#i-eraser" /></svg> Seite leeren
               </button>
               <button class="menu-item danger" id="btn-delete-page" data-close title="Seite löschen">
-                <svg class="i" aria-hidden="true"><use href="#i-trash" /></svg> <span id="delete-page-label">Seite löschen</span>
+                <svg class="i" aria-hidden="true"><use href="#i-trash" /></svg> Seite löschen
               </button>
             </div>
           </div>
@@ -1787,7 +1880,7 @@
         <button class="btn ghost icon" id="btn-prev" aria-label="Vorherige Seite" title="Vorherige Seite" disabled>
           <svg class="i" aria-hidden="true"><use href="#i-left" /></svg>
         </button>
-        <button class="btn ghost" id="btn-page-overview" aria-label="Seite 1 von 1" title="Seitenübersicht">
+        <button class="btn ghost" id="btn-page-overview" aria-haspopup="dialog" aria-label="Seite 1 von 1 – Seitenübersicht öffnen" title="Seitenübersicht">
           <svg class="i i-pages" aria-hidden="true"><use href="#i-pages" /></svg> <span id="page-indicator">1 / 1</span>
         </button>
         <button class="btn ghost icon" id="btn-next" aria-label="Nächste Seite" title="Nächste Seite" disabled>
@@ -1837,6 +1930,30 @@
       <button class="menu-item danger" id="nb-menu-delete" role="menuitem">
         <svg class="i" aria-hidden="true"><use href="#i-trash" /></svg> Löschen
       </button>
+    </div>
+  </div>
+
+  <!-- Seitenübersicht: Vorschaubilder aller Seiten, darunter gelöschte Seiten.
+       Steht bewusst hinter .app: die drei Zeichenflächen bleiben die ersten Canvases im Dokument. -->
+  <div class="modal-overlay hidden" id="pages-modal">
+    <div class="dialog wide pages-sheet" id="pages-sheet" role="dialog" aria-modal="true" aria-labelledby="pages-title" tabindex="-1">
+      <div class="pages-head">
+        <button class="btn ghost icon" id="btn-close-pages" aria-label="Zurück zur Zeichenfläche" title="Schließen (Esc)">
+          <svg class="i" aria-hidden="true"><use href="#i-left" /></svg>
+        </button>
+        <div class="ttl">
+          <h2 id="pages-title"></h2>
+          <p class="muted" id="pages-count"></p>
+        </div>
+        <button class="btn primary" id="btn-pages-add">
+          <svg class="i" aria-hidden="true"><use href="#i-plus" /></svg> Neue Seite
+        </button>
+      </div>
+      <ul class="thumbs" id="pages-grid" aria-label="Seiten"></ul>
+      <section class="stack" id="pages-trash-section" aria-labelledby="pages-trash-title" hidden>
+        <h3 id="pages-trash-title">Gelöschte Seiten</h3>
+        <ul class="thumbs" id="pages-trash"></ul>
+      </section>
     </div>
   </div>
 

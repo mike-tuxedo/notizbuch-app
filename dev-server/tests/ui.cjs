@@ -129,7 +129,9 @@ const ok = (cond, label, extra = '') => { if (!cond) fails++; console.log(`${con
   ok(p.t === '2 / 2', '„›“ auf der letzten Seite legt keine Seite an', JSON.stringify(p));
   ok(await ink() === 0, 'neue Seite ist leer');
   await page.click('#btn-page-overview'); await sleep(200);
-  ok((await pg()).t === '2 / 2' && await $(() => document.getElementById('btn-page-overview').tagName === 'BUTTON'), '#btn-page-overview ist ein Button (noch ohne Funktion)');
+  ok((await pg()).t === '2 / 2' && await $(() => document.getElementById('btn-page-overview').tagName === 'BUTTON' && !document.getElementById('pages-modal').classList.contains('hidden')), '#btn-page-overview ist ein Button und öffnet die Seitenübersicht (Einzelheiten: ui-d.cjs)');
+  await page.keyboard.press('Escape'); await sleep(200);
+  ok(await $(() => document.getElementById('pages-modal').classList.contains('hidden')) && (await pg()).t === '2 / 2', 'Esc schließt die Seitenübersicht, Zähler unverändert');
   await page.click('#btn-prev'); await sleep(600); p = await pg();
   ok(p.t === '1 / 2' && !p.next && p.prev, '‹ zurück auf 1 / 2', JSON.stringify(p));
   ok(await ink() > 0, 'Seite 1 zeigt die Striche wieder');
@@ -235,7 +237,7 @@ const ok = (cond, label, extra = '') => { if (!cond) fails++; console.log(`${con
   await page.click('#sync-status'); await sleep(200);
   ok(await visible('#settings-modal') && await visible('#set-panel-connection') && await $(() => document.getElementById('console').classList.contains('debug-off')), 'Klick auf den Sync-Status öffnet Einstellungen → Verbindung (Diagnose bleibt aus)');
   await page.click('#set-diag'); await sleep(200);
-  ok(await $(() => !document.getElementById('console').classList.contains('debug-off')) && /redesign-v43/.test(await $(() => document.getElementById('console').innerText)), 'Schalter „Sync-Diagnose“ blendet das Overlay ein (Version v43)');
+  ok(await $(() => !document.getElementById('console').classList.contains('debug-off')) && /redesign-v44/.test(await $(() => document.getElementById('console').innerText)), 'Schalter „Sync-Diagnose“ blendet das Overlay ein (Version v43)');
   await page.click('#set-diag'); await sleep(200);
   ok(await $(() => document.getElementById('console').classList.contains('debug-off')), 'Schalter aus blendet es wieder aus');
   await page.keyboard.press('Escape'); await sleep(200);

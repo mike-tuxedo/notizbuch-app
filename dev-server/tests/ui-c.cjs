@@ -84,25 +84,23 @@ const ok = (cond, label, extra = '') => { if (!cond) fails++; console.log(`${con
   if (!/^2/.test(await ind(b))) { await b.click('#btn-next'); await sleep(1000); }
   await menu(a, 'btn-delete-page'); await sleep(400);
   t = await undoToast(a);
-  ok(!!t && /Seite 2 gelöscht/.test(t.text) && /gelöscht/.test(await ind(a)), 'Löschen: Hinweis „Seite 2 gelöscht“ mit „Rückgängig“', `${JSON.stringify(await toast(a))} A=${await ind(a)}`);
+  ok(!!t && /Seite 2 gelöscht/.test(t.text) && await ind(a) === '1 / 1', 'Löschen: Hinweis „Seite 2 gelöscht“ mit „Rückgängig“, Ansicht springt auf die Nachbarseite (1 / 1)', `${JSON.stringify(await toast(a))} A=${await ind(a)}`);
   await shot(a, 'toast-loeschen.png');
   await sleep(1500);
   ok(await ind(b) === '2 / 2', 'in der Frist erfährt B nichts vom Löschen', `B=${await ind(b)}`);
   await a.click('#toasts .toast button'); await sleep(400);
-  ok(await ind(a) === '2 / 2' && await note(a) === null, '„Rückgängig“ stellt die Seite wieder her (A)', `A=${await ind(a)}`);
+  ok(await ind(a) === '2 / 2' && await note(a) === null, '„Rückgängig“ stellt die Seite wieder her und führt zu ihr zurück (A)', `A=${await ind(a)}`);
   await sleep(4000);
   ok(await ind(a) === '2 / 2' && await ind(b) === '2 / 2', 'Seitenzähler nach „Rückgängig“ bei A und B unverändert', `A=${await ind(a)} B=${await ind(b)}`);
   await menu(a, 'btn-delete-page'); await sleep(7500);
-  ok((await toast(a)).length === 0 && /gelöscht/.test(await ind(a)), 'Löschen ohne „Rückgängig“: Hinweis läuft ab, Seite bei A gelöscht', `A=${await ind(a)}`);
+  ok((await toast(a)).length === 0 && await ind(a) === '1 / 1', 'Löschen ohne „Rückgängig“: Hinweis läuft ab, Seite bei A aus der Navigation verschwunden', `A=${await ind(a)}`);
   await sleep(4000);
-  ok(/gelöscht/.test(await ind(a)) && /gelöscht/.test(await ind(b)), 'gelöscht bei A und B', `A=${await ind(a)} B=${await ind(b)}`);
+  ok(await ind(a) === '1 / 1' && await ind(b) === '1 / 1', 'gelöscht bei A und B (Zähler 1 / 1, B springt auf die Nachbarseite)', `A=${await ind(a)} B=${await ind(b)}`);
   await reload(b); await reload(a); await sleep(8000);
-  for (const p of [a, b]) if (!/^2/.test(await ind(p))) { await p.click('#btn-next'); await sleep(1000); }
-  ok(/gelöscht/.test(await ind(a)) && /gelöscht/.test(await ind(b)), 'gelöscht bei A und B auch nach Reload', `A=${await ind(a)} B=${await ind(b)}`);
+  ok(await ind(a) === '1 / 1' && await ind(b) === '1 / 1', 'gelöscht bei A und B auch nach Reload', `A=${await ind(a)} B=${await ind(b)}`);
 
   // ── Leeren + sofort neuer Strich ───────────────────────────────────────
-  await a.click('#btn-prev'); await b.click('#btn-prev'); await sleep(2000);
-  await both('zurück auf Seite 1: beide 1', 1);
+  await both('beide stehen auf Seite 1: 1 Strich', 1);
   await menu(a, 'btn-clear'); await draw(a); await sleep(400);
   ok(await cnt(a) === 1 && !(await undoToast(a)), 'neuer Strich schreibt das Leeren sofort fest (Hinweis weg, A=1)', `A=${await cnt(a)} ${JSON.stringify(await toast(a))}`);
   await sleep(4000); await both('Leeren + sofort Strich: beide genau 1', 1);

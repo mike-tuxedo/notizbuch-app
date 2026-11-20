@@ -37,8 +37,7 @@ const PEN_SIZES = [
   { name: 'XL', label: 'Sehr dick', size: 16, dot: 24 }
 ];
 
-const BACKGROUNDS = ['grid', 'lined', 'blank'];
-const APP_VERSION = '2026-11-20-redesign-v43';
+const APP_VERSION = '2026-11-20-redesign-v44';
 const PRESENCE_INTERVAL_MS = 5000;
 const PRESENCE_TIMEOUT_MS = 15000;
 
@@ -111,13 +110,6 @@ const pinchState = {
   startMidX: 0, startMidY: 0, startDist: 1
 };
 
-// ─── Swipe State ────────────────────────────────────────────────────────────
-
-const swipeState = {
-  active: false, pointerId: null,
-  startX: 0, startY: 0, startTime: 0, currentX: 0
-};
-
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 /** @returns {{id: string, name: string, pages: Array}|undefined} */
@@ -152,14 +144,29 @@ function ensureCurrentPageId(notebookId = state.currentNotebookId) {
     return null;
   }
   const currentId = state.currentPageIds[notebookId];
-  if (currentId && nb.pages.some(p => p.id === currentId)) return currentId;
-  const fallbackId = nb.pages[0].id;
-  state.currentPageIds[notebookId] = fallbackId;
-  return fallbackId;
+  const idx = currentId ? nb.pages.findIndex(p => p.id === currentId) : -1;
+  if (idx >= 0 && !isPageGone(nb.pages[idx])) return currentId;
+  // Gemerkte Seite fehlt oder ist gelöscht: nächste sichtbare Nachbarseite (erst dahinter, dann davor).
+  // Gibt es keine sichtbare Seite, bleibt es bei der gemerkten — ensureVisiblePage() legt dann eine an.
+  const shown = p => !isPageGone(p);
+  const fallback = (idx >= 0
+    ? (nb.pages.slice(idx + 1).find(shown) || nb.pages.slice(0, idx).reverse().find(shown) || nb.pages[idx])
+    : nb.pages.find(shown)) || nb.pages[0];
+  state.currentPageIds[notebookId] = fallback.id;
+  return fallback.id;
 }
 
+/**
+ * Gelöscht ist eine Seite genau dann, wenn deletedAt > restoredAt. Beide Felder werden
+ * zwischen Geräten per Maximum gemischt — so lässt sich ein Löschen wieder aufheben.
+ */
 function isPageDeleted(page = currentPage()) {
-  return !!(page?.deletedAt);
+  return !!page && (page.deletedAt || 0) > (page.restoredAt || 0);
+}
+
+/** Seiten für Navigation und Zähler: ohne gelöschte und zum Löschen vorgemerkte. */
+function visiblePages(nb = currentNotebook()) {
+  return (nb?.pages || []).filter(p => !isPageGone(p));
 }
 
 /**
@@ -370,9 +377,12 @@ async function _keyForRoom(roomId) {
  */
 function syncSend(action, data, opts = {}) {
   // P2P-Teil
+  // Notizbuch-Meta (full-sync) trägt die ID im Notizbuch-Eintrag — ohne sie käme Seiten-Meta
+  // (neu, geleert, gelöscht, wiederhergestellt) nie im Shared-Room an.
+  const forNbId = opts.forNotebook ? (data.notebookId || data.id || data.notebooks?.[0]?.id) : null;
   if (opts.forNotebook) {
     p2pSend(action, data);
-    const nbId = data.notebookId || data.id;
+    const nbId = forNbId;
     if (nbId && state.sharedNotebooks.has(nbId)) {
       const nbHash = _sharedRoomMap.get(nbId);
       if (nbHash) p2pSend(action, data, { roomId: nbHash });
@@ -391,7 +401,7 @@ function syncSend(action, data, opts = {}) {
   const rooms = [];
   if (opts.forNotebook) {
     rooms.push(state.masterKeyHash);
-    const nbId = data.notebookId || data.id;
+    const nbId = forNbId;
     if (nbId && state.sharedNotebooks.has(nbId)) {
       const nbHash = _sharedRoomMap.get(nbId);
       if (nbHash) rooms.push(nbHash);
@@ -465,7 +475,9 @@ function pageMeta(page) {
     order: page.order ?? 0,
     createdAt: page.createdAt || 0,
     clearedAt: page.clearedAt || 0,
-    deletedAt: page.deletedAt || 0
+    deletedAt: page.deletedAt || 0,
+    // Zusatzfeld (ältere Versionen ignorieren es): Zeitpunkt des letzten Wiederherstellens
+    restoredAt: page.restoredAt || 0
   };
 }
 
@@ -506,6 +518,7 @@ function applyPageMeta(localPage, remotePage) {
   if (!localPage.createdAt && remotePage.createdAt) localPage.createdAt = remotePage.createdAt;
   localPage.clearedAt = Math.max(localPage.clearedAt || 0, remotePage.clearedAt || 0);
   localPage.deletedAt = Math.max(localPage.deletedAt || 0, remotePage.deletedAt || 0);
+  localPage.restoredAt = Math.max(localPage.restoredAt || 0, remotePage.restoredAt || 0);
 }
 
 function normalizePageStrokes(page, incomingStrokes = null) {
@@ -655,18 +668,18 @@ function currentPage() {
   return nb.pages.find(p => p.id === pageId) || nb.pages[0];
 }
 
-/** @returns {number} */
+/** @returns {number} Position der aktuellen Seite unter den sichtbaren Seiten */
 function currentPageIndex() {
   const nb = currentNotebook();
   if (!nb?.pages?.length) return 0;
   const pageId = ensureCurrentPageId(state.currentNotebookId);
-  const idx = nb.pages.findIndex(p => p.id === pageId);
+  const idx = visiblePages(nb).findIndex(p => p.id === pageId);
   return idx >= 0 ? idx : 0;
 }
 
-/** @returns {number} */
+/** @returns {number} Anzahl der sichtbaren Seiten */
 function totalPages() {
-  return currentNotebook()?.pages?.length || 1;
+  return visiblePages().length || 1;
 }
 
 // ─── IndexedDB Settings (device-local, not synced) ──────────────────────────
@@ -962,9 +975,7 @@ async function loadAppMeta() {
   state.notebooks = meta.notebooks.map(nb => ({
     id: nb.id,
     name: nb.name,
-    pages: (nb.pages || []).map(p => ({
-      id: p.id, strokes: [], background: p.background || 'grid', order: p.order ?? 0, createdAt: p.createdAt || 0, clearedAt: p.clearedAt || 0, deletedAt: p.deletedAt || 0
-    }))
+    pages: (nb.pages || []).map(p => ({ ...pageMeta(p), strokes: [] }))
   }));
   state.notebooks.forEach(normalizePageOrder);
   // NotebookKeys aus Meta installieren (fehlende)
@@ -1117,11 +1128,13 @@ function compositeStrokes() {
  * Bounding-Box der sichtbaren Strokes berechnen.
  * Rendert alle Strokes (inkl. Eraser) auf ein temporäres Canvas und
  * ermittelt die Pixel-Bounding-Box. So werden radierte Bereiche korrekt ignoriert.
+ * @param {Array|null} [strokes] - sichtbare Striche; ohne Angabe die der aktuellen Seite
+ * @param {number} [maxDim] - größte Kantenlänge des Hilfs-Canvas (kleiner = schneller, gröber)
  * @returns {{minX: number, minY: number, maxX: number, maxY: number}|null}
  */
-function computeStrokeBounds() {
-  const page = currentPage();
-  const visible = page ? materializePage(page) : [];
+function computeStrokeBounds(strokes = null, maxDim = 2000) {
+  const page = strokes ? null : currentPage();
+  const visible = strokes || (page ? materializePage(page) : []);
   if (!visible.length) return null;
 
   // Grobe Bounds aus Stroke-Daten (für Canvas-Größe)
@@ -1140,7 +1153,6 @@ function computeStrokeBounds() {
   const margin = 20;
   const w = rMaxX - rMinX + margin * 2;
   const h = rMaxY - rMinY + margin * 2;
-  const maxDim = 2000;
   const scale = Math.min(1, maxDim / Math.max(w, h));
   const cw = Math.ceil(w * scale);
   const ch = Math.ceil(h * scale);
@@ -1209,6 +1221,7 @@ function computeFitView() {
  * Wird vom Home-Button aufgerufen.
  */
 function fitToContent() {
+  _shownPageKey = pageKey();
   const { scale, x, y } = computeFitView();
   state.viewScale = scale;
   state.viewX = x;
@@ -1312,18 +1325,21 @@ function updateContentHint() {
 
 // ─── Navigation ─────────────────────────────────────────────────────────────
 
-/**
- * Zu einer Seite im aktuellen Notebook navigieren.
- * @param {number} index
- */
-async function goToPage(index) {
-  const nb = currentNotebook();
-  if (!nb || index < 0 || index >= nb.pages.length) return;
-  await commitPendingPageOp();
-  flushSave();
-  state.currentPageIds[state.currentNotebookId] = nb.pages[index].id;
+/** Kennung der Seite, die gerade auf der Zeichenfläche liegt (gesetzt in fitToContent/showCurrentPage). */
+let _shownPageKey = '';
+
+function pageKey(notebookId = state.currentNotebookId, page = currentPage()) {
+  return page ? `${notebookId}/${page.id}` : '';
+}
+
+/** Aktuelle Seite laden und frisch anzeigen (Seitenwechsel, Sprung nach dem Löschen). */
+async function showCurrentPage() {
+  const notebookId = state.currentNotebookId;
   const page = currentPage();
-  await loadPage(state.currentNotebookId, page.id, page);
+  if (!page) return;
+  _shownPageKey = pageKey(notebookId, page);
+  try { await loadPage(notebookId, page.id, page); } catch (e) { console.warn('[App] Seite konnte nicht geladen werden:', e); }
+  if (state.currentNotebookId !== notebookId || currentPage() !== page) return;
   // Alle Canvas-Layer komplett leeren vor dem Neuzeichnen
   clearAllCanvases();
   redrawBackground();
@@ -1332,28 +1348,82 @@ async function goToPage(index) {
   saveLocalSettings();
 }
 
-/** Nächste Seite. Legt keine Seite an — dafür gibt es addPage(). */
-async function nextPage() {
-  const nb = currentNotebook();
-  if (!nb) return;
-  const nextIdx = currentPageIndex() + 1;
-  if (nextIdx >= nb.pages.length) return;
-  await goToPage(nextIdx);
+/** Leere Seite ans Ende hängen (nur im Speicher — Speichern/Senden macht der Aufrufer). */
+function appendPage(nb, id, createdAt, background = 'grid') {
+  const page = { id, strokes: [], background, order: nb.pages.length, createdAt, deletedAt: 0, restoredAt: 0 };
+  nb.pages.push(page);
+  normalizePageOrder(nb);
+  return page;
 }
 
-/** Neue Seite am Ende anlegen und dorthin wechseln („+“ in der Seiten-Pille). */
+/**
+ * Ersatzseite, wenn die letzte sichtbare Seite gelöscht wurde. Die ID hängt nur vom
+ * Löschzeitpunkt ab: legen zwei Geräte sie gleichzeitig an, ist es dieselbe Seite.
+ */
+function appendReplacementPage(nb, at) {
+  const id = nb.pages.some(p => p.id === `auto-${at}`) ? newId() : `auto-${at}`;
+  return appendPage(nb, id, at, nb.pages[nb.pages.length - 1]?.background || 'grid');
+}
+
+/** Sind alle Seiten eines Notizbuchs gelöscht (z. B. durch ein anderes Gerät), entsteht eine neue leere. */
+function ensureVisiblePage(nb) {
+  if (!nb?.pages?.length || visiblePages(nb).length) return;
+  const page = appendReplacementPage(nb, Math.max(0, ...nb.pages.map(p => p.deletedAt || 0)));
+  saveAppMeta().then(() => sendNotebookMeta(nb.id, [page.id])).catch(() => {});
+}
+
+/**
+ * Von renderUI() aufgerufen: Zeigt die Zeichenfläche noch eine andere Seite als die aktuelle
+ * (aktuelle Seite auf einem anderen Gerät gelöscht → Nachbarseite), wird sie nachgezogen.
+ */
+function reconcileShownPage() {
+  const nb = currentNotebook();
+  if (!nb || !bgCanvas) return;
+  ensureVisiblePage(nb);
+  const key = pageKey();
+  if (key && key !== _shownPageKey) showCurrentPage();
+}
+
+/**
+ * Zu einer Seite im aktuellen Notebook navigieren.
+ * @param {string} pageId
+ */
+async function goToPageId(pageId) {
+  const nb = currentNotebook();
+  const target = nb?.pages.find(p => p.id === pageId);
+  if (!target || isPageDeleted(target)) return;
+  await commitPendingPageOp();
+  if (isPageDeleted(target)) return;
+  flushSave();
+  state.currentPageIds[state.currentNotebookId] = target.id;
+  await showCurrentPage();
+}
+
+/**
+ * Zur n-ten sichtbaren Seite (gelöschte zählen nicht mit).
+ * @param {number} index
+ */
+async function goToPage(index) {
+  const target = visiblePages()[index];
+  if (target) await goToPageId(target.id);
+}
+
+/** Nächste Seite. Legt keine Seite an — dafür gibt es addPage(). */
+async function nextPage() {
+  await goToPage(currentPageIndex() + 1);
+}
+
+/** Neue Seite am Ende anlegen und dorthin wechseln („+“ in der Seiten-Pille und in der Übersicht). */
 async function addPage() {
   const nb = currentNotebook();
   if (!nb) return;
-  const pageId = newId();
-  const createdAt = Date.now();
-  const bg = currentPage()?.background || 'grid';
-  nb.pages.push({ id: pageId, strokes: [], background: bg, order: nb.pages.length, createdAt, deletedAt: 0 });
-  normalizePageOrder(nb);
+  await commitPendingPageOp();
+  const page = appendPage(nb, newId(), Date.now(), currentPage()?.background || 'grid');
   await saveAppMeta();
-  sendNotebookMeta(state.currentNotebookId, [pageId]);
-  const idx = nb.pages.findIndex(p => p.id === pageId);
-  await goToPage(idx >= 0 ? idx : nb.pages.length - 1);
+  sendNotebookMeta(state.currentNotebookId, [page.id]);
+  await goToPageId(page.id);
+  showToast(`Seite ${currentPageIndex() + 1} angelegt`, { key: 'page-add' });
+  refreshPageOverview();
 }
 
 /** Vorherige Seite. */
@@ -1370,6 +1440,8 @@ async function prevPage() {
 // erst festgeschrieben (gespeichert + verteilt), wenn der Hinweis ohne „Rückgängig“
 // abgelaufen ist — oder früher: beim Seiten-/Notizbuchwechsel, beim Verstecken der
 // Seite und beim nächsten eigenen Strich.
+// Aufheben lässt sich ein festgeschriebenes Löschen nur über ein zweites Feld:
+// restorePage() setzt restoredAt > deletedAt (siehe isPageDeleted).
 
 const PENDING_OP_KEY = 'notizbuch:pendingPageOp';
 
@@ -1378,13 +1450,12 @@ function pendingOpPage(op) {
   return nb?.pages.find(p => p.id === op.pageId) || null;
 }
 
-/** Anzeige nach Vormerken/Zurücknehmen/Festschreiben auffrischen (nur wenn die Seite offen ist). */
-function refreshPendingOpView(op, full = false) {
+/** Anzeige nach Vormerken/Zurücknehmen eines Leerens auffrischen (nur wenn die Seite offen ist). */
+function refreshPendingOpView(op) {
   const page = pendingOpPage(op);
   if (!page) return;
   refreshPageMaterializedState(page);
   if (op.notebookId !== state.currentNotebookId || page.id !== currentPage()?.id) return;
-  if (full) { clearAllCanvases(); redrawBackground(); }
   redrawStrokes();
   renderUI();
   updateSyncDebug();
@@ -1392,22 +1463,41 @@ function refreshPendingOpView(op, full = false) {
 
 /**
  * Aktuelle Seite leeren oder löschen — sofort sichtbar, mit „Rückgängig“ im Hinweis.
- * Löschen: mindestens eine Seite muss bleiben.
+ * Löschen: Die Ansicht springt auf die Nachbarseite; die gelöschte Seite steht nur noch in der
+ * Seitenübersicht unter „Gelöschte Seiten“. War es die letzte Seite, entsteht eine neue leere.
  * @param {'clear'|'delete'} kind
  */
 function startPendingPageOp(kind) {
   const nb = currentNotebook();
   const page = currentPage();
   if (!nb || !page || isPageGone(page)) return;
-  if (kind === 'delete' && nb.pages.filter(p => !isPageGone(p)).length <= 1) return;
   commitPendingPageOp();
-  if (kind === 'delete') flushSave();
-  const op = { kind, notebookId: nb.id, pageId: page.id, at: Date.now(), toast: null };
+  const op = { kind, notebookId: nb.id, pageId: page.id, at: Date.now(), toast: null, autoPageId: null };
+  let text = 'Seite geleert';
+  let next = null;
+  if (kind === 'delete') {
+    flushSave();
+    const pages = visiblePages(nb);
+    const idx = pages.indexOf(page);
+    text = `Seite ${idx + 1} gelöscht`;
+    next = pages[idx + 1] || pages[idx - 1] || null;
+  }
   _pendingPageOp = op;
   // Merkzettel für den Fall, dass die App in der Frist geschlossen wird (siehe recoverPendingPageOp)
   try { localStorage.setItem(PENDING_OP_KEY, JSON.stringify({ kind, notebookId: op.notebookId, pageId: op.pageId, at: op.at })); } catch {}
-  refreshPendingOpView(op, kind === 'delete');
-  op.toast = showToast(kind === 'clear' ? 'Seite geleert' : `Seite ${currentPageIndex() + 1} gelöscht`, {
+  if (kind === 'delete') {
+    if (!next) {
+      // Ersatzseite: bis zum Festschreiben nur im Speicher, „Rückgängig“ nimmt sie wieder weg
+      next = appendReplacementPage(nb, op.at);
+      op.autoPageId = next.id;
+    }
+    state.currentPageIds[nb.id] = next.id;
+    showCurrentPage();
+    refreshPageOverview();
+  } else {
+    refreshPendingOpView(op);
+  }
+  op.toast = showToast(text, {
     key: 'page-op',
     action: { label: 'Rückgängig', onClick: () => revertPendingPageOp(op) },
     onExpire: () => commitPendingPageOp(op)
@@ -1429,7 +1519,20 @@ function revertPendingPageOp(op = _pendingPageOp) {
   _pendingPageOp = null;
   forgetPendingOpNote(op);
   op.toast?.dismiss();
-  refreshPendingOpView(op, op.kind === 'delete');
+  if (op.kind === 'delete') {
+    const nb = state.notebooks.find(n => n.id === op.notebookId);
+    const auto = op.autoPageId ? nb?.pages.findIndex(p => p.id === op.autoPageId) : -1;
+    // Die Ersatzseite verschwindet wieder, solange nichts darauf liegt
+    if (auto >= 0 && !nb.pages[auto].events?.length) { nb.pages.splice(auto, 1); normalizePageOrder(nb); }
+    // Zurück zur wiederhergestellten Seite
+    if (nb && pendingOpPage(op)) {
+      state.currentPageIds[nb.id] = op.pageId;
+      if (nb.id === state.currentNotebookId) showCurrentPage();
+    }
+    refreshPageOverview();
+  } else {
+    refreshPendingOpView(op);
+  }
   showToast(op.kind === 'clear' ? 'Inhalt wiederhergestellt' : 'Seite wiederhergestellt', { key: 'page-op' });
   return true;
 }
@@ -1450,7 +1553,8 @@ async function commitPendingPageOp(op = _pendingPageOp, opts = {}) {
     clearRedoStack(op.notebookId, page.id);
     refreshPageMaterializedState(page);
   } else {
-    page.deletedAt = Math.max(page.deletedAt || 0, op.at);
+    // Muss über einem früheren Wiederherstellen liegen (isPageDeleted)
+    page.deletedAt = Math.max(page.deletedAt || 0, op.at, (page.restoredAt || 0) + 1);
   }
   updateRedoButton();
   try {
@@ -1462,7 +1566,8 @@ async function commitPendingPageOp(op = _pendingPageOp, opts = {}) {
     console.warn('[App] Leeren/Löschen konnte nicht gespeichert werden:', e);
   }
   if (op.kind === 'clear' && op.notebookId === state.currentNotebookId && page.id === currentPage()?.id) saveCurrentPage();
-  sendNotebookMeta(op.notebookId, [page.id]);
+  sendNotebookMeta(op.notebookId, op.autoPageId ? [page.id, op.autoPageId] : [page.id]);
+  refreshPageOverview();
 }
 
 /**
@@ -1477,7 +1582,7 @@ async function recoverPendingPageOp() {
   const page = at && (note.kind === 'clear' || note.kind === 'delete') ? pendingOpPage(note) : null;
   if (page) {
     if (note.kind === 'clear') page.clearedAt = Math.max(page.clearedAt || 0, at);
-    else page.deletedAt = Math.max(page.deletedAt || 0, at);
+    else page.deletedAt = Math.max(page.deletedAt || 0, at, (page.restoredAt || 0) + 1);
     await saveAppMeta();
     announceRecoveredPageOp(note.notebookId, page.id);
   }
@@ -1491,21 +1596,315 @@ function announceRecoveredPageOp(notebookId, pageId, tries = 60) {
   setTimeout(() => announceRecoveredPageOp(notebookId, pageId, tries - 1), 500);
 }
 
-/** Aktuelle Seite löschen (min. 1 Seite muss bleiben) — mit „Rückgängig“ im Hinweis. */
+/** Aktuelle Seite löschen — mit „Rückgängig“ im Hinweis. */
 function deletePage() {
   startPendingPageOp('delete');
 }
 
-async function restorePage() {
-  const page = currentPage();
-  if (!page || !page.deletedAt) return;
-  page.deletedAt = 0;
+/**
+ * Gelöschte Seite wiederherstellen (Seitenübersicht → „Gelöschte Seiten“).
+ * deletedAt bleibt stehen — es wird zwischen Geräten per Maximum gemischt und ließe sich
+ * nicht zurücknehmen. Stattdessen bekommt die Seite ein neueres restoredAt.
+ * @param {string} pageId
+ * @param {string} [notebookId]
+ * @returns {Promise<boolean>}
+ */
+async function restorePage(pageId, notebookId = state.currentNotebookId) {
+  const nb = state.notebooks.find(n => n.id === notebookId);
+  const page = nb?.pages.find(p => p.id === pageId);
+  if (!page) return false;
+  // Läuft der Hinweis noch, ist nichts festgeschrieben: einfach zurücknehmen
+  if (isPendingDelete(page)) return revertPendingPageOp();
+  if (!isPageDeleted(page)) return false;
+  page.restoredAt = Math.max(Date.now(), (page.deletedAt || 0) + 1);
   await saveAppMeta();
-  sendNotebookMeta(state.currentNotebookId, [page.id]);
-  clearAllCanvases();
-  redrawBackground();
-  redrawStrokes();
+  sendNotebookMeta(notebookId, [page.id]);
+  // Geteiltes Notizbuch: auch den Stand im Relay-Room nachziehen (für Teilnehmer, die gerade offline sind)
+  if (state.sharedNotebooks.has(notebookId)) pushSharedNotebook(notebookId, { pageIds: [page.id] }).catch(() => {});
   renderUI();
+  refreshPageOverview();
+  showToast('Seite wiederhergestellt', { key: 'page-op' });
+  return true;
+}
+
+// ─── Seitenübersicht ────────────────────────────────────────────────────────
+// Raster mit Vorschaubildern, geöffnet über den Zähler in der Seiten-Pille; darunter
+// „Gelöschte Seiten“ mit „Wiederherstellen“. Die Vorschauen entstehen träge: erst wenn
+// eine Kachel ins Bild kommt (IntersectionObserver), eine nach der anderen, mit Pausen
+// dazwischen — so friert die Oberfläche auch bei vielen Seiten nicht ein. Gezeichnet wird
+// mit den Funktionen aus canvas.js auf eigene Canvases. Ansicht, Cache-Canvas und aktuelle
+// Seite der Hauptansicht bleiben unberührt: Seitendaten werden in eine Kopie geladen.
+
+const THUMB_W = 320;
+const THUMB_H = 240;
+/** Näher als ein 800 px breiter Ausschnitt bei 100 % zoomt die Vorschau nicht heran. */
+const THUMB_VIEW_W = 800;
+const THUMB_CACHE_MAX = 300;
+
+/** @type {Map<string, {sig: string, canvas: HTMLCanvasElement}>} notebookId/pageId → fertige Vorschau */
+const _thumbCache = new Map();
+/** @type {HTMLElement[]} Kacheln, die auf ihre Vorschau warten */
+let _thumbQueue = [];
+let _thumbBusy = false;
+/** @type {IntersectionObserver|null} */
+let _thumbObserver = null;
+/** @type {HTMLCanvasElement|null} Hilfsfläche für die Striche (Radierer wirkt nur auf sie, nicht aufs Papier) */
+let _thumbLayer = null;
+let _overviewSig = '';
+
+function isPageOverviewOpen() {
+  const modal = document.getElementById('pages-modal');
+  return !!modal && !modal.classList.contains('hidden');
+}
+
+/** Ändert sich diese Kennung, muss die Vorschau neu gezeichnet werden (Events werden nur angehängt). */
+function thumbSignature(page) {
+  return `${page.events?.length || 0}:${page.clearedAt || 0}:${pendingClearAt(page)}:${page.background || 'grid'}`;
+}
+
+/**
+ * Vorschaubild einer Seite: weißes Papier, Papierart, Striche inkl. Radierer —
+ * eingepasst wie fitToContent(); eine leere Seite zeigt den Standardausschnitt.
+ * @param {Array} strokes - sichtbare Striche (materializePage)
+ * @param {string} background
+ * @returns {HTMLCanvasElement}
+ */
+function renderPageThumb(strokes, background) {
+  const canvas = document.createElement('canvas');
+  canvas.width = THUMB_W;
+  canvas.height = THUMB_H;
+  const ctx = canvas.getContext('2d');
+  let scale = THUMB_W / THUMB_VIEW_W, x = 0, y = 0;
+  const bounds = strokes.length ? computeStrokeBounds(strokes, 400) : null;
+  if (bounds) {
+    const pad = 40;
+    const bw = bounds.maxX - bounds.minX + pad * 2;
+    const bh = bounds.maxY - bounds.minY + pad * 2;
+    scale = Math.min(THUMB_W / bw, THUMB_H / bh, scale);
+    x = (THUMB_W - bw * scale) / 2 - (bounds.minX - pad) * scale;
+    y = (THUMB_H - bh * scale) / 2 - (bounds.minY - pad) * scale;
+  }
+  drawBackground(ctx, THUMB_W, THUMB_H, background, x, y, scale);
+  // Papier unter die Linien legen
+  ctx.globalCompositeOperation = 'destination-over';
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, THUMB_W, THUMB_H);
+  ctx.globalCompositeOperation = 'source-over';
+  if (strokes.length) {
+    if (!_thumbLayer) {
+      _thumbLayer = document.createElement('canvas');
+      _thumbLayer.width = THUMB_W;
+      _thumbLayer.height = THUMB_H;
+    }
+    const layer = _thumbLayer.getContext('2d');
+    layer.setTransform(1, 0, 0, 1, 0, 0);
+    layer.globalCompositeOperation = 'source-over';
+    layer.clearRect(0, 0, THUMB_W, THUMB_H);
+    layer.setTransform(scale, 0, 0, scale, x, y);
+    for (const s of strokes) drawStrokeToCanvas(layer, s);
+    ctx.drawImage(_thumbLayer, 0, 0);
+  }
+  return canvas;
+}
+
+/** Vorschau einer Kachel bereitstellen: aus dem Cache oder — wenn sich die Seite geändert hat — neu. */
+async function fillThumbTile(tile) {
+  const notebookId = tile._nbId;
+  const page = state.notebooks.find(n => n.id === notebookId)?.pages.find(p => p.id === tile.dataset.page);
+  if (!page) return;
+  const sig = thumbSignature(page);
+  const key = `${notebookId}/${page.id}`;
+  let entry = _thumbCache.get(key);
+  if (!entry || entry.sig !== sig) {
+    // Kopie der Seite: Stand von der Platte mit dem im Speicher vereinigen, ohne den State anzufassen
+    const copy = { id: page.id, clearedAt: page.clearedAt || 0, strokes: page.strokes || [] };
+    if (Array.isArray(page.events)) copy.events = [...page.events];
+    const isCurrent = notebookId === state.currentNotebookId && page === currentPage();
+    if (!isCurrent) {
+      try { await loadPage(notebookId, page.id, copy); } catch (e) { console.warn('[UI] Vorschau: Seite nicht lesbar', page.id, e); }
+    }
+    entry = { sig, canvas: renderPageThumb(materializePage(copy), page.background || 'grid') };
+    _thumbCache.delete(key);
+    _thumbCache.set(key, entry);
+    if (_thumbCache.size > THUMB_CACHE_MAX) _thumbCache.delete(_thumbCache.keys().next().value);
+  }
+  paintThumbTile(tile, entry);
+}
+
+function paintThumbTile(tile, entry) {
+  const canvas = tile.querySelector('canvas');
+  if (!canvas) return;
+  canvas.getContext('2d').drawImage(entry.canvas, 0, 0);
+  tile._sig = entry.sig;
+}
+
+function queueThumbTile(tile) {
+  if (tile._queued) return;
+  tile._queued = true;
+  _thumbQueue.push(tile);
+  runThumbQueue();
+}
+
+/** Wartende Vorschauen nacheinander abarbeiten; nach jeder bekommt der Browser Luft für Eingaben. */
+async function runThumbQueue() {
+  if (_thumbBusy) return;
+  _thumbBusy = true;
+  try {
+    while (_thumbQueue.length && isPageOverviewOpen()) {
+      const tile = _thumbQueue.shift();
+      tile._queued = false;
+      if (!tile.isConnected) continue;
+      try { await fillThumbTile(tile); } catch (e) { console.warn('[UI] Vorschau:', e); }
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+  } finally {
+    _thumbBusy = false;
+  }
+}
+
+function deletedAgoText(ts) {
+  const day = t => { const d = new Date(t); d.setHours(0, 0, 0, 0); return d.getTime(); };
+  const days = Math.round((day(Date.now()) - day(ts || Date.now())) / 86400000);
+  if (days <= 0) return 'heute gelöscht';
+  return days === 1 ? 'gestern gelöscht' : `vor ${days} Tagen gelöscht`;
+}
+
+/** Eine Kachel der Übersicht. Gelöschte Seiten: Bild nicht anklickbar, dafür „Wiederherstellen“. */
+function buildThumbTile(nb, page, number, opts = {}) {
+  const li = document.createElement('li');
+  li.className = 'thumb' + (opts.current ? ' current' : '') + (opts.gone ? ' gone' : '');
+  li.dataset.page = page.id;
+  li._nbId = nb.id;
+  const pic = document.createElement(opts.gone ? 'div' : 'button');
+  pic.className = 'thumb-pic';
+  if (!opts.gone) {
+    pic.type = 'button';
+    pic.dataset.go = page.id;
+    pic.setAttribute('aria-label', `Seite ${number} öffnen`);
+    if (opts.current) pic.setAttribute('aria-current', 'page');
+  }
+  const canvas = document.createElement('canvas');
+  canvas.width = THUMB_W;
+  canvas.height = THUMB_H;
+  canvas.setAttribute('aria-hidden', 'true');
+  pic.appendChild(canvas);
+  const cap = document.createElement('div');
+  cap.className = 'cap';
+  const label = document.createElement('span');
+  if (opts.gone) {
+    const at = isPendingDelete(page) ? _pendingPageOp.at : page.deletedAt;
+    label.textContent = deletedAgoText(at);
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn';
+    btn.dataset.restore = page.id;
+    btn.textContent = 'Wiederherstellen';
+    btn.setAttribute('aria-label', `Gelöschte Seite wiederherstellen (${label.textContent})`);
+    cap.append(label, btn);
+  } else {
+    label.textContent = `Seite ${number}${opts.current ? ' · aktuell' : ''}`;
+    cap.appendChild(label);
+  }
+  li.append(pic, cap);
+  const cached = _thumbCache.get(`${nb.id}/${page.id}`);
+  if (cached) paintThumbTile(li, cached);
+  return li;
+}
+
+/**
+ * Übersicht aufbauen bzw. auffrischen. Das Raster entsteht nur neu, wenn sich die Seitenliste
+ * geändert hat; sonst werden nur veraltete Vorschauen sichtbarer Kacheln neu eingereiht.
+ * Wird von renderUI() und nach Sync-Eingängen aufgerufen — bei geschlossener Übersicht ohne Wirkung.
+ */
+function refreshPageOverview(force = false) {
+  if (!force && !isPageOverviewOpen()) return;
+  const nb = currentNotebook();
+  const sheet = document.getElementById('pages-sheet');
+  const grid = document.getElementById('pages-grid');
+  const trash = document.getElementById('pages-trash');
+  if (!nb || !sheet || !grid || !trash) return;
+  const pages = visiblePages(nb);
+  const gone = nb.pages.filter(p => isPageGone(p));
+  const currentId = currentPage()?.id;
+  const sig = `${nb.id}|${nb.name}|${currentId}|${pages.map(p => p.id).join(',')}|${gone.map(p => p.id).join(',')}`;
+  if (sig !== _overviewSig) {
+    _overviewSig = sig;
+    const hadFocus = sheet.contains(document.activeElement);
+    const focusPage = document.activeElement?.closest?.('[data-page]')?.dataset.page;
+    document.getElementById('pages-title').textContent = nb.name || 'Notizbuch';
+    document.getElementById('pages-count').textContent = `${pages.length} ${pages.length === 1 ? 'Seite' : 'Seiten'}`;
+    _thumbObserver?.disconnect();
+    _thumbObserver = new IntersectionObserver(entries => {
+      for (const entry of entries) {
+        const tile = entry.target;
+        tile._visible = entry.isIntersecting;
+        if (tile._visible && tile._sig !== thumbSignatureOfTile(tile)) queueThumbTile(tile);
+      }
+    }, { root: sheet, rootMargin: '200px 0px' });
+    _thumbQueue = [];
+    const tiles = pages.map((p, i) => buildThumbTile(nb, p, i + 1, { current: p.id === currentId }));
+    const add = document.createElement('li');
+    add.className = 'thumb';
+    const addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.className = 'new';
+    addBtn.id = 'btn-pages-new';
+    addBtn.setAttribute('aria-label', 'Neue Seite');
+    addBtn.appendChild(svgIcon('plus'));
+    const addCap = document.createElement('div');
+    addCap.className = 'cap';
+    const addLabel = document.createElement('span');
+    addLabel.className = 'muted';
+    addLabel.textContent = 'Neue Seite';
+    addCap.appendChild(addLabel);
+    add.append(addBtn, addCap);
+    grid.replaceChildren(...tiles, add);
+    const goneTiles = gone.map(p => buildThumbTile(nb, p, 0, { gone: true }));
+    trash.replaceChildren(...goneTiles);
+    document.getElementById('pages-trash-section').hidden = gone.length === 0;
+    for (const tile of [...tiles, ...goneTiles]) _thumbObserver.observe(tile);
+    // Der Fokus lag auf einem Knopf, den es nicht mehr gibt (z. B. „Wiederherstellen“): in der Übersicht halten
+    if (hadFocus && !sheet.contains(document.activeElement)) {
+      const tile = [...sheet.querySelectorAll('[data-page]')].find(t => t.dataset.page === focusPage);
+      (tile?.querySelector('button') || sheet.querySelector('.thumb.current .thumb-pic') || sheet).focus({ preventScroll: true });
+    }
+    return;
+  }
+  for (const tile of sheet.querySelectorAll('.thumb[data-page]')) {
+    if (tile._visible && tile._sig !== thumbSignatureOfTile(tile)) queueThumbTile(tile);
+  }
+}
+
+function thumbSignatureOfTile(tile) {
+  const page = state.notebooks.find(n => n.id === tile._nbId)?.pages.find(p => p.id === tile.dataset.page);
+  return page ? thumbSignature(page) : tile._sig;
+}
+
+/** Seitenübersicht öffnen (Zähler in der Seiten-Pille). */
+function openPageOverview() {
+  if (!currentNotebook() || isPageOverviewOpen()) return;
+  const returnFocus = document.activeElement;
+  _overviewSig = '';
+  refreshPageOverview(true);
+  openDialog('pages-modal', {
+    returnFocus,
+    focus: '.thumb.current .thumb-pic',
+    onClose: () => { _thumbObserver?.disconnect(); _thumbObserver = null; _thumbQueue = []; }
+  });
+  document.querySelector('#pages-grid .thumb.current')?.scrollIntoView({ block: 'nearest' });
+}
+
+/** Tipp in der Übersicht: Seite öffnen, wiederherstellen oder neue Seite anlegen. */
+function onPageOverviewClick(e) {
+  const go = e.target.closest('[data-go]');
+  if (go) {
+    closeDialog('pages-modal');
+    goToPageId(go.dataset.go);
+    return;
+  }
+  const restore = e.target.closest('[data-restore]');
+  if (restore) { restorePage(restore.dataset.restore); return; }
+  if (e.target.closest('#btn-pages-new')) addPage();
 }
 
 /**
@@ -2029,13 +2428,15 @@ function flashLabel(btn, text) {
   el._flashTimer = setTimeout(() => { el.textContent = el.dataset.orig; }, 2000);
 }
 
-/** Text in die Zwischenablage legen und am Knopf rückmelden. */
-async function copyText(text, btn) {
+/** Text in die Zwischenablage legen; Rückmeldung am Knopf und als Hinweis („Link kopiert“). */
+async function copyText(text, btn, what = 'Link') {
   try {
     await navigator.clipboard.writeText(text);
     flashLabel(btn, 'Kopiert!');
+    showToast(`${what} kopiert`, { key: 'copy' });
   } catch {
     flashLabel(btn, 'Nicht möglich');
+    showToast('Kopieren nicht möglich', { key: 'copy', fehler: true });
   }
 }
 
@@ -2276,7 +2677,7 @@ function startRenameNotebook(nbId) {
 async function requestDeleteNotebook(nbId) {
   const nb = state.notebooks.find(n => n.id === nbId);
   if (!nb || state.notebooks.length <= 1) return;
-  const n = nb.pages.filter(p => !p.deletedAt).length;
+  const n = nb.pages.filter(p => !isPageDeleted(p)).length;
   const ok = await confirmDialog({
     title: `„${nb.name}“ löschen?`,
     text: `${n} ${n === 1 ? 'Seite wird' : 'Seiten werden'} auf allen deinen Geräten entfernt.`,
@@ -2399,7 +2800,7 @@ function showKeyDisplayDialog(raw) {
     if (keyEl) keyEl.textContent = groupHex(hex);
 
     document.getElementById('btn-download-key').onclick = () => downloadKeyFile(raw);
-    document.getElementById('btn-copy-key').onclick = (e) => copyText(hex, e.currentTarget);
+    document.getElementById('btn-copy-key').onclick = (e) => copyText(hex, e.currentTarget, 'Schlüssel');
     document.getElementById('btn-key-confirmed').onclick = () => {
       closeDialog('keydisplay-modal');
       if (keyEl) keyEl.textContent = '';
@@ -2541,6 +2942,7 @@ async function mergeSharedNotebookData(notebookId, nodes) {
 
   let merged = 0;
   const changedPages = new Set();
+  const metaBefore = JSON.stringify(nb.pages.map(pageMeta));
   for (const [key, blob] of Object.entries(nodes)) {
     // Pages: key = "p:{pageId}"
     if (!key.startsWith('p:') || !(blob instanceof Uint8Array)) continue;
@@ -2579,14 +2981,10 @@ async function mergeSharedNotebookData(notebookId, nodes) {
         for (const sp of sharedMeta.pages) {
           const existingPage = nb.pages.find(p => p.id === sp.id);
           if (!existingPage) {
-            nb.pages.push({ id: sp.id, strokes: [], background: sp.background || 'grid', order: sp.order ?? nb.pages.length, createdAt: sp.createdAt || 0, clearedAt: sp.clearedAt || 0, deletedAt: sp.deletedAt || 0 });
+            nb.pages.push({ ...pageMeta(sp), order: sp.order ?? nb.pages.length, strokes: [] });
             normalizePageOrder(nb);
           } else {
-            if (typeof sp.order === 'number') existingPage.order = sp.order;
-            if (sp.background) existingPage.background = sp.background;
-            if (!existingPage.createdAt && sp.createdAt) existingPage.createdAt = sp.createdAt;
-            existingPage.clearedAt = Math.max(existingPage.clearedAt || 0, sp.clearedAt || 0);
-            existingPage.deletedAt = Math.max(existingPage.deletedAt || 0, sp.deletedAt || 0);
+            applyPageMeta(existingPage, sp);
           }
         }
         normalizePageOrder(nb);
@@ -2610,7 +3008,9 @@ async function mergeSharedNotebookData(notebookId, nodes) {
     }
   }
 
-  if (merged > 0 || changedPages.size > 0) {
+  // Auch reine Meta-Änderungen (gelöscht/wiederhergestellt, neue Seite) speichern und anzeigen
+  const metaChanged = JSON.stringify(nb.pages.map(pageMeta)) !== metaBefore;
+  if (merged > 0 || changedPages.size > 0 || metaChanged) {
     console.log(`[Share] ${merged} Strokes aus Relay gemerged für Notebook ${notebookId}`);
     // Aktuelle Seite neu zeichnen falls betroffen
     if (notebookId === state.currentNotebookId) {
@@ -2619,6 +3019,7 @@ async function mergeSharedNotebookData(notebookId, nodes) {
     }
     await saveAppMeta();
     _lastRelayMergeAt = Date.now();
+    if (metaChanged) { renderUI(); refreshPageOverview(); }
     updateSyncDebug('relay-shared-merge');
   }
 }
@@ -2644,7 +3045,7 @@ async function pushSharedNotebook(notebookId, opts = {}) {
   const blobs = [];
   try {
     const nbKey = await getNotebookKey(notebookId);
-    const meta = { name: nb.name, pages: nb.pages.map(p => ({ id: p.id, background: p.background, order: p.order, createdAt: p.createdAt || 0, clearedAt: p.clearedAt || 0, deletedAt: p.deletedAt || 0 })) };
+    const meta = { name: nb.name, pages: nb.pages.map(pageMeta) };
     const metaEncrypted = await encrypt(nbKey, JSON.stringify(meta));
     blobs.push({ id: 'meta', data: metaEncrypted });
   } catch (e) { console.warn('[Share] Meta-encrypt fehlgeschlagen:', e); }
@@ -3026,6 +3427,7 @@ const _p2pCallbacks = {
     if (notebookId === state.currentNotebookId && pageId === currentPage()?.id) {
       redrawStrokes();
     }
+    refreshPageOverview();
     if (peerId !== 'relay') markSyncActivity('recv:stroke');
     serializePageData(page, notebookId).then(d => savePageData(notebookId, pageId, d));
   },
@@ -3052,6 +3454,7 @@ const _p2pCallbacks = {
       }]);
     }
     if (notebookId === state.currentNotebookId && pageId === currentPage()?.id) redrawStrokes();
+    refreshPageOverview();
     serializePageData(page, notebookId).then(d => savePageData(notebookId, pageId, d));
   },
 
@@ -3067,6 +3470,7 @@ const _p2pCallbacks = {
     // Der lokale Redo-Stapel bleibt von Remote-Events unberührt
     mergePageEvents(page, [pageEvent]);
     if (notebookId === state.currentNotebookId && pageId === currentPage()?.id) redrawStrokes();
+    refreshPageOverview();
     serializePageData(page, notebookId).then(d => savePageData(notebookId, pageId, d));
   },
 
@@ -3349,7 +3753,6 @@ function onWheel(e) {
   compositeStrokes();
 }
 
-/** View auf 1:1 zurücksetzen. */
 /** View zurücksetzen: Fit-to-Content oder 1:1 wenn keine Strokes. */
 function resetView() {
   fitToContent();
@@ -3853,6 +4256,7 @@ async function buildEncryptedBackupBundle() {
         createdAt: p.createdAt || 0,
         clearedAt: p.clearedAt || 0,
         deletedAt: p.deletedAt || 0,
+        restoredAt: p.restoredAt || 0,
         strokes: materializePage(p).map(s => ({
           id: s.id,
           createdAt: strokeCreatedAt(s),
@@ -4432,10 +4836,6 @@ function onPointerMove(e) {
   // Aktiver Pinch-Zoom → nur Pinch updaten
   if (pinchState.active) {
     _updatePinch();
-    // Swipe-Tracking
-    if (swipeState.active && e.pointerId === swipeState.pointerId) {
-      swipeState.currentX = e.clientX;
-    }
     return;
   }
 
@@ -4481,16 +4881,6 @@ function onPointerUp(e) {
     if (Object.keys(pinchState.touches).length < 2) {
       pinchState.active = false;
       redrawStrokes(); // Cache nach Zoom aktualisieren
-    }
-    // Swipe auswerten
-    if (swipeState.active && e.pointerId === swipeState.pointerId) {
-      swipeState.active = false;
-      const dx = swipeState.currentX - swipeState.startX;
-      const dt = Date.now() - swipeState.startTime;
-      if (Math.abs(dx) > 80 && dt < 800) {
-        if (dx > 0) prevPage();
-        else nextPage();
-      }
     }
     return;
   }
@@ -4545,48 +4935,40 @@ function onPointerUp(e) {
 
 /** Sidebar + Toolbar + Page-Bar aktualisieren. */
 function renderUI() {
+  // Zeigt die Zeichenfläche noch die richtige Seite? (aktuelle Seite woanders gelöscht → Nachbarseite)
+  reconcileShownPage();
+
   // Notizbuch-Liste in der Schublade
   renderNotebookList();
 
   // Notebook-Name im Titel-Knopf (öffnet die Notizbuch-Liste)
   const nbName = currentNotebook()?.name || '';
+  // Nur vorübergehend möglich (alle Seiten gelöscht, Ersatzseite noch nicht da)
   const deletedPage = isPageGone();
-  const titleSuffix = deletedPage ? ' · gelöscht' : '';
   const titleEl = document.getElementById('notebook-title');
-  if (titleEl) titleEl.textContent = nbName + titleSuffix;
+  if (titleEl) titleEl.textContent = nbName;
   const titleBtn = document.getElementById('btn-notebooks');
-  if (titleBtn) titleBtn.setAttribute('aria-label', `Notizbücher öffnen – aktuell: ${nbName}${titleSuffix}`);
+  if (titleBtn) titleBtn.setAttribute('aria-label', `Notizbücher öffnen – aktuell: ${nbName}`);
 
-  // Seiten-Pille: Zähler, ‹ ›
+  // Seiten-Pille: Zähler (öffnet die Seitenübersicht), ‹ › — gelöschte Seiten zählen nicht mit
   const pageNo = currentPageIndex() + 1;
   const pageTotal = totalPages();
   const pageIndicator = document.getElementById('page-indicator');
-  if (pageIndicator) pageIndicator.textContent = `${pageNo} / ${pageTotal}${deletedPage ? ' · gelöscht' : ''}`;
+  if (pageIndicator) pageIndicator.textContent = `${pageNo} / ${pageTotal}`;
   const overviewBtn = document.getElementById('btn-page-overview');
-  if (overviewBtn) overviewBtn.setAttribute('aria-label', `Seite ${pageNo} von ${pageTotal}${deletedPage ? ' (gelöscht)' : ''}`);
+  if (overviewBtn) overviewBtn.setAttribute('aria-label', `Seite ${pageNo} von ${pageTotal} – Seitenübersicht öffnen`);
   const prevBtn = document.getElementById('btn-prev');
   const nextBtn = document.getElementById('btn-next');
   if (prevBtn) prevBtn.disabled = pageNo <= 1;
   if (nextBtn) nextBtn.disabled = pageNo >= pageTotal; // „›“ legt keine Seite an — dafür gibt es „+“
 
-  // Seiten-Menü: Löschen/Wiederherstellen
+  // Seiten-Menü: Leeren/Löschen
   const delPageBtn = document.getElementById('btn-delete-page');
-  if (delPageBtn) {
-    delPageBtn.disabled = !deletedPage && currentNotebook()?.pages?.filter(p => !isPageGone(p)).length <= 1;
-    const label = deletedPage ? 'Seite wiederherstellen' : 'Seite löschen';
-    delPageBtn.title = label;
-    delPageBtn.classList.toggle('danger', !deletedPage);
-    const labelEl = document.getElementById('delete-page-label');
-    if (labelEl) labelEl.textContent = label;
-  }
+  if (delPageBtn) delPageBtn.disabled = deletedPage;
+  const clearBtn = document.getElementById('btn-clear');
+  if (clearBtn) clearBtn.disabled = deletedPage;
 
   updateRedoButton();
-
-  const clearBtn = document.getElementById('btn-clear');
-  if (clearBtn) {
-    clearBtn.disabled = deletedPage;
-    clearBtn.title = deletedPage ? 'Gelöschte Seite kann nicht geleert werden' : 'Seite leeren';
-  }
 
   // Vollbild-Eintrag
   const zenLabel = document.getElementById('zen-label');
@@ -4612,7 +4994,6 @@ function renderUI() {
   const container = document.getElementById('canvas-container');
   if (container) {
     container.classList.toggle('hand-cursor', handOn);
-    container.classList.toggle('page-deleted', deletedPage);
     container.style.cursor = handOn ? '' : (deletedPage ? 'not-allowed' : (state.tool === 'eraser' ? 'cell' : 'crosshair'));
   }
 
@@ -4665,7 +5046,7 @@ function renderUI() {
 
   updateSyncDebug();
   updateSyncStatus();
-
+  refreshPageOverview();
 }
 
 /** Sync-Status in der Leiste (Punkt + Text). Schreibt nur bei Änderung ins DOM. */
@@ -4833,6 +5214,7 @@ async function init() {
 
   // 10b. URL-Hash auf aktuelles Notebook setzen
   await updateUrlHash();
+  _shownPageKey = pageKey();
 
   // 11. Event-Listener
   setupEvents();
@@ -5081,16 +5463,13 @@ function setupEvents() {
 
   // Leeren/Löschen ohne Rückfrage: sofort ausführen, Hinweis mit „Rückgängig“
   document.getElementById('btn-clear')?.addEventListener('click', clearPage);
-  document.getElementById('btn-delete-page')?.addEventListener('click', async () => {
-    if (isPendingDelete(currentPage())) {
-      revertPendingPageOp();
-    } else if (isPageDeleted()) {
-      await restorePage();
-      showToast('Seite wiederhergestellt', { key: 'page-op' });
-    } else {
-      deletePage();
-    }
-  });
+  document.getElementById('btn-delete-page')?.addEventListener('click', deletePage);
+
+  // Seitenübersicht: Zähler in der Seiten-Pille
+  document.getElementById('btn-page-overview')?.addEventListener('click', openPageOverview);
+  document.getElementById('btn-close-pages')?.addEventListener('click', () => closeDialog('pages-modal'));
+  document.getElementById('btn-pages-add')?.addEventListener('click', addPage);
+  document.getElementById('pages-sheet')?.addEventListener('click', onPageOverviewClick);
 
   // Hintergrund-Auswahl
   document.querySelectorAll('.bg-btn[data-bg]').forEach(btn => {
@@ -5210,7 +5589,7 @@ function setupEvents() {
   document.getElementById('conn-relay-url')?.addEventListener('input', () => setRelayError(''));
   // Daten & Schlüssel
   document.getElementById('btn-key-download')?.addEventListener('click', () => { if (masterKeyRaw) downloadKeyFile(masterKeyRaw); });
-  document.getElementById('btn-key-copy')?.addEventListener('click', (e) => { if (masterKeyRaw) copyText(keyHex(masterKeyRaw), e.currentTarget); });
+  document.getElementById('btn-key-copy')?.addEventListener('click', (e) => { if (masterKeyRaw) copyText(keyHex(masterKeyRaw), e.currentTarget, 'Schlüssel'); });
   document.getElementById('btn-key-show')?.addEventListener('click', () => toggleKeyBox());
   document.getElementById('btn-export-enc')?.addEventListener('click', () => exportApp('enc'));
   document.getElementById('btn-import')?.addEventListener('click', importApp);
