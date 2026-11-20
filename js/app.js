@@ -22,20 +22,22 @@ import {
 /** @type {number} DPR gekappt auf 2 für Performance */
 const DPR = Math.min(window.devicePixelRatio || 1, 2);
 
-/** @type {Array<string>} Standard-Farbpalette */
-const COLORS = ['#363636', '#ffffff', '#ff6b6b', '#ffa94d', '#ffd43b', '#69db7c', '#38d9a9', '#4dabf7', '#748ffc', '#da77f2'];
+/** @type {Array<string>} Standard-Farbpalette (ohne Weiß — das Papier ist immer weiß) */
+const COLORS = ['#14171c', '#868e96', '#e03131', '#f08c00', '#f2c200', '#2f9e44', '#0c8599', '#1971c2', '#6741d9'];
+/** @type {Array<string>} Namen zur Palette (für aria-label/title) */
+const COLOR_NAMES = ['Schwarz', 'Grau', 'Rot', 'Orange', 'Gelb', 'Grün', 'Türkis', 'Blau', 'Violett'];
 
-/** @type {Array<{name: string, size: number}>} Stiftgrößen */
+/** @type {Array<{name: string, label: string, size: number, dot: number}>} Stiftgrößen (dot = Punktgröße in der Auswahl) */
 const PEN_SIZES = [
-  { name: 'XS', size: 1 },
-  { name: 'S', size: 2 },
-  { name: 'M', size: 4 },
-  { name: 'L', size: 8 },
-  { name: 'XL', size: 16 }
+  { name: 'XS', label: 'Fein', size: 1, dot: 4 },
+  { name: 'S', label: 'Dünn', size: 2, dot: 7 },
+  { name: 'M', label: 'Mittel', size: 4, dot: 11 },
+  { name: 'L', label: 'Dick', size: 8, dot: 16 },
+  { name: 'XL', label: 'Sehr dick', size: 16, dot: 24 }
 ];
 
 const BACKGROUNDS = ['grid', 'lined', 'blank'];
-const APP_VERSION = '2026-11-20-redo-v40';
+const APP_VERSION = '2026-11-20-redesign-v41';
 const PRESENCE_INTERVAL_MS = 5000;
 const PRESENCE_TIMEOUT_MS = 15000;
 
@@ -51,8 +53,9 @@ const state = {
   currentPageIds: {},
 
   // Tools
-  tool: 'pen',        // 'pen' | 'eraser' | 'hand'
-  color: '#363636',
+  tool: 'pen',        // 'pen' | 'eraser' | 'hand' (hand = Bewegen-Schalter an)
+  lastDrawTool: 'pen', // zuletzt benutztes Zeichenwerkzeug — kommt zurück, wenn die Hand ausgeht
+  color: '#14171c',
   penSizeIndex: 2,
   customColors: [],
   penDetected: false,
@@ -685,6 +688,46 @@ function settingsDelete(key) {
   });
 }
 
+// ─── Theme (hell/dunkel, gerätelokal) ───────────────────────────────────────
+
+const THEME_SETTING_KEY = 'device:theme';
+const THEME_CHOICES = ['system', 'light', 'dark'];
+
+/** @returns {'system'|'light'|'dark'} aktuell geltende Wahl */
+function getTheme() {
+  return window.__nbTheme?.get() || 'system';
+}
+
+/**
+ * Theme wählen. 'system' folgt der Systemeinstellung (live), 'light'/'dark' haben Vorrang.
+ * Gespeichert wird gerätelokal in IndexedDB (notizbuch-settings); das Inline-Skript in
+ * app.html hält eine Kopie in localStorage, damit beim Laden nichts aufblitzt.
+ * @param {'system'|'light'|'dark'} choice
+ * @returns {Promise<string>} die tatsächlich gesetzte Wahl
+ */
+async function setTheme(choice) {
+  if (!THEME_CHOICES.includes(choice)) choice = 'system';
+  window.__nbTheme?.set(choice);
+  if (settingsDB) {
+    try { await settingsPut(THEME_SETTING_KEY, choice); } catch (e) { console.warn('[App] Theme konnte nicht gespeichert werden:', e); }
+  }
+  return choice;
+}
+
+/** Gespeicherte Wahl aus IndexedDB übernehmen (hat Vorrang vor der localStorage-Kopie). */
+async function loadTheme() {
+  try {
+    const saved = await settingsGet(THEME_SETTING_KEY);
+    const choice = THEME_CHOICES.includes(saved) ? saved : 'system';
+    if (choice !== getTheme()) window.__nbTheme?.set(choice);
+  } catch (e) {
+    console.warn('[App] Theme konnte nicht geladen werden:', e);
+  }
+}
+
+window.setTheme = setTheme;
+window.getTheme = getTheme;
+
 // ─── Browser/Device Detection ───────────────────────────────────────────────
 
 /** @returns {string} z.B. "Chrome Desktop", "Firefox Android" */
@@ -962,6 +1005,8 @@ function redrawBackground() {
   const h = bgCanvas.height / DPR;
   const bg = currentPage()?.background || 'grid';
   drawBackground(bgCtx, w, h, bg, state.viewX, state.viewY, state.viewScale);
+  // Wird bei jedem Pan/Zoom durchlaufen: billiger Vergleich gegen den Ausschnitt
+  updateContentHint();
 }
 
 /** Hintergrund der aktuellen Seite ändern. */
@@ -998,6 +1043,7 @@ function redrawStrokes() {
 
   const page = currentPage();
   const strokes = page ? materializePage(page) : [];
+  noteContentMaybeChanged(page, strokes);
   cacheCtx.save();
   cacheCtx.translate(state.viewX, state.viewY);
   cacheCtx.scale(state.viewScale, state.viewScale);
@@ -1119,6 +1165,8 @@ function computeFitView() {
   const cw = container.clientWidth;
   const ch = container.clientHeight;
   const bounds = computeStrokeBounds();
+  // Frisch berechnete Grenzen gleich für den Hinweis „Weiterer Inhalt“ merken
+  setContentBounds(bounds);
   if (!bounds) return { scale: 1, x: 0, y: 0 };
   const pad = 40;
   const bw = bounds.maxX - bounds.minX + pad * 2;
@@ -1145,6 +1193,98 @@ function fitToContent() {
   redrawStrokes();
 }
 
+/**
+ * Um die Bildschirmmitte zoomen (Knöpfe − / + in der Zoom-Pille).
+ * @param {number} factor
+ */
+function zoomBy(factor) {
+  if (!bgCanvas) return;
+  const w = bgCanvas.width / DPR;
+  const h = bgCanvas.height / DPR;
+  const newScale = Math.min(8, Math.max(0.2, state.viewScale * factor));
+  const worldX = (w / 2 - state.viewX) / state.viewScale;
+  const worldY = (h / 2 - state.viewY) / state.viewScale;
+  state.viewX = w / 2 - worldX * newScale;
+  state.viewY = h / 2 - worldY * newScale;
+  state.viewScale = newScale;
+  redrawBackground();
+  redrawStrokes();
+}
+
+// ─── Hinweis „Weiterer Inhalt“ ──────────────────────────────────────────────
+// Die Inhalts-Grenzen (Weltkoordinaten) werden einmal pixelgenau bestimmt
+// (computeStrokeBounds — Radiertes zählt nicht) und gecacht. Neu berechnet wird nur,
+// wenn sich die Striche der Seite ändern (entprellt). Bei Pan/Zoom wird der Cache nur
+// gegen den sichtbaren Ausschnitt verglichen. Die Ansicht wird nie automatisch verschoben.
+
+/** @type {{minX:number,minY:number,maxX:number,maxY:number}|null} */
+let _contentBounds = null;
+let _contentBoundsSig = '';
+let _contentBoundsTimer = null;
+/** @type {string|null} aktuell angezeigte Richtung ('left'|'right'|'up'|'down') */
+let _contentHintDir = null;
+
+/** Kennung für „welche Striche liegen auf der Seite“ — Events werden nur angehängt. */
+function contentSignature(page = currentPage(), strokes = null) {
+  if (!page) return '';
+  const n = strokes ? strokes.length : (page.strokes?.length || 0);
+  return `${state.currentNotebookId}/${page.id}:${page.events?.length || 0}:${page.clearedAt || 0}:${page.deletedAt || 0}:${n}`;
+}
+
+function setContentBounds(bounds) {
+  if (_contentBoundsTimer) { clearTimeout(_contentBoundsTimer); _contentBoundsTimer = null; }
+  _contentBounds = bounds;
+  const page = currentPage();
+  _contentBoundsSig = contentSignature(page, page ? materializePage(page) : []);
+  updateContentHint();
+}
+
+/** Von redrawStrokes() aufgerufen: bei geänderten Strichen Neuberechnung einplanen. */
+function noteContentMaybeChanged(page, strokes) {
+  if (contentSignature(page, strokes) === _contentBoundsSig) return;
+  scheduleContentBounds();
+}
+
+function scheduleContentBounds(delay = 400) {
+  if (_contentBoundsTimer) clearTimeout(_contentBoundsTimer);
+  _contentBoundsTimer = setTimeout(() => {
+    _contentBoundsTimer = null;
+    // Nicht mitten im Strich oder in einer Geste rechnen
+    if (isDrawing || isPanning || pinchState.active) { scheduleContentBounds(250); return; }
+    setContentBounds(computeStrokeBounds());
+  }, delay);
+}
+
+/** Billiger Vergleich: liegt Inhalt außerhalb des sichtbaren Ausschnitts — und wo? */
+function updateContentHint() {
+  let dir = null;
+  const b = _contentBounds;
+  if (b && bgCanvas && !isPageDeleted()) {
+    const w = bgCanvas.width / DPR;
+    const h = bgCanvas.height / DPR;
+    const s = state.viewScale;
+    const over = {
+      left: -(b.minX * s + state.viewX),
+      right: b.maxX * s + state.viewX - w,
+      up: -(b.minY * s + state.viewY),
+      down: b.maxY * s + state.viewY - h
+    };
+    let max = 2; // Toleranz in px
+    for (const k in over) {
+      if (over[k] > max) { max = over[k]; dir = k; }
+    }
+  }
+  if (dir === _contentHintDir) return;
+  _contentHintDir = dir;
+  const main = document.getElementById('main');
+  if (main) main.dataset.off = String(!!dir);
+  const hint = document.getElementById('btn-edge-hint');
+  if (hint) {
+    if (dir) hint.dataset.dir = dir;
+    hint.hidden = !dir;
+  }
+}
+
 // ─── Navigation ─────────────────────────────────────────────────────────────
 
 /**
@@ -1166,25 +1306,28 @@ async function goToPage(index) {
   saveLocalSettings();
 }
 
-/** Nächste Seite (erstellt neue wenn am Ende). */
+/** Nächste Seite. Legt keine Seite an — dafür gibt es addPage(). */
 async function nextPage() {
   const nb = currentNotebook();
   if (!nb) return;
-  const idx = currentPageIndex();
-  const nextIdx = idx + 1;
-
-  if (nextIdx >= nb.pages.length) {
-    // Neue Seite erstellen
-    const pageId = newId();
-    const createdAt = Date.now();
-    const bg = currentPage()?.background || 'grid';
-    nb.pages.push({ id: pageId, strokes: [], background: bg, order: nextIdx, createdAt, deletedAt: 0 });
-    normalizePageOrder(nb);
-    await saveAppMeta();
-    sendNotebookMeta(state.currentNotebookId, [pageId]);
-  }
-
+  const nextIdx = currentPageIndex() + 1;
+  if (nextIdx >= nb.pages.length) return;
   await goToPage(nextIdx);
+}
+
+/** Neue Seite am Ende anlegen und dorthin wechseln („+“ in der Seiten-Pille). */
+async function addPage() {
+  const nb = currentNotebook();
+  if (!nb) return;
+  const pageId = newId();
+  const createdAt = Date.now();
+  const bg = currentPage()?.background || 'grid';
+  nb.pages.push({ id: pageId, strokes: [], background: bg, order: nb.pages.length, createdAt, deletedAt: 0 });
+  normalizePageOrder(nb);
+  await saveAppMeta();
+  sendNotebookMeta(state.currentNotebookId, [pageId]);
+  const idx = nb.pages.findIndex(p => p.id === pageId);
+  await goToPage(idx >= 0 ? idx : nb.pages.length - 1);
 }
 
 /** Vorherige Seite. */
@@ -1313,43 +1456,6 @@ function createDefaultNotebook() {
   state.currentPageIds[nbId] = pageId;
 }
 
-/** Testbuch mit 1000 Strokes erstellen. */
-async function createTestNotebook() {
-  const nbId = newId();
-  const pageId = newId();
-  const events = [];
-  for (let i = 0; i < 1000; i++) {
-    const y = 20 + (i % 50) * 30;
-    const x = 20 + Math.floor(i / 50) * 40;
-    const points = [];
-    for (let j = 0; j < 8; j++) {
-      points.push({ x: x + j * 4 + Math.random() * 2, y: y + Math.sin(j) * 10 + Math.random() * 2 });
-    }
-    const stroke = { id: newId(), createdAt: Date.now() + i + 2, points: roundPoints(points), color: '#000000', size: 2, tool: 'pen' };
-    events.push({
-      id: `legacy:${stroke.id}`,
-      type: 'stroke',
-      createdAt: stroke.createdAt,
-      deviceId: 'legacy',
-      seq: i,
-      stroke
-    });
-  }
-  const page = { id: pageId, strokes: [], events, background: 'grid', order: 0, createdAt: Date.now(), deletedAt: 0 };
-  refreshPageMaterializedState(page);
-  state.notebooks.push({
-    id: nbId,
-    name: `Testbuch (${page.strokes.length} Strokes)`,
-    pages: [page]
-  });
-  state.currentPageIds[nbId] = pageId;
-  await saveAppMeta();
-  await selectNotebook(nbId);
-  // Events sofort speichern
-  const data = await serializePageData(page, nbId);
-  await savePageData(nbId, pageId, data);
-}
-
 // ─── Undo / Redo / Clear ────────────────────────────────────────────────────
 
 /**
@@ -1446,10 +1552,17 @@ async function clearPage() {
 
 /**
  * @param {string} tool - 'pen' | 'eraser' | 'hand'
+ * Ein Zeichenwerkzeug zu wählen schaltet die Hand aus und wird als „zuletzt benutzt“ gemerkt.
  */
 function setTool(tool) {
   state.tool = tool;
+  if (tool !== 'hand') state.lastDrawTool = tool;
   renderUI();
+}
+
+/** Hand-Schalter: an = bewegen/zoomen, aus = zurück zum zuletzt benutzten Werkzeug. */
+function toggleHand() {
+  setTool(state.tool === 'hand' ? state.lastDrawTool : 'hand');
 }
 
 /**
@@ -1474,38 +1587,40 @@ function addCustomColor(hex) {
   renderUI();
 }
 
-/** iro.js Color-Picker öffnen/schließen. */
-function toggleColorPicker() {
+/** iro.js Color-Picker im Farb-Popover öffnen/schließen (freie Farbwahl). */
+function toggleColorPicker(force) {
   const popup = document.getElementById('color-picker-popup');
   if (!popup) return;
   const isOpen = !popup.classList.contains('hidden');
-  if (isOpen) {
-    popup.classList.add('hidden');
-    return;
-  }
-  popup.classList.remove('hidden');
+  const open = typeof force === 'boolean' ? force : !isOpen;
+  if (open === isOpen) return;
+  popup.classList.toggle('hidden', !open);
+  document.getElementById('btn-color-picker')?.setAttribute('aria-pressed', String(open));
+  if (!open) return;
   const container = document.getElementById('iro-container');
   if (!container) return;
   container.innerHTML = '';
   // iro.js ist global via <script> geladen
   if (typeof iro === 'undefined') return;
+  let picked = state.color;
   const picker = new iro.ColorPicker(container, {
     width: 180,
     color: state.color,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.15)',
+    borderColor: '#7d8797',
     layout: [
       { component: iro.ui.Wheel },
       { component: iro.ui.Slider, options: { sliderType: 'value' } }
     ]
   });
-  picker.on('color:change', (c) => { state.color = c.hexString; });
-  // Confirm-Button
-  document.getElementById('iro-confirm')?.addEventListener('click', () => {
-    addCustomColor(state.color);
-    setColor(state.color);
-    popup.classList.add('hidden');
-  });
+  picker.on('color:change', (c) => { picked = c.hexString; });
+  // Confirm-Button (onclick statt addEventListener: sonst sammeln sich Listener an)
+  const confirmBtn = document.getElementById('iro-confirm');
+  if (confirmBtn) confirmBtn.onclick = () => {
+    toggleColorPicker(false);
+    addCustomColor(picked);
+    setColor(picked.toLowerCase());
+  };
 }
 
 /**
@@ -1541,7 +1656,31 @@ function toggleZenMode() {
       document.exitFullscreen().catch(() => {});
     }
   }
+  renderUI();
   setTimeout(() => setupCanvases(), 100);
+}
+
+// ─── Popover (Farbe, Stärke, Seiten-Menü) ───────────────────────────────────
+
+/** Alle offenen Popover schließen. */
+function closePopovers() {
+  document.querySelectorAll('[data-pop]:not([hidden])').forEach(el => {
+    el.hidden = true;
+    document.querySelectorAll(`[data-toggle="${el.id}"]`).forEach(b => b.setAttribute('aria-expanded', 'false'));
+  });
+  toggleColorPicker(false);
+}
+
+/** Popover eines Auslösers (data-toggle="id") umschalten; andere schließen. */
+function togglePopover(trigger) {
+  const el = document.getElementById(trigger.dataset.toggle);
+  if (!el) return;
+  const wasOpen = !el.hidden;
+  closePopovers();
+  if (!wasOpen) {
+    el.hidden = false;
+    trigger.setAttribute('aria-expanded', 'true');
+  }
 }
 
 // ─── Notebook Rename + Kontextmenü ──────────────────────────────────────────
@@ -1601,33 +1740,6 @@ function showNbContextMenu(nbId, x, y) {
     }
   };
   setTimeout(() => document.addEventListener('pointerdown', close), 10);
-}
-
-/** Inline-Rename im Notebook-Titel starten. */
-function startRename() {
-  const titleEl = document.getElementById('notebook-title');
-  if (!titleEl) return;
-  const nb = currentNotebook();
-  if (!nb) return;
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.value = nb.name;
-  input.className = 'rename-input';
-  input.addEventListener('keydown', async (e) => {
-    if (e.key === 'Enter') {
-      await renameNotebook(nb.id, input.value);
-      renderUI();
-    }
-    if (e.key === 'Escape') renderUI();
-  });
-  input.addEventListener('blur', async () => {
-    await renameNotebook(nb.id, input.value);
-    renderUI();
-  });
-  titleEl.textContent = '';
-  titleEl.appendChild(input);
-  input.focus();
-  input.select();
 }
 
 // ─── MasterKey Management ───────────────────────────────────────────────────
@@ -2714,13 +2826,14 @@ function resetView() {
 
 // ─── Mobile Sidebar Toggle ──────────────────────────────────────────────────
 
-/** Sidebar auf mobil ein-/ausblenden. */
-function toggleSidebar() {
+/** Sidebar (Notizbuch-Liste) ein-/ausblenden. Auslöser ist der Notizbuch-Titel. */
+function toggleSidebar(force) {
   const sidebar = document.querySelector('.sidebar');
   const overlay = document.getElementById('sidebar-overlay');
   if (!sidebar) return;
-  const open = sidebar.classList.toggle('sidebar-open');
+  const open = sidebar.classList.toggle('sidebar-open', typeof force === 'boolean' ? force : undefined);
   overlay?.classList.toggle('active', open);
+  document.getElementById('btn-notebooks')?.setAttribute('aria-expanded', String(open));
 }
 
 // ─── Share Modal ────────────────────────────────────────────────────────────
@@ -3380,11 +3493,12 @@ async function saveLocalSettings() {
 async function loadLocalSettings() {
   const savedCurrentId = await settingsGet(state.masterKeyHash + ':currentNotebookId');
   const savedColor = await settingsGet(state.masterKeyHash + ':color');
-  if (savedColor) state.color = savedColor;
+  // Weiß gibt es nicht mehr (Papier ist immer weiß) → Standardfarbe
+  if (savedColor && String(savedColor).toLowerCase() !== '#ffffff') state.color = savedColor;
   const savedPenSizeIndex = await settingsGet(state.masterKeyHash + ':penSizeIndex');
   if (typeof savedPenSizeIndex === 'number') state.penSizeIndex = savedPenSizeIndex;
   const savedCustomColors = await settingsGet(state.masterKeyHash + ':customColors');
-  if (Array.isArray(savedCustomColors)) state.customColors = savedCustomColors;
+  if (Array.isArray(savedCustomColors)) state.customColors = savedCustomColors.filter(c => String(c).toLowerCase() !== '#ffffff');
   const savedPenDetected = await settingsGet(state.masterKeyHash + ':penDetected');
   if (typeof savedPenDetected === 'boolean') state.penDetected = savedPenDetected;
   const savedPenOnlyMode = await settingsGet(state.masterKeyHash + ':penOnlyMode');
@@ -3630,6 +3744,8 @@ function renderUI() {
       // Klick → Notebook wechseln
       btn.addEventListener('click', (e) => {
         if (e.target.closest('.nb-action-btn')) return;
+        if (e.target.closest('.rename-input')) return;
+        toggleSidebar(false);
         selectNotebook(nbId);
       });
       // Longpress → Kontextmenü (Touch)
@@ -3661,38 +3777,36 @@ function renderUI() {
     });
   }
 
-  // Notebook-Name in Toolbar + Pagebar (mobil)
+  // Notebook-Name im Titel-Knopf (öffnet die Notizbuch-Liste)
   const nbName = currentNotebook()?.name || '';
   const deletedPage = isPageDeleted();
   const titleSuffix = deletedPage ? ' · gelöscht' : '';
   const titleEl = document.getElementById('notebook-title');
   if (titleEl) titleEl.textContent = nbName + titleSuffix;
-  const pagebarTitle = document.getElementById('pagebar-title');
-  if (pagebarTitle) pagebarTitle.textContent = nbName + titleSuffix;
+  const titleBtn = document.getElementById('btn-notebooks');
+  if (titleBtn) titleBtn.setAttribute('aria-label', `Notizbücher öffnen – aktuell: ${nbName}${titleSuffix}`);
 
-  // Page-Indicator
+  // Seiten-Pille: Zähler, ‹ ›
+  const pageNo = currentPageIndex() + 1;
+  const pageTotal = totalPages();
   const pageIndicator = document.getElementById('page-indicator');
-  if (pageIndicator) {
-    pageIndicator.textContent = `${currentPageIndex() + 1} / ${totalPages()}${deletedPage ? ' · gelöscht' : ''}`;
-  }
-
-  // Prev/Next Buttons
+  if (pageIndicator) pageIndicator.textContent = `${pageNo} / ${pageTotal}${deletedPage ? ' · gelöscht' : ''}`;
+  const overviewBtn = document.getElementById('btn-page-overview');
+  if (overviewBtn) overviewBtn.setAttribute('aria-label', `Seite ${pageNo} von ${pageTotal}${deletedPage ? ' (gelöscht)' : ''}`);
   const prevBtn = document.getElementById('btn-prev');
   const nextBtn = document.getElementById('btn-next');
-  if (prevBtn) prevBtn.disabled = currentPageIndex() === 0;
-  if (nextBtn) nextBtn.disabled = false; // Immer erlaubt (erstellt neue Seite)
+  if (prevBtn) prevBtn.disabled = pageNo <= 1;
+  if (nextBtn) nextBtn.disabled = pageNo >= pageTotal; // „›“ legt keine Seite an — dafür gibt es „+“
 
-  // Delete/Restore-Page Button
+  // Seiten-Menü: Löschen/Wiederherstellen
   const delPageBtn = document.getElementById('btn-delete-page');
   if (delPageBtn) {
     delPageBtn.disabled = !deletedPage && currentNotebook()?.pages?.filter(p => !p.deletedAt).length <= 1;
-    delPageBtn.title = deletedPage ? 'Seite wiederherstellen' : 'Seite löschen';
+    const label = deletedPage ? 'Seite wiederherstellen' : 'Seite löschen';
+    delPageBtn.title = label;
     delPageBtn.classList.toggle('danger', !deletedPage);
-    delPageBtn.classList.toggle('active', deletedPage);
-    const delIcon = delPageBtn.querySelector('.page-delete-icon');
-    const restoreIcon = delPageBtn.querySelector('.page-restore-icon');
-    if (delIcon) delIcon.style.display = deletedPage ? 'none' : '';
-    if (restoreIcon) restoreIcon.style.display = deletedPage ? '' : 'none';
+    const labelEl = document.getElementById('delete-page-label');
+    if (labelEl) labelEl.textContent = label;
   }
 
   updateRedoButton();
@@ -3700,96 +3814,88 @@ function renderUI() {
   const clearBtn = document.getElementById('btn-clear');
   if (clearBtn) {
     clearBtn.disabled = deletedPage;
-    clearBtn.title = deletedPage ? 'Gelöschte Seite kann nicht geleert werden' : 'Seite auskehren';
+    clearBtn.title = deletedPage ? 'Gelöschte Seite kann nicht geleert werden' : 'Seite leeren';
   }
 
-  // Hintergrund-Buttons
+  // Vollbild-Eintrag
+  const zenLabel = document.getElementById('zen-label');
+  if (zenLabel) zenLabel.textContent = state.zenMode ? 'Vollbild verlassen' : 'Vollbild';
+
+  // Papierart
   const curBg = currentPage()?.background || 'grid';
   document.querySelectorAll('.bg-btn[data-bg]').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.bg === curBg);
+    btn.setAttribute('aria-pressed', String(btn.dataset.bg === curBg));
     btn.disabled = deletedPage;
   });
 
-  // Tool-Buttons
+  // Hand-Schalter + Werkzeuge. Bei eingeschalteter Hand bleibt das gemerkte Werkzeug markiert.
+  const handOn = state.tool === 'hand';
+  const main = document.getElementById('main');
+  if (main) main.dataset.mode = handOn ? 'move' : 'draw';
+  document.getElementById('btn-hand')?.setAttribute('aria-pressed', String(handOn));
   document.querySelectorAll('[data-tool]').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.tool === state.tool);
+    btn.setAttribute('aria-pressed', String(btn.dataset.tool === state.lastDrawTool));
   });
 
   // Canvas-Cursor
   const container = document.getElementById('canvas-container');
   if (container) {
-    container.classList.toggle('hand-cursor', state.tool === 'hand');
+    container.classList.toggle('hand-cursor', handOn);
     container.classList.toggle('page-deleted', deletedPage);
-    if (state.tool !== 'hand') container.style.cursor = deletedPage ? 'not-allowed' : (state.tool === 'eraser' ? 'cell' : 'crosshair');
+    container.style.cursor = handOn ? '' : (deletedPage ? 'not-allowed' : (state.tool === 'eraser' ? 'cell' : 'crosshair'));
   }
 
-  // Farb-Palette (Standard + Custom + Picker)
-  const colorPalette = document.getElementById('color-palette');
-  if (colorPalette) {
-    const allColors = [...COLORS, ...state.customColors];
-    colorPalette.innerHTML = allColors.map(c =>
-      `<button class="color-dot ${c === state.color ? 'active' : ''}" data-color="${c}" style="background:${c}"></button>`
-    ).join('') + `<button class="color-dot color-picker-btn" id="btn-color-picker" title="Farbwähler"></button>`;
-    colorPalette.querySelectorAll('.color-dot[data-color]').forEach(btn => {
-      btn.addEventListener('click', () => setColor(btn.dataset.color));
+  // Knopf „Farbe“: zeigt die aktuelle Farbe
+  const chipColor = document.getElementById('chip-color');
+  if (chipColor) chipColor.style.background = state.color;
+  const colorBtn = document.getElementById('btn-color');
+  if (colorBtn) {
+    const idx = COLORS.indexOf(String(state.color).toLowerCase());
+    colorBtn.setAttribute('aria-label', `Farbe: ${idx >= 0 ? COLOR_NAMES[idx] : state.color}`);
+  }
+
+  // Farb-Popover (Standard + eigene Farben + freie Farbwahl) — nur neu aufbauen, wenn sich die Liste ändert
+  const swatchBox = document.getElementById('color-swatches');
+  if (swatchBox) {
+    const custom = state.customColors.filter(c => !COLORS.includes(c));
+    const listKey = custom.join(',');
+    if (swatchBox.dataset.key !== listKey || !swatchBox.firstElementChild) {
+      swatchBox.dataset.key = listKey;
+      const pickerOpen = !document.getElementById('color-picker-popup')?.classList.contains('hidden');
+      swatchBox.innerHTML = COLORS.map((c, i) =>
+        `<button class="swatch" style="--c:${c}" data-color="${c}" aria-label="${COLOR_NAMES[i]}" title="${COLOR_NAMES[i]}" aria-pressed="false"><i></i></button>`
+      ).join('') + custom.filter(c => /^#[0-9a-f]{3,8}$/i.test(c)).map(c =>
+        `<button class="swatch" style="--c:${c}" data-color="${c}" aria-label="Eigene Farbe ${c}" title="Eigene Farbe ${c}" aria-pressed="false"><i></i></button>`
+      ).join('') + `<button class="swatch custom" id="btn-color-picker" aria-label="Eigene Farbe wählen" title="Eigene Farbe wählen" aria-pressed="${pickerOpen}"><i></i></button>`;
+    }
+    swatchBox.querySelectorAll('.swatch[data-color]').forEach(btn => {
+      btn.setAttribute('aria-pressed', String(btn.dataset.color === String(state.color).toLowerCase()));
     });
-    document.getElementById('btn-color-picker')?.addEventListener('click', toggleColorPicker);
   }
 
-  // Größen-Palette
-  const sizePalette = document.getElementById('size-palette');
-  if (sizePalette) {
-    sizePalette.innerHTML = PEN_SIZES.map((s, i) =>
-      `<button class="size-btn ${i === state.penSizeIndex ? 'active' : ''}" data-size="${i}">${s.name}</button>`
-    ).join('');
-    sizePalette.querySelectorAll('.size-btn').forEach(btn => {
-      btn.addEventListener('click', () => setPenSize(Number(btn.dataset.size)));
+  // Knopf „Stärke“: zeigt die aktuelle Strichstärke
+  const curSize = PEN_SIZES[state.penSizeIndex] || PEN_SIZES[2];
+  const chipSize = document.getElementById('chip-size');
+  if (chipSize) chipSize.style.width = chipSize.style.height = Math.min(20, curSize.dot) + 'px';
+  document.getElementById('btn-size')?.setAttribute('aria-label', `Strichstärke: ${curSize.label}`);
+
+  // Stärke-Popover
+  const sizeBox = document.getElementById('size-options');
+  if (sizeBox) {
+    if (!sizeBox.firstElementChild) {
+      sizeBox.innerHTML = PEN_SIZES.map((s, i) =>
+        `<button class="size" style="--d:${s.dot}px" data-size="${i}" aria-label="${s.label}" title="${s.label}" aria-pressed="false"><i></i></button>`
+      ).join('');
+    }
+    sizeBox.querySelectorAll('.size').forEach(btn => {
+      btn.setAttribute('aria-pressed', String(Number(btn.dataset.size) === state.penSizeIndex));
     });
   }
 
   updateSyncDebug();
+  updateSyncStatus();
 
-  // Mobile Farb-Trigger Dot
-  const mColorDot = document.getElementById('mobile-color-dot');
-  if (mColorDot) mColorDot.style.background = state.color;
-  // Mobile Größen-Label
-  const mSizeLabel = document.getElementById('mobile-size-label');
-  if (mSizeLabel) mSizeLabel.textContent = PEN_SIZES[state.penSizeIndex].name;
-
-  // Mobile Color Grid
-  const mColorGrid = document.getElementById('mobile-color-grid');
-  if (mColorGrid) {
-    const allColors = [...COLORS, ...state.customColors];
-    mColorGrid.innerHTML = allColors.map(c =>
-      `<button class="color-dot ${c === state.color ? 'active' : ''}" data-mcolor="${c}" style="background:${c}"></button>`
-    ).join('') + `<button class="color-dot color-picker-btn" id="btn-mobile-color-picker" title="Farbwähler"></button>`;
-    mColorGrid.querySelectorAll('[data-mcolor]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        setColor(btn.dataset.mcolor);
-        document.getElementById('mobile-color-menu')?.classList.add('hidden');
-      });
-    });
-    document.getElementById('btn-mobile-color-picker')?.addEventListener('click', () => {
-      document.getElementById('mobile-color-menu')?.classList.add('hidden');
-      toggleColorPicker();
-    });
-  }
-
-  // Mobile Size Grid
-  const mSizeGrid = document.getElementById('mobile-size-grid');
-  if (mSizeGrid) {
-    mSizeGrid.innerHTML = PEN_SIZES.map((s, i) =>
-      `<button class="size-btn ${i === state.penSizeIndex ? 'active' : ''}" data-msize="${i}">${s.name}</button>`
-    ).join('');
-    mSizeGrid.querySelectorAll('[data-msize]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        setPenSize(Number(btn.dataset.msize));
-        document.getElementById('mobile-size-menu')?.classList.add('hidden');
-      });
-    });
-  }
-
-  // Peer-Count
+  // Peer-Count (Sidebar)
   const peerEl = document.getElementById('peer-count');
   if (peerEl) {
     const n = state.connectedPeers.length;
@@ -3799,6 +3905,28 @@ function renderUI() {
   // Stiftmodus-Button
   const penOnlyBtn = document.getElementById('btn-pen-only');
   if (penOnlyBtn) penOnlyBtn.classList.toggle('active', state.penOnlyMode);
+}
+
+/** Sync-Status in der Leiste (Punkt + Text). Schreibt nur bei Änderung ins DOM. */
+let _syncStatusKey = '';
+function updateSyncStatus() {
+  const el = document.getElementById('sync-status');
+  if (!el) return;
+  const n = state.connectedPeers.length;
+  let cls = 'busy', text = 'Verbindet …';
+  if (n > 0) { cls = ''; text = `Verbunden · ${n} ${n === 1 ? 'Gerät' : 'Geräte'}`; }
+  else if (isRelayConnected()) { cls = ''; text = 'Online'; }
+  else if (navigator.onLine === false) { cls = 'off'; text = 'Offline'; }
+  const key = cls + '|' + text;
+  if (key === _syncStatusKey) return;
+  _syncStatusKey = key;
+  el.classList.toggle('busy', cls === 'busy');
+  el.classList.toggle('off', cls === 'off');
+  const textEl = document.getElementById('sync-text');
+  if (textEl) textEl.textContent = text;
+  el.setAttribute('aria-label', `Sync-Status: ${text}. Klick: Sync-Diagnose ein/aus`);
+  el.title = `${text} · Klick: Sync-Diagnose ein/aus`;
+  document.getElementById('status-dot')?.classList.toggle('connected', cls === '');
 }
 
 // ─── Init ───────────────────────────────────────────────────────────────────
@@ -3815,6 +3943,9 @@ async function init() {
 
   // 2. Settings-DB öffnen
   settingsDB = await openSettingsDB();
+
+  // 2a. Gespeicherte Theme-Wahl übernehmen (gerätelokal)
+  await loadTheme();
 
   // 3. Invite-Link prüfen (bevor MasterKey-Dialog kommt)
   const invite = await parseInviteLink();
@@ -4067,15 +4198,16 @@ function setupEvents() {
   document.getElementById('btn-prev')?.addEventListener('click', prevPage);
   document.getElementById('btn-next')?.addEventListener('click', nextPage);
   document.getElementById('btn-add-notebook')?.addEventListener('click', createNotebook);
-  document.getElementById('btn-add-testbook')?.addEventListener('click', createTestNotebook);
+  document.getElementById('btn-add-page')?.addEventListener('click', addPage);
   document.getElementById('btn-undo')?.addEventListener('click', undo);
   document.getElementById('btn-redo')?.addEventListener('click', redo);
 
   // Tastatur: Ctrl/Cmd+Z = Rückgängig, Ctrl/Cmd+Shift+Z bzw. Ctrl/Cmd+Y = Wiederholen
+  const isTextTarget = t => !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
   document.addEventListener('keydown', (e) => {
     if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
     const t = e.target;
-    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+    if (isTextTarget(t)) return;
     const key = String(e.key || '').toLowerCase();
     if (key === 'z' && !e.shiftKey) {
       e.preventDefault();
@@ -4085,6 +4217,68 @@ function setupEvents() {
       redo();
     }
   });
+
+  // Tastatur ohne Zusatztaste: Leertaste halten = vorübergehend bewegen,
+  // P/E = Werkzeug, H = Hand-Schalter, 0 = alles zeigen, Esc = Popover/Liste schließen
+  let spaceHeld = false;
+  const releaseSpace = () => {
+    if (!spaceHeld) return;
+    spaceHeld = false;
+    if (state.tool === 'hand') setTool(state.lastDrawTool);
+  };
+  const modalOpen = () => !!document.querySelector('.modal-overlay:not(.hidden)');
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      closePopovers();
+      if (document.querySelector('.sidebar.sidebar-open')) toggleSidebar(false);
+      return;
+    }
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const t = e.target;
+    if (isTextTarget(t) || modalOpen()) return;
+    if (e.code === 'Space') {
+      // Auf einem fokussierten Knopf behält die Leertaste ihre normale Bedeutung
+      if (t && t.closest && t.closest('button, a, [role="button"]')) return;
+      e.preventDefault();
+      if (!e.repeat && !spaceHeld && state.tool !== 'hand' && !isDrawing) {
+        spaceHeld = true;
+        setTool('hand');
+      }
+      return;
+    }
+    if (e.repeat || e.shiftKey) return;
+    const key = String(e.key || '').toLowerCase();
+    if (key === 'p') setTool('pen');
+    else if (key === 'e') setTool('eraser');
+    else if (key === 'h') toggleHand();
+    else if (key === '0') fitToContent();
+  });
+  document.addEventListener('keyup', (e) => { if (e.code === 'Space') releaseSpace(); });
+  window.addEventListener('blur', releaseSpace);
+
+  // Popover: Auslöser schaltet um, Tipp außerhalb oder auf einen Menüpunkt (data-close) schließt
+  document.querySelectorAll('[data-toggle]').forEach(btn => {
+    btn.addEventListener('click', () => togglePopover(btn));
+  });
+  document.addEventListener('pointerdown', (e) => {
+    if (!e.target.closest?.('.pop-wrap')) closePopovers();
+  }, true);
+  document.querySelectorAll('[data-pop]').forEach(pop => {
+    pop.addEventListener('click', (e) => { if (e.target.closest('[data-close]')) closePopovers(); });
+  });
+
+  // Farbe + Stärke (Delegation — die Knöpfe werden in renderUI() aufgebaut)
+  document.getElementById('color-swatches')?.addEventListener('click', (e) => {
+    const btn = e.target.closest('.swatch');
+    if (!btn) return;
+    if (btn.dataset.color) { toggleColorPicker(false); setColor(btn.dataset.color); }
+    else toggleColorPicker();
+  });
+  document.getElementById('size-options')?.addEventListener('click', (e) => {
+    const btn = e.target.closest('.size');
+    if (btn) setPenSize(Number(btn.dataset.size));
+  });
+
   document.getElementById('btn-clear')?.addEventListener('click', () => {
     if (confirm('Seite wirklich leeren?')) clearPage();
   });
@@ -4101,19 +4295,24 @@ function setupEvents() {
     btn.addEventListener('click', () => setBackground(btn.dataset.bg));
   });
 
-  // Tool-Buttons
+  // Werkzeuge + Hand-Schalter. Nach Maus-/Touch-Klick den Fokus abgeben,
+  // damit die Leertaste danach „bewegen“ bedeutet und nicht den Knopf auslöst.
   document.querySelectorAll('[data-tool]').forEach(btn => {
-    btn.addEventListener('click', () => setTool(btn.dataset.tool));
+    btn.addEventListener('click', (e) => { setTool(btn.dataset.tool); if (e.detail > 0) btn.blur(); });
   });
+  document.getElementById('btn-hand')?.addEventListener('click', (e) => { toggleHand(); if (e.detail > 0) e.currentTarget.blur(); });
 
   // Mausrad-Zoom
   document.getElementById('canvas-container')?.addEventListener('wheel', onWheel, { passive: false });
 
-  // View-Reset
-  document.getElementById('btn-reset-view')?.addEventListener('click', resetView);
+  // Zoom-Pille: − [Alles] +  ·  „Alles“ und der Hinweis „Weiterer Inhalt“ = fitToContent
+  document.getElementById('btn-fit')?.addEventListener('click', resetView);
+  document.getElementById('btn-edge-hint')?.addEventListener('click', resetView);
+  document.getElementById('btn-zoom-in')?.addEventListener('click', () => zoomBy(1.25));
+  document.getElementById('btn-zoom-out')?.addEventListener('click', () => zoomBy(0.8));
 
-  // Sidebar-Toggle (mobil)
-  document.getElementById('btn-burger')?.addEventListener('click', toggleSidebar);
+  // Notizbuch-Titel öffnet die Notizbuch-Liste (Sidebar)
+  document.getElementById('btn-notebooks')?.addEventListener('click', toggleSidebar);
   // Sidebar schließen bei Klick auf Overlay
   document.getElementById('sidebar-overlay')?.addEventListener('click', toggleSidebar);
 
@@ -4122,12 +4321,20 @@ function setupEvents() {
 
   // Share
   document.getElementById('btn-share')?.addEventListener('click', openShareModal);
+  document.getElementById('btn-share-sidebar')?.addEventListener('click', openShareModal);
+  document.getElementById('btn-menu-export-png')?.addEventListener('click', () => exportApp('png'));
+  document.getElementById('btn-menu-export-svg')?.addEventListener('click', () => exportApp('svg'));
   document.getElementById('btn-scan-share')?.addEventListener('click', openScanModal);
   document.getElementById('btn-sync-link')?.addEventListener('click', showSyncLink);
   document.getElementById('btn-export')?.addEventListener('click', () => exportApp());
   document.getElementById('btn-import')?.addEventListener('click', importApp);
   document.getElementById('btn-connection')?.addEventListener('click', openConnectionModal);
   document.getElementById('status-row')?.addEventListener('click', toggleSyncDebug);
+  document.getElementById('sync-status')?.addEventListener('click', toggleSyncDebug);
+  // Sync-Status in der Leiste aktuell halten (Relay/Peers ändern sich ohne renderUI)
+  setInterval(updateSyncStatus, 3000);
+  window.addEventListener('online', updateSyncStatus);
+  window.addEventListener('offline', updateSyncStatus);
   applySyncDebugVisibility();
   document.getElementById('btn-close-connection')?.addEventListener('click', closeConnectionModal);
   document.getElementById('btn-close-connection-2')?.addEventListener('click', closeConnectionModal);
@@ -4136,15 +4343,6 @@ function setupEvents() {
     if (e.target.id === 'connection-modal') closeConnectionModal();
   });
 
-  // Mobile Farb-/Größen-Menüs
-  document.getElementById('btn-mobile-color')?.addEventListener('click', () => {
-    document.getElementById('mobile-color-menu')?.classList.toggle('hidden');
-    document.getElementById('mobile-size-menu')?.classList.add('hidden');
-  });
-  document.getElementById('btn-mobile-size')?.addEventListener('click', () => {
-    document.getElementById('mobile-size-menu')?.classList.toggle('hidden');
-    document.getElementById('mobile-color-menu')?.classList.add('hidden');
-  });
   document.getElementById('btn-close-share')?.addEventListener('click', closeShareModal);
   document.getElementById('btn-close-scan')?.addEventListener('click', closeScanModal);
   document.getElementById('btn-start-scan')?.addEventListener('click', startScanCamera);
@@ -4156,9 +4354,6 @@ function setupEvents() {
   document.getElementById('btn-export-png')?.addEventListener('click', () => exportApp('png'));
   document.getElementById('btn-export-svg')?.addEventListener('click', () => exportApp('svg'));
 
-  // Color-Picker
-  document.getElementById('btn-color-picker')?.addEventListener('click', toggleColorPicker);
-
   // Zen-Mode
   document.getElementById('btn-zen')?.addEventListener('click', toggleZenMode);
   // Escape beendet Zen-Mode
@@ -4169,9 +4364,6 @@ function setupEvents() {
       setTimeout(() => setupCanvases(), 100);
     }
   });
-
-  // Notebook-Title Doppelklick → Rename
-  document.getElementById('notebook-title')?.addEventListener('dblclick', startRename);
 }
 
 // ─── Boot ───────────────────────────────────────────────────────────────────

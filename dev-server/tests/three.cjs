@@ -31,7 +31,7 @@ let fails = 0;
 
   const L = await mk(false), P = await mk(true), T = await mk(false);
   await fresh(L); await sleep(3000);
-  await L.page.click('#btn-share'); await sleep(1500);
+  await L.page.click('#btn-page-menu'); await L.page.click('#btn-share'); await sleep(1500);
   const link = await L.page.evaluate(() => document.getElementById('share-link').value);
   await L.page.evaluate(() => document.getElementById('share-modal')?.classList.add('hidden'));
   const keyHex = await L.page.evaluate(() => JSON.parse(localStorage.getItem('notizbuch:masterKeyRaw')).map(b => b.toString(16).padStart(2, '0')).join(''));

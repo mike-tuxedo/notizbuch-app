@@ -151,8 +151,9 @@ export function drawBackground(ctx, width, height, background, viewX, viewY, vie
   if (gridSize < 4) return; // Zu klein zum Zeichnen
 
   ctx.save();
-  ctx.strokeStyle = background === 'grid' ? 'rgba(180, 200, 220, 0.35)' : 'rgba(180, 200, 220, 0.4)';
-  ctx.lineWidth = 0.5;
+  // --paper-line: in beiden Themes gleich, das Papier ist immer weiß
+  ctx.strokeStyle = '#dde3ec';
+  ctx.lineWidth = 1;
 
   const offsetX = viewX % gridSize;
   const offsetY = viewY % gridSize;

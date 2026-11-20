@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <meta name="theme-color" content="#0e0d15">
+  <meta name="theme-color" content="#ffffff">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -13,32 +13,107 @@
   <link rel="icon" href="img/favicon.ico">
   <link rel="apple-touch-icon" href="img/apple-touch-icon.png">
   <title>Notizbuch App</title>
+  <script>
+    /* Theme vor dem ersten Zeichnen setzen (kein Aufblitzen).
+       Quelle der Wahrheit ist IndexedDB (notizbuch-settings, 'device:theme') — die ist asynchron,
+       deshalb spiegelt app.js die Wahl nach localStorage, damit sie hier synchron vorliegt.
+       Ohne gespeicherte Wahl gilt die Systemeinstellung, live. */
+    (function () {
+      var KEY = 'notizbuch:theme';
+      var root = document.documentElement;
+      var mq = window.matchMedia('(prefers-color-scheme: dark)');
+      var choice = 'system';
+      try { var v = localStorage.getItem(KEY); if (v === 'light' || v === 'dark') choice = v; } catch (e) {}
+      function apply() {
+        var t = choice === 'system' ? (mq.matches ? 'dark' : 'light') : choice;
+        root.dataset.theme = t;
+        var m = document.querySelector('meta[name="theme-color"]');
+        if (m) m.setAttribute('content', t === 'dark' ? '#1b1e24' : '#ffffff');
+      }
+      var onChange = function () { if (choice === 'system') apply(); };
+      if (mq.addEventListener) mq.addEventListener('change', onChange); else if (mq.addListener) mq.addListener(onChange);
+      window.__nbTheme = {
+        get: function () { return choice; },
+        set: function (c) {
+          choice = (c === 'light' || c === 'dark') ? c : 'system';
+          try { if (choice === 'system') localStorage.removeItem(KEY); else localStorage.setItem(KEY, choice); } catch (e) {}
+          apply();
+        }
+      };
+      apply();
+    })();
+  </script>
   <script src="libs/iro.min.js"></script>
   <script src="libs/qrcode.min.js"></script>
   <style>
-    /* ─── Variables ──────────────────────────────────────────────────────── */
+    /* ─── Tokens (aus artifacts/redesign) ────────────────────────────────── */
+    :root,
+    [data-theme="light"] {
+      --bg: #eef0f3;
+      --surface: #ffffff;
+      --surface-2: #f1f3f6;
+      --border: #d3d8e0;
+      --border-strong: #7d8797;
+      --text: #14171c;
+      --text-2: #3f4755;
+      --accent: #0b7285;
+      --accent-soft: #dcf1f4;
+      --on-accent: #ffffff;
+      --danger: #b3261e;
+      --danger-soft: #fbe9e7;
+      --ok: #17754a;
+      --warn: #8a5800;
+      --shadow: 0 2px 6px rgba(20, 23, 28, .10), 0 12px 32px rgba(20, 23, 28, .16);
+      --scrim: rgba(10, 12, 16, .45);
+      color-scheme: light;
+    }
+
+    [data-theme="dark"] {
+      --bg: #111317;
+      --surface: #1b1e24;
+      --surface-2: #262a32;
+      --border: #3b414c;
+      --border-strong: #8791a1;
+      --text: #f3f5f8;
+      --text-2: #c9cfd9;
+      --accent: #74b8ff;
+      --accent-soft: #1c3554;
+      --on-accent: #08182b;
+      --danger: #ff8f85;
+      --danger-soft: #3d1f1d;
+      --ok: #62d6a0;
+      --warn: #f2c060;
+      --shadow: 0 2px 6px rgba(0, 0, 0, .4), 0 12px 32px rgba(0, 0, 0, .5);
+      --scrim: rgba(0, 0, 0, .6);
+      color-scheme: dark;
+    }
+
     :root {
-      --bg: #0e0d15;
-      --surface: #171622;
-      --surface-2: #1f1d30;
-      --border: #2b2840;
-      --border-2: #3a3658;
-      --accent: #4dabf7;
-      --accent-dim: #3a8fd4;
-      --accent-glow: rgba(77, 171, 247, 0.15);
-      --text: #eae8f5;
-      --text-dim: #b0acc8;
-      --text-faint: #6c6886;
-      --danger: #ff6b6b;
-      --paper: #f5f5f0;
-      --sidebar-w: 220px;
-      --toolbar-h: 48px;
-      --pagebar-h: 44px;
+      /* Zeichenfläche: in beiden Themes identisch */
+      --paper: #ffffff;
+      --paper-line: #dde3ec;
+      --s1: 4px;
+      --s2: 8px;
+      --s3: 12px;
+      --s4: 16px;
+      --s5: 24px;
+      --s6: 32px;
+      --tap: 44px;
+      --bar-h: 56px;
+      --drawer-w: 300px;
+      --r-sm: 8px;
+      --r-lg: 14px;
+      --r-pill: 999px;
+      --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      --fs-sm: 13px;
+      --fs-md: 15px;
+      --fs-lg: 17px;
+      --fs-xl: clamp(20px, 2.4vw, 26px);
       --safe-top: env(safe-area-inset-top, 0px);
       --safe-right: env(safe-area-inset-right, 0px);
       --safe-bottom: env(safe-area-inset-bottom, 0px);
       --safe-left: env(safe-area-inset-left, 0px);
-      --tap-target: 44px;
     }
 
     /* ─── Reset ──────────────────────────────────────────────────────────── */
@@ -65,7 +140,7 @@
     body {
       background: var(--bg);
       color: var(--text);
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font: 400 var(--fs-md)/1.45 var(--font-ui);
       -webkit-tap-highlight-color: transparent;
     }
 
@@ -74,24 +149,634 @@
       cursor: pointer;
       border: none;
       background: none;
+      color: inherit;
+    }
+
+    [hidden] {
+      display: none !important;
+    }
+
+    .i {
+      width: 22px;
+      height: 22px;
+      flex: none;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      * {
+        transition: none !important;
+        animation: none !important;
+      }
+    }
+
+    /* ─── Buttons: eine Basis, Varianten ─────────────────────────────────── */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: var(--s2);
+      min-height: var(--tap);
+      padding: 0 var(--s4);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--r-sm);
+      background: var(--surface);
+      color: var(--text);
+      font: 600 var(--fs-md)/1 var(--font-ui);
+      text-decoration: none;
+      cursor: pointer;
+      transition: background .12s, border-color .12s;
+    }
+
+    .btn:hover {
+      background: var(--surface-2);
+    }
+
+    .btn.ghost {
+      border-color: transparent;
+      background: transparent;
+    }
+
+    .btn.ghost:hover {
+      background: var(--surface-2);
+    }
+
+    .btn.icon {
+      width: var(--tap);
+      padding: 0;
+      flex: none;
+    }
+
+    .btn:disabled {
+      opacity: .45;
+      cursor: not-allowed;
     }
 
     /* ─── Layout ─────────────────────────────────────────────────────────── */
     .app {
-      display: grid;
-      grid-template-columns: var(--sidebar-w) 1fr;
       height: 100vh;
       height: 100dvh;
     }
 
-    /* ─── Sidebar ────────────────────────────────────────────────────────── */
+    .main {
+      position: relative;
+      height: 100%;
+      overflow: hidden;
+      display: grid;
+      background: var(--paper);
+      grid-template-columns: auto 1fr auto;
+      grid-template-rows: auto 1fr;
+      grid-template-areas: "left tools right" "canvas canvas canvas";
+    }
+
+    /* ─── Werkzeugleiste ─────────────────────────────────────────────────── */
+    .tb {
+      position: relative;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      gap: var(--s2);
+      min-height: calc(var(--bar-h) + var(--safe-top));
+      padding: calc(var(--s1) + var(--safe-top)) var(--s3) var(--s1);
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .tb-left {
+      grid-area: left;
+      min-width: 0;
+      padding-left: calc(var(--s3) + var(--safe-left));
+    }
+
+    .toolrow {
+      grid-area: tools;
+      justify-content: center;
+    }
+
+    .tb-right {
+      grid-area: right;
+      padding-right: calc(var(--s3) + var(--safe-right));
+    }
+
+    .divider {
+      width: 1px;
+      height: 28px;
+      background: var(--border);
+      margin: 0 var(--s1);
+      flex: none;
+    }
+
+    .title-btn {
+      max-width: 260px;
+      min-width: 0;
+      padding: 0 var(--s3) 0 var(--s2);
+      font-size: var(--fs-lg);
+      font-weight: 700;
+    }
+
+    .title-btn span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      min-width: 0;
+    }
+
+    /* Ein Schalter: Hand an = bewegen, Hand aus = zurück zum letzten Werkzeug */
+    .mode {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: var(--s2);
+      height: var(--tap);
+      min-width: var(--tap);
+      padding: 0 var(--s2);
+      border-radius: var(--r-pill);
+      background: var(--surface-2);
+      border: 1px solid var(--border-strong);
+      color: var(--text);
+      font: 600 var(--fs-sm)/1 var(--font-ui);
+      cursor: pointer;
+      flex: none;
+    }
+
+    .mode:hover {
+      border-color: var(--text);
+    }
+
+    .mode[aria-pressed="true"] {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: var(--on-accent);
+    }
+
+    .tools {
+      display: flex;
+      gap: 2px;
+    }
+
+    .tool,
+    .opt {
+      display: inline-flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 3px;
+      min-width: var(--tap);
+      height: var(--tap);
+      padding: 0 6px;
+      border: 1px solid transparent;
+      border-radius: var(--r-sm);
+      background: transparent;
+      color: var(--text);
+      font: 600 12px/1 var(--font-ui);
+      cursor: pointer;
+      flex: none;
+    }
+
+    .tool .lbl,
+    .opt .lbl,
+    .mode .lbl {
+      display: none;
+    }
+
+    .tool:hover,
+    .opt:hover {
+      background: var(--surface-2);
+    }
+
+    .opt[aria-expanded="true"] {
+      background: var(--surface-2);
+      border-color: var(--border-strong);
+    }
+
+    .tool[aria-pressed="true"] {
+      background: var(--accent-soft);
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    /* Hand an: das gemerkte Werkzeug bleibt erkennbar, ist aber nicht aktiv */
+    .main[data-mode="move"] .tool[aria-pressed="true"] {
+      background: transparent;
+      border-color: var(--border-strong);
+      color: var(--text);
+    }
+
+    /* Farbe und Strichstärke: zwei getrennte Knöpfe, jeder zeigt den aktuellen Stand */
+    .opt .dot {
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      border: 2px solid var(--paper);
+      outline: 1px solid var(--border-strong);
+    }
+
+    .opt .sizedot {
+      width: 22px;
+      height: 22px;
+      display: grid;
+      place-items: center;
+    }
+
+    .opt .sizedot i {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--text);
+    }
+
+    .swatches,
+    .sizes {
+      display: grid;
+      grid-template-columns: repeat(5, var(--tap));
+      gap: var(--s1);
+    }
+
+    .swatch {
+      width: var(--tap);
+      height: var(--tap);
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+    }
+
+    .swatch i {
+      width: 30px;
+      height: 30px;
+      border-radius: 50%;
+      background: var(--c);
+      outline: 1px solid var(--border-strong);
+    }
+
+    .swatch:hover i {
+      transform: scale(1.1);
+    }
+
+    .swatch[aria-pressed="true"] i {
+      box-shadow: 0 0 0 3px var(--surface), 0 0 0 6px var(--accent);
+    }
+
+    .swatch.custom i {
+      background: conic-gradient(#e03131, #f2c200, #2f9e44, #1971c2, #6741d9, #e03131);
+    }
+
+    .size {
+      width: var(--tap);
+      height: var(--tap);
+      border-radius: var(--r-sm);
+      border: 1px solid transparent;
+      display: grid;
+      place-items: center;
+    }
+
+    .size i {
+      width: var(--d);
+      height: var(--d);
+      border-radius: 50%;
+      background: var(--text);
+    }
+
+    .size:hover {
+      background: var(--surface-2);
+    }
+
+    .size[aria-pressed="true"] {
+      background: var(--accent-soft);
+      border-color: var(--accent);
+    }
+
+    /* Freie Farbwahl (iro.js) im Farb-Popover */
+    .color-picker-popup {
+      margin-top: var(--s3);
+      padding-top: var(--s3);
+      border-top: 1px solid var(--border);
+      display: grid;
+      justify-items: center;
+      gap: var(--s3);
+    }
+
+    .color-picker-popup.hidden {
+      display: none;
+    }
+
+    .color-picker-popup .btn {
+      width: 100%;
+    }
+
+    /* ─── Popover / Menü ─────────────────────────────────────────────────── */
+    .pop-wrap {
+      position: relative;
+      display: inline-flex;
+    }
+
+    .popover {
+      position: absolute;
+      z-index: 30;
+      top: calc(100% + 8px);
+      left: 0;
+      min-width: 240px;
+      max-height: calc(100dvh - var(--bar-h) - var(--safe-top) - 24px);
+      overflow-y: auto;
+      padding: var(--s3);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--r-lg);
+      box-shadow: var(--shadow);
+    }
+
+    .popover.right {
+      left: auto;
+      right: 0;
+    }
+
+    .menu {
+      display: grid;
+      gap: 2px;
+    }
+
+    .menu-item {
+      display: flex;
+      align-items: center;
+      gap: var(--s3);
+      min-height: var(--tap);
+      padding: 0 var(--s3);
+      border-radius: var(--r-sm);
+      color: var(--text);
+      font: 500 var(--fs-md) var(--font-ui);
+      text-align: left;
+      width: 100%;
+      white-space: nowrap;
+    }
+
+    .menu-item:hover {
+      background: var(--surface-2);
+    }
+
+    .menu-item.danger {
+      color: var(--danger);
+    }
+
+    .menu-item.danger:hover {
+      background: var(--danger-soft);
+    }
+
+    .menu-item:disabled {
+      opacity: .45;
+      cursor: not-allowed;
+    }
+
+    .menu-label {
+      font-size: var(--fs-sm);
+      font-weight: 700;
+      color: var(--text-2);
+      padding: var(--s2) var(--s3) var(--s1);
+    }
+
+    .sep {
+      height: 1px;
+      background: var(--border);
+      margin: var(--s2) 0;
+    }
+
+    .seg {
+      display: flex;
+      border: 1px solid var(--border-strong);
+      border-radius: var(--r-sm);
+      overflow: hidden;
+      background: var(--surface);
+      margin: 0 var(--s3) var(--s2);
+    }
+
+    .seg button {
+      flex: 1;
+      min-height: calc(var(--tap) - 2px);
+      padding: 0 var(--s3);
+      color: var(--text);
+      font: 600 var(--fs-md) var(--font-ui);
+    }
+
+    .seg button+button {
+      border-left: 1px solid var(--border);
+    }
+
+    .seg button:hover {
+      background: var(--surface-2);
+    }
+
+    .seg button[aria-pressed="true"] {
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+
+    .seg button:disabled {
+      opacity: .45;
+      cursor: not-allowed;
+    }
+
+    /* ─── Sync-Status ────────────────────────────────────────────────────── */
+    .status {
+      font-size: var(--fs-sm);
+      padding: 0 var(--s3);
+      white-space: nowrap;
+    }
+
+    .status::before {
+      content: "";
+      width: 10px;
+      height: 10px;
+      flex: none;
+      border-radius: 50%;
+      background: var(--ok);
+    }
+
+    .status.busy::before {
+      background: var(--warn);
+    }
+
+    .status.off::before {
+      background: var(--danger);
+    }
+
+    /* ─── Zeichenfläche: immer weiß ──────────────────────────────────────── */
+    #canvas-container {
+      grid-area: canvas;
+      position: relative;
+      overflow: hidden;
+      background: var(--paper);
+      cursor: crosshair;
+    }
+
+    #canvas-container canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      touch-action: none;
+    }
+
+    #canvas-container.hand-cursor {
+      cursor: grab;
+    }
+
+    #canvas-container.hand-cursor:active {
+      cursor: grabbing;
+    }
+
+    /* ─── Schwebende Pillen (liegen im Raster-Feld der Zeichenfläche,
+           ohne die Fläche selbst zu überdecken) ─────────────────────────── */
+    .float {
+      grid-area: canvas;
+      position: relative;
+      z-index: 6;
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      padding: 3px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--r-pill);
+      box-shadow: var(--shadow);
+    }
+
+    .float .btn {
+      border-radius: var(--r-pill);
+      flex: none;
+    }
+
+    .pages {
+      align-self: end;
+      justify-self: center;
+      margin-bottom: calc(var(--s4) + var(--safe-bottom));
+    }
+
+    .pages .btn:not(.icon) {
+      padding: 0 var(--s3);
+      white-space: nowrap;
+    }
+
+    .zoom {
+      align-self: end;
+      justify-self: end;
+      margin: 0 calc(var(--s4) + var(--safe-right)) calc(var(--s4) + var(--safe-bottom)) 0;
+    }
+
+    /* Liegt Gezeichnetes außerhalb des Bildschirms, meldet sich „Alles zeigen“ */
+    #btn-fit {
+      position: relative;
+    }
+
+    .main[data-off="true"] #btn-fit {
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+
+    .main[data-off="true"] #btn-fit::after {
+      content: "";
+      position: absolute;
+      top: 6px;
+      right: 6px;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--accent);
+      border: 2px solid var(--surface);
+    }
+
+    .edge {
+      min-height: var(--tap);
+      padding: 0 var(--s2) 0 var(--s4);
+      gap: var(--s1);
+      background: var(--accent);
+      border-color: var(--accent);
+      color: var(--on-accent);
+      font: 600 var(--fs-sm) var(--font-ui);
+      white-space: nowrap;
+      cursor: pointer;
+    }
+
+    .edge:hover {
+      filter: brightness(1.08);
+    }
+
+    .edge[data-dir="right"] {
+      align-self: center;
+      justify-self: end;
+      margin-right: calc(var(--s4) + var(--safe-right));
+    }
+
+    .edge[data-dir="left"] {
+      align-self: center;
+      justify-self: start;
+      margin-left: calc(var(--s4) + var(--safe-left));
+      flex-direction: row-reverse;
+      padding: 0 var(--s4) 0 var(--s2);
+    }
+
+    .edge[data-dir="left"] .i {
+      transform: rotate(180deg);
+    }
+
+    .edge[data-dir="up"] {
+      align-self: start;
+      justify-self: center;
+      margin-top: var(--s3);
+    }
+
+    .edge[data-dir="up"] .i {
+      transform: rotate(-90deg);
+    }
+
+    .edge[data-dir="down"] {
+      align-self: end;
+      justify-self: center;
+      margin-bottom: calc(var(--s4) + var(--safe-bottom) + var(--tap) + 20px);
+    }
+
+    .edge[data-dir="down"] .i {
+      transform: rotate(90deg);
+    }
+
+    /* ─── Sidebar (Notizbuch-Liste) als Schublade — Inhalt folgt in Teil B ─ */
     .sidebar {
+      position: fixed;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: min(var(--drawer-w), 86%);
+      z-index: 50;
       display: flex;
       flex-direction: column;
       background: var(--surface);
       border-right: 1px solid var(--border);
       overflow: hidden;
       padding-left: var(--safe-left);
+      transform: translateX(-100%);
+      visibility: hidden;
+      transition: transform .25s ease, visibility 0s .25s;
+    }
+
+    .sidebar.sidebar-open {
+      transform: translateX(0);
+      visibility: visible;
+      box-shadow: var(--shadow);
+      transition: transform .25s ease, visibility 0s;
+    }
+
+    .sidebar-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: var(--scrim);
+      z-index: 49;
+    }
+
+    .sidebar-overlay.active {
+      display: block;
     }
 
     .brand {
@@ -107,7 +792,7 @@
     }
 
     .brand-name {
-      font-size: 16px;
+      font-size: var(--fs-lg);
       font-weight: 700;
     }
 
@@ -121,11 +806,9 @@
     }
 
     .section-label {
-      font-size: 10px;
-      font-weight: 600;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      color: var(--text-faint);
+      font-size: var(--fs-sm);
+      font-weight: 700;
+      color: var(--text-2);
       padding: 0 8px 8px;
     }
 
@@ -134,10 +817,10 @@
       align-items: center;
       justify-content: space-between;
       padding: 9px 12px;
-      border-radius: 6px;
-      color: var(--text-dim);
-      font-size: 13px;
-      font-weight: 500;
+      border-radius: var(--r-sm);
+      color: var(--text);
+      font-size: var(--fs-md);
+      font-weight: 600;
       transition: background 0.15s, color 0.15s;
       text-align: left;
       width: 100%;
@@ -145,13 +828,11 @@
 
     .notebook-tab:hover {
       background: var(--surface-2);
-      color: var(--text);
     }
 
     .notebook-tab.active {
-      background: var(--accent-glow);
+      background: var(--accent-soft);
       color: var(--accent);
-      box-shadow: inset 0 0 0 1px rgba(77, 171, 247, 0.2);
     }
 
     .nb-name {
@@ -174,18 +855,18 @@
     }
 
     .nb-action-btn {
-      width: 22px;
-      height: 22px;
+      width: 26px;
+      height: 26px;
       border-radius: 4px;
       display: flex;
       align-items: center;
       justify-content: center;
-      color: var(--text-faint);
+      color: var(--text-2);
       transition: background 0.15s, color 0.15s;
     }
 
     .nb-action-btn:hover {
-      background: var(--surface-2);
+      background: var(--surface);
       color: var(--text);
     }
 
@@ -197,16 +878,16 @@
     .nb-context-menu {
       position: fixed;
       background: var(--surface);
-      border: 1px solid var(--border-2);
-      border-radius: 8px;
+      border: 1px solid var(--border);
+      border-radius: var(--r-sm);
       padding: 4px;
       z-index: 300;
-      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
-      min-width: 140px;
+      box-shadow: var(--shadow);
+      min-width: 160px;
     }
 
     .nb-context-menu.hidden {
-      display: block;
+      display: none;
     }
 
     .nb-context-item {
@@ -214,10 +895,11 @@
       align-items: center;
       gap: 8px;
       width: 100%;
+      min-height: var(--tap);
       padding: 8px 12px;
       border-radius: 5px;
       color: var(--text);
-      font-size: 13px;
+      font-size: var(--fs-md);
       text-align: left;
     }
 
@@ -234,16 +916,16 @@
       align-items: center;
       gap: 8px;
       padding: 9px 12px;
-      border-radius: 6px;
-      color: var(--text-faint);
-      font-size: 13px;
+      border-radius: var(--r-sm);
+      color: var(--accent);
+      font-size: var(--fs-md);
+      font-weight: 600;
       transition: background 0.15s, color 0.15s;
       width: 100%;
     }
 
     .nb-add-btn:hover {
       background: var(--surface-2);
-      color: var(--text);
     }
 
     .sidebar-footer {
@@ -251,43 +933,44 @@
       border-top: 1px solid var(--border);
       display: flex;
       flex-direction: column;
-      gap: 8px;
+      gap: 2px;
+      overflow-y: auto;
     }
 
     .status-row {
       display: flex;
       align-items: center;
       gap: 8px;
-      padding: 0 8px;
+      padding: 6px 12px;
+      min-height: 32px;
     }
 
     .status-dot {
-      width: 7px;
-      height: 7px;
+      width: 10px;
+      height: 10px;
       border-radius: 50%;
-      background: var(--text-faint);
+      background: var(--border-strong);
       transition: background 0.3s;
       flex-shrink: 0;
     }
 
     .status-dot.connected {
-      background: #5fb98a;
-      box-shadow: 0 0 5px rgba(95, 185, 138, 0.5);
+      background: var(--ok);
     }
 
     .peer-label {
-      font-size: 11px;
-      color: var(--text-dim);
+      font-size: var(--fs-sm);
+      color: var(--text-2);
     }
 
     .footer-btn {
       display: flex;
       align-items: center;
-      gap: 8px;
-      padding: 7px 12px;
-      border-radius: 6px;
-      color: var(--text-dim);
-      font-size: 12px;
+      gap: 10px;
+      padding: 8px 12px;
+      border-radius: var(--r-sm);
+      color: var(--text);
+      font-size: var(--fs-md);
       font-weight: 500;
       transition: background 0.15s, color 0.15s;
       width: 100%;
@@ -295,358 +978,15 @@
 
     .footer-btn:hover {
       background: var(--surface-2);
-      color: var(--text);
     }
 
     .footer-btn svg {
       flex-shrink: 0;
-      opacity: 0.7;
     }
 
     .footer-btn.active {
-      background: var(--accent-glow);
+      background: var(--accent-soft);
       color: var(--accent);
-    }
-
-    .footer-btn.active svg {
-      opacity: 1;
-    }
-
-    /* ─── Main ───────────────────────────────────────────────────────────── */
-    .main {
-      display: grid;
-      grid-template-rows: calc(var(--toolbar-h) + var(--safe-top)) 1fr calc(var(--pagebar-h) + var(--safe-bottom));
-      overflow: hidden;
-      position: relative;
-    }
-
-    /* Toolbar */
-    .toolbar {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: var(--safe-top) calc(12px + var(--safe-right)) 0 calc(12px + var(--safe-left));
-      gap: 8px;
-      border-bottom: 1px solid var(--border);
-      background: var(--surface);
-    }
-
-    .toolbar-left,
-    .toolbar-center,
-    .toolbar-right {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
-
-    .toolbar-center {
-      flex: 1;
-      justify-content: center;
-    }
-
-    #notebook-title {
-      font-size: 14px;
-      font-weight: 600;
-      color: var(--text);
-    }
-
-    .tool-btn {
-      width: 34px;
-      height: 34px;
-      flex-shrink: 0;
-      border-radius: 6px;
-      background: transparent;
-      color: var(--text-dim);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      transition: background 0.15s, color 0.15s;
-    }
-
-    .tool-btn:hover {
-      background: var(--surface-2);
-      color: var(--text);
-    }
-
-    .tool-btn.active {
-      background: var(--accent-glow);
-      color: var(--accent);
-    }
-
-    .tool-btn:disabled {
-      opacity: 0.3;
-      cursor: not-allowed;
-    }
-
-    .divider {
-      width: 1px;
-      height: 20px;
-      background: var(--border);
-      margin: 0 4px;
-    }
-
-    /* Color palette */
-    .color-palette {
-      display: flex;
-      gap: 4px;
-      align-items: center;
-    }
-
-    .color-dot {
-      width: 18px;
-      height: 18px;
-      border-radius: 50%;
-      border: 2px solid transparent;
-      cursor: pointer;
-      transition: transform 0.15s, border-color 0.15s;
-    }
-
-    .color-dot.active {
-      border-color: var(--text);
-      transform: scale(1.2);
-    }
-
-    /* Size palette */
-    .size-palette {
-      display: flex;
-      gap: 3px;
-    }
-
-    .size-btn {
-      padding: 3px 7px;
-      border-radius: 4px;
-      background: transparent;
-      color: var(--text-dim);
-      font-size: 10px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: background 0.15s;
-    }
-
-    .size-btn.active {
-      background: var(--accent-glow);
-      color: var(--accent);
-    }
-
-    /* ─── Canvas Area ────────────────────────────────────────────────────── */
-    #canvas-container {
-      position: relative;
-      overflow: hidden;
-      background: var(--paper);
-      cursor: crosshair;
-    }
-
-    #canvas-container canvas {
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      touch-action: none;
-    }
-
-    /* ─── Page Bar ───────────────────────────────────────────────────────── */
-    .page-bar {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 0 calc(12px + var(--safe-right)) var(--safe-bottom) calc(12px + var(--safe-left));
-      border-top: 1px solid var(--border);
-      background: var(--surface);
-    }
-
-    .pagebar-left {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }
-
-    .pagebar-right {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-
-    .bg-selector {
-      display: flex;
-      gap: 2px;
-    }
-
-    .bg-btn {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      width: 28px;
-      height: 28px;
-      border-radius: 5px;
-      color: var(--text-dim);
-      transition: background 0.15s, color 0.15s;
-    }
-
-    .bg-btn:hover {
-      background: var(--surface-2);
-      color: var(--text);
-    }
-
-    .bg-btn.active {
-      background: var(--accent-glow);
-      color: var(--accent);
-    }
-
-    .pagebar-title {
-      font-size: 12px;
-      color: var(--text-dim);
-      display: none;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      max-width: 40%;
-    }
-
-    .page-btn {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      width: 30px;
-      height: 30px;
-      border-radius: 6px;
-      color: var(--text-dim);
-      transition: background 0.15s, color 0.15s;
-    }
-
-    .page-btn:hover:not(:disabled) {
-      background: var(--surface-2);
-      color: var(--text);
-    }
-
-    .page-btn:disabled {
-      opacity: 0.3;
-      cursor: not-allowed;
-    }
-
-    #page-indicator {
-      font-size: 12px;
-      color: var(--text-dim);
-      min-width: 50px;
-      text-align: center;
-    }
-
-    /* ─── Color Picker Popup ────────────────────────────────────────────── */
-    .color-picker-popup {
-      position: fixed;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      background: var(--surface);
-      border: 1px solid var(--border-2);
-      border-radius: 12px;
-      padding: 16px;
-      z-index: 300;
-      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
-    }
-
-    .color-picker-popup.hidden {
-      display: none;
-    }
-
-    .iro-confirm-btn {
-      display: block;
-      width: 100%;
-      margin-top: 12px;
-      padding: 8px;
-      background: var(--accent-glow);
-      border: 1px solid rgba(77, 171, 247, 0.3);
-      border-radius: 6px;
-      color: var(--accent);
-      font-size: 13px;
-      font-weight: 600;
-      cursor: pointer;
-    }
-
-    .iro-confirm-btn:hover {
-      background: rgba(77, 171, 247, 0.25);
-    }
-
-    .color-picker-btn {
-      background: conic-gradient(red, yellow, lime, aqua, blue, magenta, red) !important;
-      border: 2px solid var(--border) !important;
-    }
-
-    /* ─── Zen Mode Icon Toggle ──────────────────────────────────────────── */
-    #btn-zen .zen-collapse { display: none; }
-    body.zen-mode #btn-zen .zen-expand { display: none; }
-    body.zen-mode #btn-zen .zen-collapse { display: block; }
-
-    /* ─── Zen Mode ───────────────────────────────────────────────────────── */
-    body.zen-mode .sidebar {
-      display: none;
-    }
-
-    body.zen-mode .toolbar {
-      max-height: none;
-      height: auto;
-      overflow: visible;
-      background: transparent;
-      position: fixed;
-      z-index: 999;
-      width: 100%;
-      border: none;
-      flex-wrap: nowrap;
-      justify-content: center;
-    }
-
-    /* Links: nur Stift, Radierer, Home */
-    body.zen-mode .toolbar-left .tool-btn {
-      display: none;
-    }
-
-    body.zen-mode .toolbar-left [data-tool="pen"],
-    body.zen-mode .toolbar-left [data-tool="eraser"],
-    body.zen-mode .toolbar-left #btn-undo,
-    body.zen-mode .toolbar-left #btn-reset-view,
-    body.zen-mode .toolbar-left #btn-zen {
-      display: flex;
-    }
-
-    body.zen-mode .toolbar-left .divider {
-      display: none;
-    }
-
-    /* Mitte: ausblenden */
-    body.zen-mode .toolbar-center {
-      display: none;
-    }
-
-    /* Rechts: Desktop-Paletten ausblenden, Mobile-Trigger zeigen */
-    body.zen-mode .toolbar-right .color-palette,
-    body.zen-mode .toolbar-right .size-palette,
-    body.zen-mode .toolbar-right .desktop-only {
-      display: none !important;
-    }
-
-    body.zen-mode .toolbar-right .mobile-color-trigger,
-    body.zen-mode .toolbar-right .mobile-size-trigger {
-      display: flex;
-    }
-
-    body.zen-mode .page-bar {
-      display: none;
-    }
-
-    body.zen-mode .app {
-      grid-template-columns: 1fr;
-    }
-
-    body.zen-mode .main {
-      grid-template-rows: 1fr;
-    }
-
-    body.zen-mode {
-      .mobile-popup {
-        background: transparent;
-        border: none;
-        box-shadow: none;
-      }
     }
 
     /* ─── Rename Input ───────────────────────────────────────────────────── */
@@ -655,46 +995,20 @@
       border: none;
       border-bottom: 1px solid var(--accent);
       color: var(--text);
-      font-size: 14px;
+      font-size: var(--fs-md);
       font-weight: 600;
       outline: none;
       padding: 2px 4px;
       width: 200px;
       font-family: inherit;
+      user-select: text;
     }
 
-    /* ─── Hand-Tool Cursor ──────────────────────────────────────────────── */
-    #canvas-container.hand-cursor {
-      cursor: grab;
-    }
-
-    #canvas-container.hand-cursor:active {
-      cursor: grabbing;
-    }
-
-    /* ─── Sidebar Overlay (mobil) ────────────────────────────────────────── */
-    .sidebar-overlay {
-      display: none;
-      position: fixed;
-      inset: 0;
-      background: rgba(0, 0, 0, 0.5);
-      z-index: 49;
-    }
-
-    .sidebar-overlay.active {
-      display: block;
-    }
-
-    /* ─── Burger Button ──────────────────────────────────────────────────── */
-    .burger-btn {
-      display: none;
-    }
-
-    /* ─── Share Modal ────────────────────────────────────────────────────── */
+    /* ─── Modals (Inhalt folgt in Teil B/C, hier nur neue Tokens) ────────── */
     .modal-overlay {
       position: fixed;
       inset: 0;
-      background: rgba(10, 9, 18, 0.8);
+      background: var(--scrim);
       backdrop-filter: blur(6px);
       display: flex;
       align-items: center;
@@ -719,12 +1033,13 @@
 
     .modal {
       background: var(--surface);
-      border: 1px solid var(--border-2);
-      border-radius: 12px;
+      border: 1px solid var(--border);
+      border-radius: var(--r-lg);
       width: 380px;
       max-width: calc(100vw - 32px);
-      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
-      overflow: hidden;
+      max-height: calc(100dvh - 32px);
+      overflow-y: auto;
+      box-shadow: var(--shadow);
     }
 
     .modal-header {
@@ -736,7 +1051,7 @@
     }
 
     .modal-header h2 {
-      font-size: 15px;
+      font-size: var(--fs-lg);
       font-weight: 700;
     }
 
@@ -744,16 +1059,15 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      width: 30px;
-      height: 30px;
-      border-radius: 6px;
-      color: var(--text-dim);
+      width: 36px;
+      height: 36px;
+      border-radius: var(--r-sm);
+      color: var(--text);
       transition: background 0.15s;
     }
 
     .modal-close:hover {
       background: var(--surface-2);
-      color: var(--text);
     }
 
     .modal-body {
@@ -765,10 +1079,11 @@
     }
 
     .qr-wrap {
-      background: var(--paper);
-      border-radius: 8px;
+      background: #ffffff;
+      border-radius: var(--r-sm);
       padding: 10px;
       line-height: 0;
+      outline: 1px solid var(--border);
     }
 
     .qr-wrap canvas {
@@ -777,8 +1092,8 @@
     }
 
     .modal-hint {
-      font-size: 12px;
-      color: var(--text-dim);
+      font-size: var(--fs-sm);
+      color: var(--text-2);
       text-align: center;
       line-height: 1.6;
     }
@@ -791,259 +1106,235 @@
 
     .link-input {
       flex: 1;
-      background: var(--bg);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      color: var(--text-dim);
-      font-size: 11px;
+      background: var(--surface);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--r-sm);
+      color: var(--text);
+      font-size: var(--fs-sm);
       padding: 8px 10px;
       outline: none;
       min-width: 0;
-      font-family: monospace;
+      font-family: var(--font-mono);
+      user-select: text;
+    }
+
+    .link-input::placeholder {
+      color: var(--text-2);
+      opacity: .8;
     }
 
     .copy-btn {
       padding: 8px 14px;
-      background: var(--accent-glow);
-      border: 1px solid rgba(77, 171, 247, 0.3);
-      border-radius: 6px;
-      color: var(--accent);
-      font-size: 13px;
+      min-height: 40px;
+      background: var(--accent);
+      border: 1px solid var(--accent);
+      border-radius: var(--r-sm);
+      color: var(--on-accent);
+      font-size: var(--fs-md);
       font-weight: 600;
-      transition: background 0.15s;
+      transition: filter 0.15s, background 0.15s;
       flex-shrink: 0;
     }
 
     .copy-btn:hover {
-      background: rgba(77, 171, 247, 0.25);
+      filter: brightness(1.08);
     }
 
-    /* ─── Mobile Color/Size Triggers ─────────────────────────────────────── */
-    .mobile-color-trigger,
-    .mobile-size-trigger {
+    /* ─── Vollbild (Zen): Leisten schweben über der Zeichenfläche ────────── */
+    body.zen-mode .tb-left,
+    body.zen-mode #sync-status,
+    body.zen-mode .tb-right .divider {
       display: none;
     }
 
-    .mobile-color-dot {
-      width: 18px;
-      height: 18px;
-      border-radius: 50%;
-      border: 2px solid var(--border);
-    }
-
-    .mobile-size-label {
-      font-size: 11px;
-      font-weight: 700;
-      color: var(--text-dim);
-    }
-
-    .mobile-popup {
+    body.zen-mode .tb-right {
       position: fixed;
-      top: calc(var(--toolbar-h) + var(--safe-top));
-      left: 0;
-      right: 0;
-      background: var(--surface);
-      border-bottom: 1px solid var(--border);
-      padding: 12px;
-      z-index: 150;
-      animation: slideDown 0.15s ease;
-      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+      top: calc(var(--s2) + var(--safe-top));
+      right: calc(var(--s2) + var(--safe-right));
+      min-height: 0;
+      padding: 3px;
+      gap: 2px;
+      border: 1px solid var(--border);
+      border-radius: var(--r-pill);
+      box-shadow: var(--shadow);
     }
 
-    .mobile-popup.hidden {
-      display: none;
+    body.zen-mode .tb-right .btn {
+      border-radius: var(--r-pill);
     }
 
-    @keyframes slideDown {
-      from {
-        transform: translateY(-100%);
-        opacity: 0;
-      }
-
-      to {
-        transform: translateY(0);
-        opacity: 1;
-      }
-    }
-
-    .mobile-popup-content {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      justify-content: center;
-    }
-
-    .mobile-popup-content .color-dot {
-      width: 44px;
-      height: 44px;
-    }
-
-    .mobile-popup-content .size-btn {
-      min-width: 44px;
-      min-height: 44px;
-      padding: 10px 16px;
-      font-size: 14px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-
-    /* ─── Responsive: Sidebar auf mobil verstecken ───────────────────────── */
-    @media (max-width: 768px) {
-      .app {
-        grid-template-columns: 1fr;
-      }
-
-      .sidebar {
-        display: flex;
+    @media (min-width: 761px) {
+      body.zen-mode .toolrow {
         position: fixed;
-        left: 0;
-        top: 0;
-        bottom: 0;
-        width: var(--sidebar-w);
-        z-index: 50;
-        transform: translateX(-100%);
-        transition: transform 0.25s ease;
+        top: calc(var(--s2) + var(--safe-top));
+        left: 50%;
+        transform: translateX(-50%);
+        min-height: 0;
+        padding: 3px var(--s2);
+        border: 1px solid var(--border);
+        border-radius: var(--r-lg);
+        box-shadow: var(--shadow);
+      }
+    }
+
+    /* ─── Breiten ────────────────────────────────────────────────────────── */
+    /* Großes Zeichen-Tablet: Beschriftungen einblenden */
+    @media (min-width: 1180px) {
+
+      .tool,
+      .opt {
+        min-width: 68px;
+        height: 48px;
       }
 
-      .sidebar.sidebar-open {
-        transform: translateX(0);
-      }
-
-      .burger-btn {
-        display: flex;
-      }
-
-      .color-palette,
-      .size-palette,
-      .desktop-only,
-      .bg-selector,
-      .toolbar-left .divider,
-      .toolbar-right .divider {
-        display: none !important;
-      }
-
-      .toolbar-center {
-        display: none;
-      }
-
-      .pagebar-title {
+      .tool .lbl,
+      .opt .lbl {
         display: block;
       }
 
-      /* Topbar: bleibt einzeilig, kompakter Platz */
-      .toolbar {
-        gap: 4px;
-        padding: var(--safe-top) calc(8px + var(--safe-right)) 0 calc(8px + var(--safe-left));
+      .mode .lbl {
+        display: inline;
       }
 
-      .toolbar-left {
-        gap: 2px;
-        flex: 1;
-        justify-content: flex-start;
+      .mode {
+        padding: 0 var(--s4) 0 var(--s3);
+      }
+    }
+
+    @media (max-width: 1000px) {
+      .sync-text {
+        display: none;
       }
 
-      .toolbar-right {
-        gap: 4px;
-        margin-left: auto;
+      .status {
+        padding: 0;
+        width: var(--tap);
       }
 
-      /* Tool-Buttons auf Mobile: Höhe 44px (Tap-Target),
-         Breite 40px (pragmatisch — 8 Tools × 44px würde 360px-Viewports sprengen) */
-      .tool-btn {
-        width: 40px;
-        height: var(--tap-target);
+      .title-btn {
+        max-width: 160px;
+      }
+    }
+
+    /* Handy: Werkzeuge nach unten (Daumen), oben nur Titel + Verlauf */
+    @media (max-width: 760px) {
+      .main {
+        grid-template-columns: minmax(0, 1fr) auto;
+        grid-template-rows: auto 1fr auto;
+        grid-template-areas: "left right" "canvas canvas" "tools tools";
       }
 
-      /* Mobile Color/Size-Trigger: schweben rechts oben unter Topbar */
-      .mobile-color-trigger,
-      .mobile-size-trigger {
-        position: fixed;
-        right: calc(10px + var(--safe-right));
-        width: var(--tap-target);
-        height: var(--tap-target);
-        background: transparent;
-        border: none;
-        box-shadow: none;
-        z-index: 60;
-        display: flex;
-        /* schwebend über Papier — Label braucht dunkle Farbe für Lesbarkeit */
-        color: #2b2840;
+      .tb {
+        padding: calc(var(--s1) + var(--safe-top)) var(--s2) var(--s1);
       }
 
-      .mobile-color-trigger .mobile-color-dot {
-        /* Color-Dot bleibt durch Pen-Farbe getragen, dunkle Border statt Border-Token */
-        border-color: #2b2840;
+      .tb-left {
+        padding-left: calc(var(--s2) + var(--safe-left));
       }
 
-      .mobile-size-trigger .mobile-size-label {
-        color: #2b2840;
+      .tb-right {
+        gap: 0;
+        padding-right: calc(var(--s2) + var(--safe-right));
       }
 
-      .mobile-color-trigger {
-        top: calc(var(--toolbar-h) + var(--safe-top) + 10px);
+      .tb-right .divider {
+        display: none;
       }
 
-      .mobile-size-trigger {
-        top: calc(var(--toolbar-h) + var(--safe-top) + 10px + var(--tap-target) + 8px);
+      .title-btn {
+        max-width: 100%;
       }
 
-      /* Zen-Mode: Trigger gehören in die Topbar (es ist Platz),
-         nicht schwebend */
-      body.zen-mode .mobile-color-trigger,
-      body.zen-mode .mobile-size-trigger {
+      .toolrow {
+        justify-content: space-between;
+        gap: 0;
+        min-height: var(--bar-h);
+        padding: var(--s1) calc(var(--s2) + var(--safe-right)) max(var(--s1), var(--safe-bottom)) calc(var(--s2) + var(--safe-left));
+        border-bottom: 0;
+        border-top: 1px solid var(--border);
+      }
+
+      .toolrow .divider,
+      .zoom .zstep,
+      .zoom .fitlbl {
+        display: none;
+      }
+
+      .tools {
+        gap: 0;
+      }
+
+      .zoom {
+        margin: 0 calc(var(--s2) + var(--safe-right)) var(--s3) 0;
+      }
+
+      .zoom #btn-fit {
+        width: var(--tap);
+        padding: 0;
+      }
+
+      .pages {
+        justify-self: start;
+        margin: 0 0 var(--s3) calc(var(--s2) + var(--safe-left));
+      }
+
+      .pages .btn:not(.icon) {
+        padding: 0 var(--s2);
+      }
+
+      .pages .i-pages {
+        display: none;
+      }
+
+      .edge[data-dir="down"] {
+        margin-bottom: calc(var(--s3) + var(--tap) + 16px);
+      }
+
+      .toolrow .pop-wrap {
         position: static;
-        z-index: auto;
+      }
+
+      .toolrow .popover {
         top: auto;
-        right: auto;
+        bottom: calc(100% + 8px);
+        left: var(--s2);
+        right: var(--s2);
+        min-width: 0;
+        max-height: calc(100dvh - 2 * var(--bar-h) - var(--safe-top) - var(--safe-bottom) - 24px);
       }
 
-      .mobile-color-dot {
-        width: 22px;
-        height: 22px;
+      .swatches,
+      .sizes {
+        grid-template-columns: repeat(5, 1fr);
+        justify-items: center;
       }
+    }
 
-      .mobile-size-label {
-        font-size: 14px;
-      }
+    /* Bedienflächen mind. 44 px bei Touch — auch in Sidebar und Dialogen */
+    @media (pointer: coarse) {
 
-      /* Touch-Targets: andere Buttons */
-      .footer-btn {
-        min-height: var(--tap-target);
-        padding: 10px 12px;
-        font-size: 13px;
-      }
-
-      .nb-add-btn {
-        min-height: var(--tap-target);
-        font-size: 14px;
-      }
-
-      .notebook-tab {
-        min-height: var(--tap-target);
-        padding: 10px 12px;
-        font-size: 14px;
-      }
-
-      .page-btn {
-        width: var(--tap-target);
-        height: var(--tap-target);
-      }
-
-      .bg-btn {
-        width: var(--tap-target);
-        height: var(--tap-target);
+      .notebook-tab,
+      .nb-add-btn,
+      .footer-btn,
+      .status-row,
+      .copy-btn {
+        min-height: var(--tap);
       }
 
       .modal-close {
-        width: var(--tap-target);
-        height: var(--tap-target);
+        width: var(--tap);
+        height: var(--tap);
+      }
+
+      .nb-action-btn {
+        width: 36px;
+        height: 36px;
       }
     }
 
     /* ─── Scrollbar ──────────────────────────────────────────────────────── */
     ::-webkit-scrollbar {
-      width: 4px;
+      width: 6px;
     }
 
     ::-webkit-scrollbar-track {
@@ -1051,17 +1342,49 @@
     }
 
     ::-webkit-scrollbar-thumb {
-      background: var(--border-2);
-      border-radius: 2px;
+      background: var(--border-strong);
+      border-radius: 3px;
+    }
+
+    /* ─── Fokus (steht bewusst am Ende, damit outline:none nicht gewinnt) ── */
+    :focus-visible {
+      outline: 3px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    .seg button:focus-visible,
+    .menu-item:focus-visible {
+      outline-offset: -3px;
     }
   </style>
 </head>
 
 <body>
+  <svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></symbol>
+    <symbol id="i-pen" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></symbol>
+    <symbol id="i-eraser" viewBox="0 0 24 24"><path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/></symbol>
+    <symbol id="i-hand" viewBox="0 0 24 24"><path d="M18 11V6a2 2 0 0 0-4 0v5"/><path d="M14 10V4a2 2 0 0 0-4 0v2"/><path d="M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/></symbol>
+    <symbol id="i-undo" viewBox="0 0 24 24"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/></symbol>
+    <symbol id="i-redo" viewBox="0 0 24 24"><path d="M21 7v6h-6"/><path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3l3 2.7"/></symbol>
+    <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-minus" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+    <symbol id="i-left" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
+    <symbol id="i-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+    <symbol id="i-pages" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></symbol>
+    <symbol id="i-share" viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.59 13.51 6.83 3.98M15.41 6.51l-6.82 3.98"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5M12 15V3"/></symbol>
+    <symbol id="i-zen" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></symbol>
+    <symbol id="i-fit" viewBox="0 0 24 24"><path d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"/><rect x="8" y="8" width="8" height="8" rx="1"/></symbol>
+  </svg>
+
   <div class="app">
 
+
     <!-- ── Sidebar ─────────────────────────────────────────────────────── -->
-    <aside class="sidebar">
+    <aside class="sidebar" id="sidebar" aria-label="Notizbücher">
       <div class="brand">
         <span class="brand-icon">📒</span>
         <span class="brand-name">Notizbuch</span>
@@ -1073,7 +1396,6 @@
           <!-- Dynamisch via renderUI() -->
         </div>
         <button class="nb-add-btn" id="btn-add-notebook">+ Neues Notizbuch</button>
-        <button class="nb-add-btn" id="btn-add-testbook" style="opacity:0.4; font-size:11px">🧪 Testbuch</button>
       </div>
 
       <div class="sidebar-footer">
@@ -1098,7 +1420,7 @@
           </svg>
           Verbindung
         </button>
-        <button class="footer-btn" id="btn-share" title="Notebook teilen">
+        <button class="footer-btn" id="btn-share-sidebar" title="Notebook teilen">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
             stroke-linecap="round" stroke-linejoin="round">
             <circle cx="18" cy="5" r="3" />
@@ -1150,184 +1472,152 @@
     </aside>
 
     <!-- ── Main ────────────────────────────────────────────────────────── -->
-    <main class="main">
+    <main class="main" id="main" data-mode="draw" data-off="false">
 
-      <!-- Toolbar -->
-      <div class="toolbar">
-        <div class="toolbar-left">
-          <!-- Burger (mobil) -->
-          <button class="tool-btn burger-btn" id="btn-burger" title="Menü">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-              stroke-linecap="round">
-              <line x1="3" y1="6" x2="21" y2="6" />
-              <line x1="3" y1="12" x2="21" y2="12" />
-              <line x1="3" y1="18" x2="21" y2="18" />
-            </svg>
-          </button>
-          <!-- Pen -->
-          <button class="tool-btn" data-tool="pen" title="Stift">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-              stroke-linecap="round" stroke-linejoin="round">
-              <path d="M12 19l7-7 3 3-7 7-3-3z" />
-              <path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z" />
-            </svg>
-          </button>
-          <!-- Eraser -->
-          <button class="tool-btn" data-tool="eraser" title="Radierer">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-              stroke-linecap="round" stroke-linejoin="round">
-              <path d="M20 20H7L3 16l9-9 8 8-4 4z" />
-              <path d="M6.5 13.5L12 8" />
-            </svg>
-          </button>
-          <span class="divider"></span>
-          <!-- Undo -->
-          <button class="tool-btn" id="btn-undo" title="Rückgängig">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-              stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="1 4 1 10 7 10" />
-              <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
-            </svg>
-          </button>
-          <!-- Redo -->
-          <button class="tool-btn" id="btn-redo" title="Wiederholen" disabled>
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-              stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="23 4 23 10 17 10" />
-              <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
-            </svg>
-          </button>
-          <!-- Clear -->
-          <button class="tool-btn" id="btn-clear" title="Seite auskehren" style="color: var(--danger)">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-              stroke-linecap="round" stroke-linejoin="round">
-              <path d="M9 4l6 6" />
-              <path d="M14 3l7 7" />
-              <path d="M3 21h11" />
-              <path d="M6 21l5-5" />
-              <path d="M10 12l2-2 6 6-2 2a4 4 0 0 1-5.66 0L10 12z" />
-            </svg>
-          </button>
-          <span class="divider"></span>
-          <!-- Hand (Pan/Zoom) -->
-          <button class="tool-btn" data-tool="hand" title="Verschieben/Zoom">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-              stroke-linecap="round" stroke-linejoin="round">
-              <path d="M18 11V6a2 2 0 0 0-4 0v1M14 10V4a2 2 0 0 0-4 0v6M10 10.5V5a2 2 0 0 0-4 0v9" />
-              <path
-                d="M18 11a2 2 0 0 1 4 0v5a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 17" />
-            </svg>
-          </button>
-          <!-- View Reset -->
-          <button class="tool-btn" id="btn-reset-view" title="Ansicht zurücksetzen">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-              stroke-linecap="round" stroke-linejoin="round">
-              <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-              <polyline points="9 22 9 12 15 12 15 22" />
-            </svg>
-          </button>
-          <!-- Zen Mode -->
-          <button class="tool-btn" id="btn-zen" title="Zen-Modus (Vollbild)">
-            <svg class="zen-expand" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-              stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="15 3 21 3 21 9" />
-              <polyline points="9 21 3 21 3 15" />
-              <line x1="21" y1="3" x2="14" y2="10" />
-              <line x1="3" y1="21" x2="10" y2="14" />
-            </svg>
-            <svg class="zen-collapse" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-              stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="4 14 10 14 10 20" />
-              <polyline points="20 10 14 10 14 4" />
-              <line x1="14" y1="10" x2="21" y2="3" />
-              <line x1="3" y1="21" x2="10" y2="14" />
-            </svg>
-          </button>
-        </div>
-
-        <div class="toolbar-center">
-          <span id="notebook-title"></span>
-        </div>
-
-        <div class="toolbar-right">
-          <!-- Mobile: Farb-Trigger -->
-          <button class="tool-btn mobile-color-trigger" id="btn-mobile-color" title="Farbe">
-            <span class="mobile-color-dot" id="mobile-color-dot"></span>
-          </button>
-          <!-- Mobile: Größen-Trigger -->
-          <button class="tool-btn mobile-size-trigger" id="btn-mobile-size" title="Größe">
-            <span class="mobile-size-label" id="mobile-size-label">M</span>
-          </button>
-          <div class="color-palette" id="color-palette">
-            <!-- Dynamisch via renderUI() -->
-          </div>
-          <span class="divider desktop-only"></span>
-          <div class="size-palette" id="size-palette">
-            <!-- Dynamisch via renderUI() -->
-          </div>
-        </div>
+      <!-- Leiste links: Notizbuch-Titel öffnet die Notizbuch-Liste -->
+      <div class="tb tb-left">
+        <button class="btn ghost title-btn" id="btn-notebooks" aria-expanded="false" aria-controls="sidebar"
+          aria-label="Notizbücher öffnen" title="Notizbücher öffnen">
+          <svg class="i" aria-hidden="true"><use href="#i-menu" /></svg><span id="notebook-title"></span>
+        </button>
       </div>
 
-      <!-- Canvas -->
-      <div id="canvas-container">
+      <!-- Werkzeuge -->
+      <div class="tb toolrow" role="toolbar" aria-label="Werkzeuge">
+        <button class="mode" id="btn-hand" aria-pressed="false" aria-label="Bewegen und Zoomen"
+          title="Bewegen an/aus (H · Leertaste halten)">
+          <svg class="i" aria-hidden="true"><use href="#i-hand" /></svg><span class="lbl">Bewegen</span>
+        </button>
+        <span class="divider"></span>
+        <div class="tools">
+          <button class="tool" data-tool="pen" aria-pressed="true" aria-label="Stift" title="Stift (P)">
+            <svg class="i" aria-hidden="true"><use href="#i-pen" /></svg><span class="lbl">Stift</span>
+          </button>
+          <button class="tool" data-tool="eraser" aria-pressed="false" aria-label="Radierer" title="Radierer (E)">
+            <svg class="i" aria-hidden="true"><use href="#i-eraser" /></svg><span class="lbl">Radierer</span>
+          </button>
+        </div>
+        <span class="divider"></span>
+        <span class="pop-wrap">
+          <button class="opt" id="btn-color" data-toggle="pop-color" aria-expanded="false" aria-haspopup="true"
+            aria-label="Farbe" title="Farbe">
+            <span class="dot" id="chip-color"></span><span class="lbl">Farbe</span>
+          </button>
+          <div class="popover" id="pop-color" data-pop hidden role="group" aria-label="Farbe wählen">
+            <div class="swatches" id="color-swatches">
+              <!-- Dynamisch via renderUI() -->
+            </div>
+            <div class="color-picker-popup hidden" id="color-picker-popup">
+              <div id="iro-container"></div>
+              <button class="btn" id="iro-confirm">Farbe übernehmen</button>
+            </div>
+          </div>
+        </span>
+        <span class="pop-wrap">
+          <button class="opt" id="btn-size" data-toggle="pop-size" aria-expanded="false" aria-haspopup="true"
+            aria-label="Strichstärke" title="Strichstärke">
+            <span class="sizedot"><i id="chip-size"></i></span><span class="lbl">Stärke</span>
+          </button>
+          <div class="popover" id="pop-size" data-pop hidden role="group" aria-label="Strichstärke wählen">
+            <div class="sizes" id="size-options">
+              <!-- Dynamisch via renderUI() -->
+            </div>
+          </div>
+        </span>
+      </div>
+
+      <!-- Leiste rechts: Verlauf, Sync-Status, Seiten-Menü -->
+      <div class="tb tb-right">
+        <button class="btn ghost icon" id="btn-undo" aria-label="Rückgängig" title="Rückgängig">
+          <svg class="i" aria-hidden="true"><use href="#i-undo" /></svg>
+        </button>
+        <button class="btn ghost icon" id="btn-redo" aria-label="Wiederholen" title="Wiederholen" disabled>
+          <svg class="i" aria-hidden="true"><use href="#i-redo" /></svg>
+        </button>
+        <span class="divider"></span>
+        <button class="status btn ghost busy" id="sync-status" aria-label="Sync-Status"
+          title="Sync-Status · Klick: Sync-Diagnose ein/aus">
+          <span class="sync-text" id="sync-text">Verbindet …</span>
+        </button>
+        <span class="pop-wrap">
+          <button class="btn ghost icon" id="btn-page-menu" data-toggle="pop-page" aria-expanded="false"
+            aria-haspopup="true" aria-label="Seiten-Menü" title="Seiten-Menü">
+            <svg class="i" aria-hidden="true"><use href="#i-more" /></svg>
+          </button>
+          <div class="popover right" id="pop-page" data-pop hidden>
+            <div class="menu-label" id="lbl-paper">Papier</div>
+            <div class="seg" id="bg-selector" role="group" aria-labelledby="lbl-paper">
+              <button class="bg-btn" data-bg="grid" aria-pressed="false" title="Papier: kariert">Kariert</button>
+              <button class="bg-btn" data-bg="lined" aria-pressed="false" title="Papier: liniert">Liniert</button>
+              <button class="bg-btn" data-bg="blank" aria-pressed="false" title="Papier: leer">Leer</button>
+            </div>
+            <div class="sep"></div>
+            <div class="menu">
+              <button class="menu-item" id="btn-share" data-close title="Notizbuch teilen">
+                <svg class="i" aria-hidden="true"><use href="#i-share" /></svg> Notizbuch teilen
+              </button>
+              <button class="menu-item" id="btn-menu-export-png" data-close title="Aktuelle Seite als PNG speichern">
+                <svg class="i" aria-hidden="true"><use href="#i-download" /></svg> Seite als PNG
+              </button>
+              <button class="menu-item" id="btn-menu-export-svg" data-close title="Aktuelle Seite als SVG speichern">
+                <svg class="i" aria-hidden="true"><use href="#i-download" /></svg> Seite als SVG
+              </button>
+              <button class="menu-item" id="btn-zen" data-close title="Vollbild an/aus">
+                <svg class="i" aria-hidden="true"><use href="#i-zen" /></svg> <span id="zen-label">Vollbild</span>
+              </button>
+              <div class="sep"></div>
+              <button class="menu-item danger" id="btn-clear" data-close title="Seite leeren">
+                <svg class="i" aria-hidden="true"><use href="#i-eraser" /></svg> Seite leeren
+              </button>
+              <button class="menu-item danger" id="btn-delete-page" data-close title="Seite löschen">
+                <svg class="i" aria-hidden="true"><use href="#i-trash" /></svg> <span id="delete-page-label">Seite löschen</span>
+              </button>
+            </div>
+          </div>
+        </span>
+      </div>
+
+      <!-- Canvas (Reihenfolge der drei Flächen ist fest: Hintergrund, Striche, aktiver Strich) -->
+      <div id="canvas-container" aria-label="Zeichenfläche">
         <canvas id="bg-canvas"></canvas>
         <canvas id="static-canvas"></canvas>
         <canvas id="active-canvas"></canvas>
       </div>
 
-      <!-- Page Bar -->
-      <div class="page-bar">
-        <div class="pagebar-left">
-          <button class="page-btn" id="btn-prev" disabled>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
-              stroke-linecap="round">
-              <polyline points="15 18 9 12 15 6" />
-            </svg>
-          </button>
-          <span id="page-indicator">1 / 1</span>
-          <button class="page-btn" id="btn-next">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
-              stroke-linecap="round">
-              <polyline points="9 18 15 12 9 6" />
-            </svg>
-          </button>
-        </div>
-        <div class="pagebar-right">
-          <div class="bg-selector" id="bg-selector">
-            <button class="bg-btn" data-bg="grid" title="Kariert">
-              <svg width="14" height="14" viewBox="0 0 14 14" stroke="currentColor" stroke-width="1.2" fill="none">
-                <line x1="0" y1="4.7" x2="14" y2="4.7" />
-                <line x1="0" y1="9.3" x2="14" y2="9.3" />
-                <line x1="4.7" y1="0" x2="4.7" y2="14" />
-                <line x1="9.3" y1="0" x2="9.3" y2="14" />
-              </svg>
-            </button>
-            <button class="bg-btn" data-bg="lined" title="Liniert">
-              <svg width="14" height="14" viewBox="0 0 14 14" stroke="currentColor" stroke-width="1.2" fill="none">
-                <line x1="0" y1="3.5" x2="14" y2="3.5" />
-                <line x1="0" y1="7" x2="14" y2="7" />
-                <line x1="0" y1="10.5" x2="14" y2="10.5" />
-              </svg>
-            </button>
-            <button class="bg-btn" data-bg="blank" title="Leer">
-              <svg width="14" height="14" viewBox="0 0 14 14" stroke="currentColor" stroke-width="1.2" fill="none">
-                <rect x="1" y="1" width="12" height="12" rx="1.5" />
-              </svg>
-            </button>
-          </div>
-          <button class="page-btn" id="btn-delete-page" title="Seite löschen">
-            <svg class="page-delete-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-              stroke-linecap="round">
-              <polyline points="3 6 5 6 21 6" />
-              <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />
-            </svg>
-            <svg class="page-restore-icon" style="display:none" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="1 4 1 10 7 10" />
-              <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
-            </svg>
-          </button>
-        </div>
-        <span class="pagebar-title" id="pagebar-title"></span>
+      <!-- Seiten-Pille -->
+      <div class="float pages" role="group" aria-label="Seiten">
+        <button class="btn ghost icon" id="btn-prev" aria-label="Vorherige Seite" title="Vorherige Seite" disabled>
+          <svg class="i" aria-hidden="true"><use href="#i-left" /></svg>
+        </button>
+        <button class="btn ghost" id="btn-page-overview" aria-label="Seite 1 von 1" title="Seitenübersicht">
+          <svg class="i i-pages" aria-hidden="true"><use href="#i-pages" /></svg> <span id="page-indicator">1 / 1</span>
+        </button>
+        <button class="btn ghost icon" id="btn-next" aria-label="Nächste Seite" title="Nächste Seite" disabled>
+          <svg class="i" aria-hidden="true"><use href="#i-right" /></svg>
+        </button>
+        <button class="btn ghost icon" id="btn-add-page" aria-label="Neue Seite" title="Neue Seite">
+          <svg class="i" aria-hidden="true"><use href="#i-plus" /></svg>
+        </button>
+      </div>
+
+      <!-- Hinweis auf Gezeichnetes außerhalb des Bildschirms -->
+      <button class="float edge" id="btn-edge-hint" data-dir="right" hidden
+        aria-label="Weiterer Inhalt außerhalb des Bildschirms – alles zeigen" title="Alles zeigen">
+        <span>Weiterer Inhalt</span> <svg class="i" aria-hidden="true"><use href="#i-right" /></svg>
+      </button>
+
+      <!-- Zoom-Pille -->
+      <div class="float zoom" role="group" aria-label="Ansicht">
+        <button class="btn ghost icon zstep" id="btn-zoom-out" aria-label="Verkleinern" title="Verkleinern">
+          <svg class="i" aria-hidden="true"><use href="#i-minus" /></svg>
+        </button>
+        <button class="btn ghost" id="btn-fit" aria-label="Alles zeigen: gesamten gezeichneten Bereich einpassen"
+          title="Alles zeigen (0)">
+          <svg class="i" aria-hidden="true"><use href="#i-fit" /></svg><span class="fitlbl">Alles</span>
+        </button>
+        <button class="btn ghost icon zstep" id="btn-zoom-in" aria-label="Vergrößern" title="Vergrößern">
+          <svg class="i" aria-hidden="true"><use href="#i-plus" /></svg>
+        </button>
       </div>
 
     </main>
@@ -1347,7 +1637,7 @@
           Neues Notizbuch starten
         </button>
         <button class="copy-btn" id="btn-import-key"
-          style="width: 100%; text-align: center; padding: 12px; background: transparent; border: 1px solid var(--border-2); color: var(--text);">
+          style="width: 100%; text-align: center; padding: 12px; background: transparent; border: 1px solid var(--border-strong); color: var(--text);">
           Bestehenden Key importieren
         </button>
       </div>
@@ -1392,7 +1682,7 @@
           style="width: 100%; font-size: 12px; padding: 10px 12px; min-height: 60px; resize: none; font-family: monospace;"></textarea>
         <span id="keyimport-error" style="color: var(--danger); font-size: 12px; min-height: 16px;"></span>
         <label class="copy-btn"
-          style="width: 100%; text-align: center; cursor: pointer; background: transparent; border: 1px solid var(--border-2); color: var(--text);">
+          style="width: 100%; text-align: center; cursor: pointer; background: transparent; border: 1px solid var(--border-strong); color: var(--text);">
           Key-Datei hochladen
           <input type="file" id="keyimport-file" accept=".txt" style="display: none;">
         </label>
@@ -1400,20 +1690,6 @@
           Verbinden
         </button>
       </div>
-    </div>
-  </div>
-
-  <!-- Mobile Color Menu -->
-  <div class="mobile-popup hidden" id="mobile-color-menu">
-    <div class="mobile-popup-content" id="mobile-color-grid">
-      <!-- Dynamisch via renderUI() -->
-    </div>
-  </div>
-
-  <!-- Mobile Size Menu -->
-  <div class="mobile-popup hidden" id="mobile-size-menu">
-    <div class="mobile-popup-content" id="mobile-size-grid">
-      <!-- Dynamisch via renderUI() -->
     </div>
   </div>
 
@@ -1431,12 +1707,6 @@
 
   <!-- Sidebar Overlay (mobil) -->
   <div class="sidebar-overlay" id="sidebar-overlay"></div>
-
-  <!-- Color Picker Popup -->
-  <div class="color-picker-popup hidden" id="color-picker-popup">
-    <div id="iro-container"></div>
-    <button class="iro-confirm-btn" id="iro-confirm">Farbe übernehmen</button>
-  </div>
 
   <!-- Share Modal -->
   <div class="modal-overlay hidden" id="share-modal">
@@ -1480,25 +1750,25 @@
           Direktangabe eines TURN-Servers oder HTTPS-Adresse, die <code>{"iceServers":[…]}</code> liefert.
           Ohne Eintrag wird nur STUN verwendet. Die Einstellung gilt nur für dieses Gerät. Beim Speichern wird die App neu geladen.
         </p>
-        <label style="display:flex; flex-direction:column; gap:4px; font-size:12px; color:var(--text-dim);">
+        <label style="display:flex; flex-direction:column; gap:4px; font-size:12px; color:var(--text-2);">
           TURN-Server oder ICE-Endpunkt
           <input class="link-input" type="text" id="conn-turn-url"
             placeholder="turn:turn.example.org:3478 oder https://…"
             style="width:100%; font-family: inherit;">
         </label>
-        <label style="display:flex; flex-direction:column; gap:4px; font-size:12px; color:var(--text-dim);">
+        <label style="display:flex; flex-direction:column; gap:4px; font-size:12px; color:var(--text-2);">
           Benutzername (nur bei turn:/turns:)
           <input class="link-input" type="text" id="conn-turn-user" style="width:100%; font-family: inherit;">
         </label>
-        <label style="display:flex; flex-direction:column; gap:4px; font-size:12px; color:var(--text-dim);">
+        <label style="display:flex; flex-direction:column; gap:4px; font-size:12px; color:var(--text-2);">
           Passwort (nur bei turn:/turns:)
           <input class="link-input" type="password" id="conn-turn-pass" style="width:100%; font-family: inherit;">
         </label>
-        <div id="conn-status" style="font-size:12px; color:var(--text-dim); min-height:18px;">-</div>
+        <div id="conn-status" style="font-size:12px; color:var(--text-2); min-height:18px;">-</div>
         <div class="link-row" style="margin-top:4px;">
           <button class="copy-btn" id="btn-save-connection" style="flex:1;">Speichern</button>
           <button class="copy-btn" id="btn-close-connection-2"
-            style="flex:1; background:transparent; border:1px solid var(--border-2); color:var(--text);">Abbrechen</button>
+            style="flex:1; background:transparent; border:1px solid var(--border-strong); color:var(--text);">Abbrechen</button>
         </div>
       </div>
     </div>
@@ -1519,8 +1789,8 @@
       <div class="modal-body" style="gap: 12px;">
         <p class="modal-hint" style="text-align:left; width:100%;">Wähle, ob du alle Notizbücher verschlüsselt sichern oder die aktuelle Seite als PNG oder SVG exportieren möchtest.</p>
         <button class="copy-btn" id="btn-export-enc" style="width:100%; text-align:center; padding:12px;">Alle Notizbücher als .enc</button>
-        <button class="copy-btn" id="btn-export-png" style="width:100%; text-align:center; padding:12px; background: transparent; border: 1px solid var(--border-2); color: var(--text);">Aktuelle Seite als PNG</button>
-        <button class="copy-btn" id="btn-export-svg" style="width:100%; text-align:center; padding:12px; background: transparent; border: 1px solid var(--border-2); color: var(--text);">Aktuelle Seite als Vektorgrafik (.svg)</button>
+        <button class="copy-btn" id="btn-export-png" style="width:100%; text-align:center; padding:12px; background: transparent; border: 1px solid var(--border-strong); color: var(--text);">Aktuelle Seite als PNG</button>
+        <button class="copy-btn" id="btn-export-svg" style="width:100%; text-align:center; padding:12px; background: transparent; border: 1px solid var(--border-strong); color: var(--text);">Aktuelle Seite als Vektorgrafik (.svg)</button>
       </div>
     </div>
   </div>

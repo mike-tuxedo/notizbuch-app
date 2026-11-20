@@ -25,7 +25,7 @@ let fails = 0;
     const keyHex = await A.page.evaluate(() => JSON.parse(localStorage.getItem('notizbuch:masterKeyRaw')).map(b => b.toString(16).padStart(2, '0')).join(''));
     await B.page.goto(URL + '#' + keyHex); await ready(B.page).catch(() => {});
   } else {
-    await A.page.click('#btn-share'); await sleep(1500);
+    await A.page.click('#btn-page-menu'); await A.page.click('#btn-share'); await sleep(1500);
     const link = await A.page.evaluate(() => document.getElementById('share-link').value);
     await A.page.evaluate(() => document.getElementById('share-modal')?.classList.add('hidden'));
     await fresh(B); await sleep(2000);
