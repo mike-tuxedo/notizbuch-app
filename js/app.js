@@ -35,7 +35,7 @@ const PEN_SIZES = [
 ];
 
 const BACKGROUNDS = ['grid', 'lined', 'blank'];
-const APP_VERSION = '2026-11-20-relaylive-v39';
+const APP_VERSION = '2026-11-20-redo-v40';
 const PRESENCE_INTERVAL_MS = 5000;
 const PRESENCE_TIMEOUT_MS = 15000;
 
@@ -209,6 +209,12 @@ function materializePage(page) {
   const undoneStrokeIds = new Set();
   const visible = [];
   const seenStrokeIds = new Set();
+  // Erster Durchlauf: aufgehobene Undo-Events sammeln. Ein Redo-Event hebt genau
+  // ein Undo-Event auf (targetEventId) — unabhängig von der Reihenfolge im Log.
+  const redoneUndoIds = new Set();
+  for (const event of page.events || []) {
+    if (event?.type === 'redo' && event.targetEventId) redoneUndoIds.add(event.targetEventId);
+  }
   for (const event of sortPageEvents(page.events || [])) {
     if (event.type === 'stroke' && event.stroke) {
       // Striche vor dem letzten Clear bleiben ausgeblendet
@@ -220,6 +226,8 @@ function materializePage(page) {
     } else if (event.type === 'undo' && event.targetStrokeId) {
       // Undo-Events wirken unabhängig von ihrer Reihenfolge und dürfen
       // nicht durch die clearedAt-Prüfung verloren gehen.
+      // Ein per Redo aufgehobenes Undo wirkt nicht mehr.
+      if (redoneUndoIds.has(event.id)) continue;
       undoneStrokeIds.add(event.targetStrokeId);
     }
   }
@@ -299,7 +307,7 @@ function forwardSyncEvent(action, data, roomId, fromPeerId) {
   // Herkunfts-Room: unverändert weiterreichen
   syncSend(action, data, { roomId, noRelay: true });
   // Nur seitenbezogene Events wechseln den Room (full-sync bleibt im eigenen)
-  if (action !== 'stroke' && action !== 'undo') return;
+  if (action !== 'stroke' && action !== 'undo' && action !== 'redo') return;
   const localNbId = _resolveNbId(data.notebookId, roomId);
   if (!localNbId || !state.notebooks.some(n => n.id === localNbId)) return;
   const fromMain = roomId === state.masterKeyHash;
@@ -1342,7 +1350,39 @@ async function createTestNotebook() {
   await savePageData(nbId, pageId, data);
 }
 
-// ─── Undo / Clear ───────────────────────────────────────────────────────────
+// ─── Undo / Redo / Clear ────────────────────────────────────────────────────
+
+/**
+ * Redo-Stapel pro Seite: Schlüssel → IDs der eigenen Undo-Events (oberstes zuletzt).
+ * Nur im Speicher — nicht persistiert, nicht synchronisiert. Eingehende
+ * Remote-Events verändern ihn nicht.
+ * @type {Map<string, string[]>}
+ */
+const _redoStacks = new Map();
+
+function redoStackKey(notebookId, pageId) {
+  return `${notebookId}/${pageId}`;
+}
+
+/** Redo-Stapel der aktuellen Seite (leeres Array, wenn keiner existiert). */
+function currentRedoStack() {
+  const page = currentPage();
+  if (!page) return [];
+  return _redoStacks.get(redoStackKey(state.currentNotebookId, page.id)) || [];
+}
+
+function clearRedoStack(notebookId, pageId) {
+  _redoStacks.delete(redoStackKey(notebookId, pageId));
+  updateRedoButton();
+}
+
+/** Redo-Button nur aktiv, wenn auf der aktuellen Seite etwas wiederholbar ist. */
+function updateRedoButton() {
+  const btn = document.getElementById('btn-redo');
+  if (!btn) return;
+  const page = currentPage();
+  btn.disabled = !page || isPageDeleted(page) || currentRedoStack().length === 0;
+}
 
 async function undo() {
   const page = currentPage();
@@ -1354,6 +1394,11 @@ async function undo() {
   applyPageEvent(page, pageEvent);
   redrawStrokes();
   const notebookId = state.currentNotebookId;
+  // Eigenes Undo für Redo merken
+  const stackKey = redoStackKey(notebookId, page.id);
+  if (!_redoStacks.has(stackKey)) _redoStacks.set(stackKey, []);
+  _redoStacks.get(stackKey).push(pageEvent.id);
+  updateRedoButton();
   const data = await serializePageData(page, notebookId);
   await savePageData(notebookId, page.id, data);
   relayPut(`p:${notebookId}/${page.id}`, data);
@@ -1363,10 +1408,33 @@ async function undo() {
   p2pSendForNotebook('undo', { eventId: newEventId(), notebookId, pageId: page.id, strokeId: lastStroke.id, pageEvent, deviceId: state.deviceId, seq: pageEvent.seq });
 }
 
+/** Letztes eigenes Undo der aktuellen Seite aufheben (Redo-Event anhängen). */
+async function redo() {
+  const page = currentPage();
+  if (!page || isPageDeleted(page)) return;
+  const notebookId = state.currentNotebookId;
+  const stack = _redoStacks.get(redoStackKey(notebookId, page.id));
+  if (!stack || stack.length === 0) return;
+  const targetEventId = stack.pop();
+  updateRedoButton();
+  const pageEvent = newPageEvent('redo', { targetEventId });
+  applyPageEvent(page, pageEvent);
+  redrawStrokes();
+  const data = await serializePageData(page, notebookId);
+  await savePageData(notebookId, page.id, data);
+  relayPut(`p:${notebookId}/${page.id}`, data);
+  if (state.sharedNotebooks.has(notebookId)) {
+    pushSharedNotebook(notebookId, { pageIds: [page.id] }).catch(() => {});
+  }
+  p2pSendForNotebook('redo', { eventId: newEventId(), notebookId, pageId: page.id, pageEvent, deviceId: state.deviceId, seq: pageEvent.seq });
+}
+
 async function clearPage() {
   const page = currentPage();
   if (!page || isPageDeleted(page)) return;
   page.clearedAt = Date.now();
+  // Nach dem Leeren gibt es nichts mehr zu wiederholen
+  clearRedoStack(state.currentNotebookId, page.id);
   refreshPageMaterializedState(page);
   redrawStrokes();
   await saveAppMeta();
@@ -2344,6 +2412,21 @@ const _p2pCallbacks = {
     serializePageData(page, notebookId).then(d => savePageData(notebookId, pageId, d));
   },
 
+  onRedo(payload, peerId, roomId) {
+    if (rememberSyncEvent(payload?.eventId)) return;
+    forwardSyncEvent('redo', payload, roomId, peerId);
+    let { notebookId, pageId, pageEvent } = payload;
+    notebookId = _resolveNbId(notebookId, roomId);
+    const nb = state.notebooks.find(n => n.id === notebookId);
+    const page = nb?.pages.find(p => p.id === pageId);
+    if (!page || isPageDeleted(page)) return;
+    if (pageEvent?.type !== 'redo' || !pageEvent.targetEventId) return;
+    // Der lokale Redo-Stapel bleibt von Remote-Events unberührt
+    mergePageEvents(page, [pageEvent]);
+    if (notebookId === state.currentNotebookId && pageId === currentPage()?.id) redrawStrokes();
+    serializePageData(page, notebookId).then(d => savePageData(notebookId, pageId, d));
+  },
+
   onClear() {},
 
   onPageCreated() {},
@@ -2404,6 +2487,7 @@ const _p2pCallbacks = {
 const _mainP2pCallbacks = {
   onStroke: _p2pCallbacks.onStroke,
   onUndo: _p2pCallbacks.onUndo,
+  onRedo: _p2pCallbacks.onRedo,
   onClear: _p2pCallbacks.onClear,
 
   async onFullSync(payload, peerId) {
@@ -3511,6 +3595,8 @@ function onPointerUp(e) {
 
   const pageEvent = newPageEvent('stroke', { stroke: newStroke });
   applyPageEvent(page, pageEvent);
+  // Ein neuer eigener Strich verwirft den Redo-Stapel dieser Seite
+  clearRedoStack(state.currentNotebookId, page.id);
   redrawStrokes();
 
   saveCurrentPage();
@@ -3608,6 +3694,8 @@ function renderUI() {
     if (delIcon) delIcon.style.display = deletedPage ? 'none' : '';
     if (restoreIcon) restoreIcon.style.display = deletedPage ? '' : 'none';
   }
+
+  updateRedoButton();
 
   const clearBtn = document.getElementById('btn-clear');
   if (clearBtn) {
@@ -3981,6 +4069,22 @@ function setupEvents() {
   document.getElementById('btn-add-notebook')?.addEventListener('click', createNotebook);
   document.getElementById('btn-add-testbook')?.addEventListener('click', createTestNotebook);
   document.getElementById('btn-undo')?.addEventListener('click', undo);
+  document.getElementById('btn-redo')?.addEventListener('click', redo);
+
+  // Tastatur: Ctrl/Cmd+Z = Rückgängig, Ctrl/Cmd+Shift+Z bzw. Ctrl/Cmd+Y = Wiederholen
+  document.addEventListener('keydown', (e) => {
+    if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+    const t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+    const key = String(e.key || '').toLowerCase();
+    if (key === 'z' && !e.shiftKey) {
+      e.preventDefault();
+      undo();
+    } else if ((key === 'z' && e.shiftKey) || (key === 'y' && !e.shiftKey)) {
+      e.preventDefault();
+      redo();
+    }
+  });
   document.getElementById('btn-clear')?.addEventListener('click', () => {
     if (confirm('Seite wirklich leeren?')) clearPage();
   });
