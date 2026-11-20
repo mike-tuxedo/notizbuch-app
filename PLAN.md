@@ -1,17 +1,29 @@
 # PLAN.md — Notizbuch App
 
-## Aktueller Stand (Stand 2026-04-20)
+## Aktueller Stand (Stand 2026-11-20)
 
-App ist produktiv deployed unter `notizbuch-app.vercel.app`. Backup-Relay läuft auf Plesk (`wss://notes.mike.fm-media-staging.at`).
+App ist produktiv deployed unter `notizbuch-app.vercel.app` (Version `2026-11-20-relaylive-v39`). Relay läuft auf Plesk (`wss://notes.mike.fm-media-staging.at`). Sync auf 3 Geräten bestätigt.
 
 **Architektur** (siehe CLAUDE.md für Details):
-- WebRTC P2P (Trystero, Nostr-Signaling, Multi-Room) — Live-Sync
-- Plesk WebSocket-Relay — Backup-Snapshot-Store für Offline-Peers
+- Relay leitet verschlüsselte Events live weiter (funktioniert ohne WebRTC) + Blob-Abgleich für Offline-Geräte
+- WebRTC P2P (Trystero 0.24.0 gepinnt, Nostr-Signaling, Multi-Room) als Beschleunigung
+- TURN/ICE pro Gerät einstellbar (Sidebar → „Verbindung“)
+- Seiten als Event-Log (Format v2), Vereinigung nach Event-ID, Undo als Event
 - AES-GCM 256 (zufälliger MasterKey + NotebookKeys, kein Passphrase)
 - OPFS-Storage mit IndexedDB-Fallback
-- Modulare JS-Architektur (`js/*.js`), `app.html` nur UI
+- Abnahmetests in `dev-server/tests/`
 
 ## Offene Punkte
+
+### Sync / Infrastruktur
+
+- [ ] Relay-URL als Einstellung statt fest in `js/relay.js` (Server ist nur für Privatgebrauch gedacht)
+- [ ] Für öffentliche Version: Relay + Signaling serverless (z.B. Cloudflare Workers / Durable Objects)
+- [ ] Signaling: Trystero-Standard-Relays sind unzuverlässig; eigene geprüfte Liste (`relayConfig.urls`) oder eigener Broker
+- [ ] Event-Log kompaktieren (wächst unbegrenzt)
+- [ ] Undo nur für eigene Striche?
+- [ ] Trystero-Migration auf 0.27 (großer API-Bruch)
+- [ ] Mischbetrieb/Regression testen: Radierer, Seite leeren, mehrere Seiten
 
 ### Peer-Freigabe (Sicherheit, geplant)
 
@@ -32,11 +44,20 @@ App ist produktiv deployed unter `notizbuch-app.vercel.app`. Backup-Relay läuft
 
 ## Bekannte Limitierungen
 
-- **Concurrent shared edits**: Race-Window ~500ms (zwischen Fetch und Push) bei gleichzeitigem Zeichnen aus zwei Browsern. Kann einzelne Strokes verlieren — akzeptabel für typische asynchrone Nutzung.
 - **Key-Verlust = Datenverlust**: Bei zufälligem MasterKey gibt es kein Recovery. Erst-Start-Dialog warnt + erzwingt Bestätigung.
-- **Öffentliche Nostr-Relays unzuverlässig**: Liste in `js/p2p-sync.js` muss gelegentlich gepflegt werden.
+- **Öffentliche Nostr-Relays unzuverlässig**: betrifft nur noch den P2P-Weg, Live-Sync läuft auch über das Relay.
 
 ## Letzte Änderungen
+
+### Session 2026-11-19..20
+
+- [x] **Trystero gepinnt** (ungepinnter Import war seit 0.27 kaputt)
+- [x] **TURN/ICE-Einstellung** pro Gerät + Diagnose-Overlay (ein/aus per Klick auf Statuszeile)
+- [x] **Event-Log-Migration fertig** (Undo wirkt, kein Snapshot-Überschreiben mehr)
+- [x] **Weiterleitung zwischen Haupt- und Shared-Room** (Teilnetze mit 3 Geräten)
+- [x] **Live-Weiterleitung im Relay** (Sync ohne P2P)
+- [x] **Service Worker**: HTML + JS network-first
+- [x] **Abnahmetests** (2 Peers, 3 Peers, nur Relay, TURN)
 
 ### Session 2026-04-18..20
 
