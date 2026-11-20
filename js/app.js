@@ -11,9 +11,9 @@ import {
   setIceSettings, getIceStatus, getPeerDiagnostics
 } from './p2p-sync.js';
 import { generateKey, exportKey, importKey, encrypt, decrypt } from './encryption.js';
-import { exportAppBundle, importAppBundle } from './share.js';
+import { packBackup, unpackBackup } from './share.js';
 import {
-  initRelay, putBlob as relayPut, deleteBlob as relayDelete, isRelayConnected, fetchRoom, pushBlobsToRoom,
+  initRelay, closeRelay, putBlob as relayPut, deleteBlob as relayDelete, isRelayConnected, fetchRoom, pushBlobsToRoom,
   setRelayUrl, getCustomRelayUrl, defaultRelayUrl, isValidRelayUrl, relayUrlProblem,
   openLiveChannel, closeLiveChannel, closeAllLiveChannels, sendLiveEvent, reconnectLiveChannels, liveChannelStatus
 } from './relay.js';
@@ -37,7 +37,7 @@ const PEN_SIZES = [
   { name: 'XL', label: 'Sehr dick', size: 16, dot: 24 }
 ];
 
-const APP_VERSION = '2026-11-20-redesign-v45';
+const APP_VERSION = '2026-11-20-redesign-v46';
 const PRESENCE_INTERVAL_MS = 5000;
 const PRESENCE_TIMEOUT_MS = 15000;
 
@@ -800,6 +800,26 @@ function getClientName() {
  */
 const _pagesMergedFromDisk = new WeakSet();
 
+/** Vollständiges Event-Log einer Seite, sortiert und in der Form, in der es gespeichert wird. */
+function storablePageEvents(page) {
+  ensurePageEvents(page);
+  return sortPageEvents(page.events || []).map(event => event.type === 'stroke' ? ({
+    ...event,
+    stroke: {
+      ...event.stroke,
+      points: roundPoints(event.stroke?.points || []),
+      tool: event.stroke?.tool || 'pen',
+      createdAt: strokeCreatedAt(event.stroke)
+    }
+  }) : event);
+}
+
+/**
+ * true, während eine Sicherung Schlüssel und Daten dieses Geräts ersetzt. Solange darf nichts
+ * anderes speichern oder mischen (kein Autosave, kein Sync), bis die App neu geladen ist.
+ */
+let _dataSwapRunning = false;
+
 async function serializePageData(page, notebookId) {
   // Nie einen unvollständigen Speicherstand schreiben: Erreicht ein Sync-Event eine Seite,
   // die noch nicht von der Platte geladen wurde, würde sonst die Datei (und die Relay-Kopie)
@@ -807,19 +827,7 @@ async function serializePageData(page, notebookId) {
   if (notebookId && page?.id && !_pagesMergedFromDisk.has(page)) {
     await loadPage(notebookId, page.id, page);
   }
-  ensurePageEvents(page);
-  const payload = {
-    version: 2,
-    events: sortPageEvents(page.events || []).map(event => event.type === 'stroke' ? ({
-      ...event,
-      stroke: {
-        ...event.stroke,
-        points: roundPoints(event.stroke?.points || []),
-        tool: event.stroke?.tool || 'pen',
-        createdAt: strokeCreatedAt(event.stroke)
-      }
-    }) : event)
-  };
+  const payload = { version: 2, events: storablePageEvents(page) };
   const plain = new TextEncoder().encode(JSON.stringify(payload));
   try {
     const key = await getNotebookKey(notebookId);
@@ -898,6 +906,7 @@ let _lastSyncActivity = 0;
 
 async function _flushSave() {
   _saveTimer = null;
+  if (_dataSwapRunning) return;
   const page = currentPage();
   if (!page) return;
   const nbId = state.currentNotebookId;
@@ -930,8 +939,12 @@ async function loadPage(notebookId, pageId, page) {
 
 // ─── Meta Persistence ───────────────────────────────────────────────────────
 
-/** App-Metadaten speichern (Notebook-Struktur + NotebookKeys, ohne Strokes). */
-async function saveAppMeta() {
+/**
+ * App-Metadaten speichern (Notebook-Struktur + NotebookKeys, ohne Strokes).
+ * @param {{local?: boolean}} [opts] - local: nur auf dieses Gerät schreiben, nicht ans Relay
+ */
+async function saveAppMeta(opts = {}) {
+  if (_dataSwapRunning && !opts.local) return;
   // NotebookKeys sammeln (raw bytes als Array)
   const nbKeys = {};
   for (const nb of state.notebooks) {
@@ -956,7 +969,7 @@ async function saveAppMeta() {
     if (masterKey) {
       const encrypted = await encrypt(masterKey, plain);
       await saveMeta(encrypted);
-      relayPut('meta', encrypted);
+      if (!opts.local) relayPut('meta', encrypted);
     } else {
       await saveMeta(meta); // Fallback: plain
     }
@@ -2776,6 +2789,20 @@ function showFirstStartDialog() {
       else open(); // „Zurück“
     };
 
+    // Sicherung einspielen: Der Dialog bleibt offen, bis eine Datei gewählt ist.
+    // Nach erfolgreichem Einspielen lädt die App neu — resolve() ist dann nicht nötig.
+    document.getElementById('btn-restore-backup').onclick = async () => {
+      const file = await chooseBackupFile();
+      if (!file) return;
+      closeDialog('firststart-modal');
+      let done = false;
+      try { done = await importBackupFile(file); } catch (e) {
+        console.warn('[Import] fehlgeschlagen:', e?.name || 'Fehler');
+        showToast('Import fehlgeschlagen.', { fehler: true });
+      }
+      if (!done && !masterKeyRaw) open();
+    };
+
     open();
   });
 }
@@ -3382,6 +3409,7 @@ function buildFullSyncPayload(opts = {}) {
  * @param {Object} payload - { notebooks: [...] }
  */
 async function applyFullSync(payload) {
+  if (_dataSwapRunning) return;
   if (!payload?.notebooks?.length) return;
 
   for (const remoteNb of payload.notebooks) {
@@ -4252,51 +4280,407 @@ function downloadBlob(blob, filename) {
   URL.revokeObjectURL(url);
 }
 
-async function buildEncryptedBackupBundle() {
-  const masterKey = await getMasterCryptoKey();
-  if (!masterKey) throw new Error('Kein MasterKey vorhanden.');
+// ─── Sicherung (.enc): Export und Import ─────────────────────────────────────
+//
+// Datei: [16 Bytes Salt][12 Bytes IV][AES-GCM] — Schlüssel per PBKDF2 aus der Passphrase
+// (packBackup/unpackBackup in share.js). Inhalt 'notizbuch-backup-v3': MasterKey, NotebookKeys,
+// geteilte Notizbücher, Notizbücher mit Seiten-Meta und vollständigem Event-Log.
+// Gerätelokale Einstellungen (Theme, ICE, Relay-Adresse, Stiftmodus) stehen nicht darin.
+// Passphrase und Schlüssel werden nie protokolliert oder in Hinweisen gezeigt.
 
+const BACKUP_TYPE = 'notizbuch-backup-v3';
+const BACKUP_TYPE_V2 = 'notizbuch-backup-v2';
+const BACKUP_MIN_PASSPHRASE = 8;
+/** sessionStorage-Merker: nach dem Neuladen alles ans Relay/an Peers verteilen (kein Geheimnis). */
+const AFTER_RESTORE_KEY = 'notizbuch:nachEinspielen';
+
+/** Inhalt der Sicherung zusammenstellen. Jede Seite wird vorher von der Platte gemischt. */
+async function buildBackupPayload() {
+  if (!masterKeyRaw) throw new Error('Kein Schlüssel vorhanden.');
   const notebookKeys = {};
-  for (const nb of state.notebooks) {
-    const key = await getNotebookKey(nb.id);
-    notebookKeys[nb.id] = Array.from(await exportKey(key));
-  }
-
   const notebooks = [];
   for (const nb of state.notebooks) {
+    notebookKeys[nb.id] = Array.from(await exportKey(await getNotebookKey(nb.id)));
     const pages = [];
     for (const p of nb.pages) {
       await loadPage(nb.id, p.id, p);
-      pages.push({
-        id: p.id,
-        background: p.background || 'grid',
-        order: p.order ?? 0,
-        createdAt: p.createdAt || 0,
-        clearedAt: p.clearedAt || 0,
-        deletedAt: p.deletedAt || 0,
-        restoredAt: p.restoredAt || 0,
-        strokes: materializePage(p).map(s => ({
-          id: s.id,
-          createdAt: strokeCreatedAt(s),
-          points: roundPoints(s.points || []),
-          color: s.color,
-          size: s.size,
-          tool: s.tool || 'pen'
-        }))
-      });
+      pages.push({ ...pageMeta(p), events: storablePageEvents(p) });
     }
     notebooks.push({ id: nb.id, name: nb.name, pages });
   }
-
-  const payload = new TextEncoder().encode(JSON.stringify({
-    type: 'notizbuch-backup-v2',
+  return {
+    type: BACKUP_TYPE,
     exportedAt: new Date().toISOString(),
-    masterKeyHash: state.masterKeyHash,
+    masterKey: Array.from(masterKeyRaw),
     notebookKeys,
+    // Geteilt = ID in dieser Liste + NotebookKey; der Room ergibt sich aus dem Schlüssel
+    sharedNotebooks: [...state.sharedNotebooks].filter(id => id in notebookKeys),
     notebooks
-  }));
+  };
+}
 
-  return encrypt(masterKey, payload);
+/**
+ * Dialog „Sicherung exportieren“: Passphrase + Wiederholung. `run(passphrase)` läuft bei
+ * gültiger Eingabe; solange bleibt der Dialog offen. Die Felder werden beim Schließen geleert.
+ * @param {(passphrase: string) => Promise<void>} run
+ * @returns {Promise<boolean>} true, wenn exportiert wurde
+ */
+function exportPassphraseDialog(run) {
+  return new Promise(resolve => {
+    let done = false;
+    const form = document.getElementById('export-form');
+    const pass = document.getElementById('export-pass');
+    const pass2 = document.getElementById('export-pass2');
+    const err = document.getElementById('export-error');
+    const okBtn = document.getElementById('export-ok');
+    const setError = (msg, field = null) => {
+      err.textContent = msg || '';
+      for (const el of [pass, pass2]) {
+        const bad = !!msg && el === field;
+        el.classList.toggle('error', bad);
+        el.setAttribute('aria-invalid', String(bad));
+      }
+    };
+    pass.value = '';
+    pass2.value = '';
+    okBtn.disabled = false;
+    setError('');
+    pass.oninput = pass2.oninput = () => setError('');
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      if (okBtn.disabled) return;
+      if (pass.value.length < BACKUP_MIN_PASSPHRASE) {
+        setError(`Die Passphrase braucht mindestens ${BACKUP_MIN_PASSPHRASE} Zeichen.`, pass);
+        pass.focus();
+        return;
+      }
+      if (pass.value !== pass2.value) {
+        setError('Die beiden Eingaben stimmen nicht überein.', pass2);
+        pass2.focus();
+        return;
+      }
+      okBtn.disabled = true;
+      try {
+        await run(pass.value);
+        done = true;
+        closeDialog('backup-export-modal');
+      } catch (e2) {
+        // Nur die Fehlerart melden — nie die Eingabe
+        console.warn('[Export] fehlgeschlagen:', e2?.name || 'Fehler');
+        setError('Die Sicherung konnte nicht erstellt werden.');
+      }
+      okBtn.disabled = false;
+    };
+    document.getElementById('export-cancel').onclick = () => closeDialog('backup-export-modal');
+    openDialog('backup-export-modal', {
+      focus: '#export-pass',
+      onClose: () => { pass.value = ''; pass2.value = ''; setError(''); resolve(done); }
+    });
+  });
+}
+
+/** Einstellungen → Daten & Schlüssel → „Alle Notizbücher exportieren“. */
+async function exportBackup() {
+  try {
+    // Ein vorgemerktes Leeren/Löschen gehört in die Sicherung
+    await commitPendingPageOp();
+    const done = await exportPassphraseDialog(async (passphrase) => {
+      const bundle = await packBackup(await buildBackupPayload(), passphrase);
+      downloadBlob(new Blob([bundle], { type: 'application/octet-stream' }), 'notizbuch-backup.enc');
+    });
+    if (done) showToast('Sicherung exportiert (.enc)');
+  } catch (e) {
+    showToast('Export fehlgeschlagen.', { fehler: true });
+  }
+}
+
+/** Dateiauswahl für eine Sicherung. @returns {Promise<File|null>} */
+function chooseBackupFile() {
+  return new Promise(resolve => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.enc';
+    input.onchange = () => resolve(input.files[0] || null);
+    input.oncancel = () => resolve(null);
+    input.click();
+  });
+}
+
+/** Strich aus einer alten Sicherung (v2) als Event mit stabiler ID — erneutes Einspielen verdoppelt nichts. */
+function strokeToImportEvent(stroke) {
+  return {
+    id: `import:${stroke.id}`,
+    type: 'stroke',
+    createdAt: strokeCreatedAt(stroke),
+    deviceId: 'import',
+    seq: 0,
+    stroke
+  };
+}
+
+/** Notizbücher aus einer Sicherung in eine feste Form bringen (v3: events, v2: strokes → Events). */
+function cleanBackupNotebooks(list) {
+  return (Array.isArray(list) ? list : []).filter(nb => nb && nb.id != null).map(nb => ({
+    id: String(nb.id),
+    name: String(nb.name || 'Notizbuch'),
+    pages: (Array.isArray(nb.pages) ? nb.pages : []).filter(p => p && p.id != null).map(p => ({
+      ...pageMeta({ ...p, id: String(p.id) }),
+      events: Array.isArray(p.events)
+        ? p.events.filter(e => e && e.id && e.type)
+        : (Array.isArray(p.strokes) ? p.strokes.filter(s => s && s.id).map(strokeToImportEvent) : [])
+    }))
+  }));
+}
+
+function cleanBackupKeys(keys) {
+  const out = {};
+  for (const [id, raw] of Object.entries(keys && typeof keys === 'object' ? keys : {})) {
+    if (Array.isArray(raw) && raw.length === 32) out[id] = raw;
+  }
+  return out;
+}
+
+/**
+ * Entschlüsselten Inhalt prüfen: Sicherung v3 oder altes Schlüsselbündel (nur Schlüssel, ohne Typ).
+ * Wirft bei allem anderen.
+ */
+async function readBackupObject(obj) {
+  const rawArr = obj?.masterKey;
+  if (!Array.isArray(rawArr) || rawArr.length !== 32 || rawArr.some(b => !Number.isInteger(b) || b < 0 || b > 255)) {
+    throw new Error('kein Schlüssel');
+  }
+  const full = obj.type === BACKUP_TYPE;
+  if (obj.type !== undefined && !full) throw new Error('unbekannter Typ');
+  if (full && !Array.isArray(obj.notebooks)) throw new Error('unvollständig');
+  const masterRaw = new Uint8Array(rawArr);
+  const notebooks = full ? cleanBackupNotebooks(obj.notebooks) : [];
+  return {
+    full,
+    masterRaw,
+    hash: await computeKeyHash(masterRaw),
+    notebookKeys: cleanBackupKeys(obj.notebookKeys),
+    sharedNotebooks: (Array.isArray(obj.sharedNotebooks) ? obj.sharedNotebooks.map(String) : [])
+      .filter(id => notebooks.some(nb => nb.id === id)),
+    notebooks
+  };
+}
+
+/** Alte Sicherung (v2: mit dem MasterKey verschlüsselt, materialisierte Striche) mit dem Geräteschlüssel öffnen. */
+async function openV2Backup(bytes) {
+  if (!masterKeyRaw) return null;
+  try {
+    const plain = await decrypt(await getMasterCryptoKey(), bytes);
+    const obj = JSON.parse(new TextDecoder().decode(plain));
+    if (obj?.type !== BACKUP_TYPE_V2 || !Array.isArray(obj.notebooks)) return null;
+    return {
+      full: true,
+      masterRaw: masterKeyRaw,
+      hash: state.masterKeyHash,
+      notebookKeys: cleanBackupKeys(obj.notebookKeys),
+      sharedNotebooks: [],
+      notebooks: cleanBackupNotebooks(obj.notebooks)
+    };
+  } catch {
+    return null;
+  }
+}
+
+function backupSummary(backup) {
+  if (!backup.full) return 'Schlüssel aus der Sicherung übernommen';
+  const n = backup.notebooks.length;
+  const m = backup.notebooks.reduce((sum, nb) => sum + nb.pages.filter(p => !isPageDeleted(p)).length, 0);
+  return `Sicherung eingespielt: ${n} ${n === 1 ? 'Notizbuch' : 'Notizbücher'}, ${m} ${m === 1 ? 'Seite' : 'Seiten'}`;
+}
+
+/**
+ * Notizbücher vollständig verteilen: jede Seite ans Relay und als full-sync an verbundene Geräte,
+ * geteilte Notizbücher zusätzlich in ihren Shared-Room.
+ */
+async function distributeNotebooks(notebookIds) {
+  for (const nbId of notebookIds) {
+    const nb = state.notebooks.find(n => n.id === nbId);
+    if (!nb) continue;
+    for (const p of nb.pages) {
+      try {
+        const data = await serializePageData(p, nb.id);
+        relayPut(`p:${nb.id}/${p.id}`, data);
+        p2pSendForNotebook('full-sync', {
+          eventId: newEventId(),
+          notebooks: [{ id: nb.id, name: nb.name, pages: [{ ...pageMeta(p), events: storablePageEvents(p) }] }]
+        });
+      } catch (e) {
+        console.warn('[Import] Seite konnte nicht verteilt werden:', p.id);
+      }
+    }
+    if (state.sharedNotebooks.has(nb.id)) {
+      try { await pushSharedNotebook(nb.id); } catch {}
+    }
+  }
+  await saveAppMeta();
+}
+
+/**
+ * Sicherung in den Bestand mischen (gleicher MasterKey): nichts wird ersetzt.
+ * Notizbücher/Seiten per ID, Seiten-Meta über applyPageMeta, Events als Vereinigung.
+ */
+async function mergeBackup(backup) {
+  await commitPendingPageOp();
+  await installNotebookKeys(backup.notebookKeys);
+  if (!backup.full) { showToast(backupSummary(backup)); return; }
+
+  // Plattenstand betroffener Seiten zuerst einmischen, damit die Vereinigung vollständig ist
+  for (const remoteNb of backup.notebooks) {
+    const nb = state.notebooks.find(n => n.id === remoteNb.id);
+    if (!nb) continue;
+    for (const remotePage of remoteNb.pages) {
+      const page = nb.pages.find(p => p.id === remotePage.id);
+      if (page && !_pagesMergedFromDisk.has(page)) await loadPage(nb.id, page.id, page);
+    }
+  }
+
+  await applyFullSync({ notebooks: backup.notebooks });
+
+  for (const id of backup.sharedNotebooks) {
+    if (state.sharedNotebooks.has(id) || !state.notebooks.some(n => n.id === id)) continue;
+    state.sharedNotebooks.add(id);
+    saveSharedNotebooks();
+    joinSharedNotebookP2P(id).catch(() => {});
+  }
+
+  // Geänderte Seiten-Meta (geleert/gelöscht/wiederhergestellt) wirkt erst nach dem Neu-Materialisieren
+  const ids = backup.notebooks.map(nb => nb.id);
+  for (const id of ids) {
+    const nb = state.notebooks.find(n => n.id === id);
+    if (!nb) continue;
+    nb.pages.forEach(refreshPageMaterializedState);
+    ensureCurrentPageId(id);
+  }
+  renderUI();
+  if (currentPage() && bgCanvas) { redrawBackground(); redrawStrokes(); }
+  refreshPageOverview(true);
+  showToast(backupSummary(backup));
+  distributeNotebooks(ids).catch(() => {});
+}
+
+/**
+ * Sicherung auf einem Gerät ohne Schlüssel einspielen — oder Schlüssel und Daten dieses Geräts
+ * ersetzen (nach Rückfrage). Entfernt alles Lokale des bisherigen Schlüssels (Seiten-Dateien,
+ * Meta, NotebookKeys, Liste geteilter Notizbücher), schreibt den Inhalt der Sicherung und lädt neu.
+ */
+async function installBackup(backup) {
+  const oldHash = state.masterKeyHash;
+  _dataSwapRunning = true;
+  try {
+    // Offline gehen: Nichts aus der Sicherung darf im Room des alten Schlüssels landen
+    if (_saveTimer) { clearTimeout(_saveTimer); _saveTimer = null; }
+    if (_sharedPushTimer) { clearTimeout(_sharedPushTimer); _sharedPushTimer = null; }
+    try { leaveRoom(); } catch {}
+    try { closeAllLiveChannels(); } catch {}
+    try { closeRelay(); } catch {}
+    _sharedRoomMap.clear();
+
+    await clearAll();
+    for (const key of Object.keys(localStorage)) {
+      if (key.startsWith('notizbuch:nbKey:')) localStorage.removeItem(key);
+    }
+    localStorage.removeItem('notizbuch:sharedNotebooks');
+    localStorage.removeItem(PENDING_OP_KEY);
+    if (oldHash && oldHash !== backup.hash && settingsDB) {
+      for (const name of ['currentNotebookId', 'pagePositions', 'color', 'penSizeIndex', 'customColors', 'penDetected', 'penOnlyMode']) {
+        try { await settingsDelete(`${oldHash}:${name}`); } catch {}
+      }
+    }
+
+    saveMasterKeyToStorage(backup.masterRaw, backup.hash);
+    state.notebookKeys = {};
+    await installNotebookKeys(backup.notebookKeys);
+    state.sharedNotebooks = new Set(backup.sharedNotebooks);
+    saveSharedNotebooks();
+    state.notebooks = backup.notebooks.map(nb => ({
+      id: nb.id,
+      name: nb.name,
+      pages: nb.pages.map(p => ({ ...pageMeta(p), strokes: [], events: p.events }))
+    }));
+    state.notebooks.forEach(normalizePageOrder);
+    state.currentPageIds = {};
+    state.currentNotebookId = state.notebooks[0]?.id || null;
+    state.notebooks.forEach(nb => ensureCurrentPageId(nb.id));
+
+    for (const nb of state.notebooks) {
+      for (const p of nb.pages) {
+        _pagesMergedFromDisk.add(p); // die Platte ist leer
+        await savePageData(nb.id, String(p.id), await serializePageData(p, nb.id));
+      }
+    }
+    if (state.notebooks.length) await saveAppMeta({ local: true });
+
+    try { if (backup.full) sessionStorage.setItem(AFTER_RESTORE_KEY, '1'); } catch {}
+    showToastAfterReload(backupSummary(backup));
+    location.reload();
+  } catch (e) {
+    _dataSwapRunning = false;
+    throw e;
+  }
+}
+
+/**
+ * Gewählte Sicherungsdatei einspielen. Drei Fälle: Gerät ohne Schlüssel (einrichten),
+ * derselbe Schlüssel (mischen), anderer Schlüssel (nach Rückfrage ersetzen).
+ * @param {File} file
+ * @returns {Promise<boolean>} true, wenn eingespielt wurde (bzw. die App gerade neu lädt)
+ */
+async function importBackupFile(file) {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+
+  // Altformat v2: lässt sich direkt mit dem Schlüssel dieses Geräts öffnen — keine Passphrase nötig
+  const old = await openV2Backup(bytes);
+  if (old) { await mergeBackup(old); return true; }
+
+  let backup = null;
+  const entered = await promptDialog({
+    title: 'Sicherung importieren',
+    text: `Datei: ${file.name}`,
+    label: 'Passphrase der Sicherung',
+    type: 'password',
+    okLabel: 'Weiter',
+    pruefen: async (value) => {
+      try {
+        backup = await readBackupObject(await unpackBackup(bytes, value));
+      } catch {
+        backup = null;
+        return 'Die Datei lässt sich damit nicht öffnen — falsche Passphrase oder keine passende Sicherung.';
+      }
+    }
+  });
+  if (!entered || !backup) return false;
+
+  if (!masterKeyRaw) { await installBackup(backup); return true; }
+  if (keyHex(masterKeyRaw) === keyHex(backup.masterRaw)) { await mergeBackup(backup); return true; }
+
+  const n = state.notebooks.length;
+  const ok = await confirmDialog({
+    title: 'Schlüssel und Notizbücher dieses Geräts ersetzen?',
+    text: `Die Sicherung gehört zu einem anderen Schlüssel. Beim Einspielen werden der Schlüssel und ${n === 1 ? 'das lokale Notizbuch' : `alle ${n} lokalen Notizbücher`} dieses Geräts ersetzt. Verloren geht alles, was nicht auf einem anderen Gerät mit dem bisherigen Schlüssel liegt. Dieses Gerät zeigt danach nur noch die Notizbücher aus der Sicherung.`,
+    okLabel: 'Ersetzen'
+  });
+  if (!ok) return false;
+  // Letzten Stand noch unter dem alten Schlüssel festschreiben und abgeben
+  await commitPendingPageOp();
+  if (_saveTimer) { clearTimeout(_saveTimer); try { await _flushSave(); } catch {} }
+  await installBackup(backup);
+  return true;
+}
+
+/** Einstellungen → Daten & Schlüssel → „Sicherung importieren“. */
+async function importBackup() {
+  const file = await chooseBackupFile();
+  if (!file) return;
+  try {
+    await importBackupFile(file);
+  } catch (e) {
+    console.warn('[Import] fehlgeschlagen:', e?.name || 'Fehler');
+    showToast('Import fehlgeschlagen.', { fehler: true });
+  }
 }
 
 async function exportCurrentPageAsPng() {
@@ -4420,84 +4804,16 @@ async function exportCurrentPageAsSvg() {
 }
 
 /**
- * Export: alle Notizbücher als .enc oder die aktuelle Seite als PNG/SVG.
- * @param {'enc'|'png'|'svg'} mode
+ * Aktuelle Seite als Bild exportieren.
+ * @param {'png'|'svg'} mode
  */
 async function exportApp(mode) {
   try {
-    if (mode === 'enc') {
-      // Ein vorgemerktes Leeren/Löschen gehört in die Sicherung
-      await commitPendingPageOp();
-      const bundle = await buildEncryptedBackupBundle();
-      downloadBlob(new Blob([bundle], { type: 'application/octet-stream' }), 'notizbuch-backup.enc');
-      showToast('Sicherung exportiert (.enc)');
-    } else if (mode === 'png') {
-      await exportCurrentPageAsPng();
-    } else if (mode === 'svg') {
-      await exportCurrentPageAsSvg();
-    }
+    if (mode === 'png') await exportCurrentPageAsPng();
+    else if (mode === 'svg') await exportCurrentPageAsSvg();
   } catch (e) {
     showToast('Export fehlgeschlagen: ' + (e?.message || e), { fehler: true });
   }
-}
-
-/**
- * Verschlüsseltes Bundle importieren — alle Keys installieren.
- * Ablauf: Datei wählen → Passphrase im Dialog (wird dort geprüft) → Rückfrage, weil der
- * Schlüssel dieses Geräts ersetzt wird → Neuladen.
- */
-async function importApp() {
-  const input = document.createElement('input');
-  input.type = 'file';
-  input.accept = '.enc';
-  input.onchange = async () => {
-    const file = input.files[0];
-    if (!file) return;
-    try {
-      const bytes = new Uint8Array(await file.arrayBuffer());
-      let bundle = null;
-      const passphrase = await promptDialog({
-        title: 'Sicherung importieren',
-        text: `Datei: ${file.name}`,
-        label: 'Passphrase',
-        type: 'password',
-        okLabel: 'Weiter',
-        pruefen: async (value) => {
-          try {
-            bundle = await importAppBundle(bytes, value);
-          } catch {
-            return 'Die Datei lässt sich damit nicht öffnen — falsche Passphrase oder keine passende Sicherung.';
-          }
-        }
-      });
-      if (!passphrase || !bundle) return;
-      const { masterKey, notebookKeyMap } = bundle;
-      const rawMaster = new Uint8Array(await exportKey(masterKey));
-      const hash = await computeKeyHash(rawMaster);
-      if (masterKeyRaw && keyHex(masterKeyRaw) !== keyHex(rawMaster)) {
-        const ok = await confirmDialog({
-          title: 'Schlüssel aus der Sicherung übernehmen?',
-          text: 'Der Import ersetzt den Schlüssel dieses Geräts. Es zeigt danach die Notizbücher aus der Sicherung; die bisherigen gehören zum alten Schlüssel — sichere ihn vorher unter „Daten & Schlüssel“.',
-          okLabel: 'Übernehmen'
-        });
-        if (!ok) return;
-      }
-      await commitPendingPageOp();
-      // MasterKey installieren
-      saveMasterKeyToStorage(rawMaster, hash);
-      // NotebookKeys installieren
-      for (const [id, key] of Object.entries(notebookKeyMap)) {
-        state.notebookKeys[id] = key;
-        const raw = await exportKey(key);
-        localStorage.setItem(`notizbuch:nbKey:${id}`, JSON.stringify(Array.from(raw)));
-      }
-      showToastAfterReload('Sicherung importiert');
-      location.reload();
-    } catch (e) {
-      showToast('Import fehlgeschlagen: ' + (e?.message || e), { fehler: true });
-    }
-  };
-  input.click();
 }
 
 function copyShareLink(e) {
@@ -5263,6 +5579,14 @@ async function init() {
   // 14. Alle Pages an Relay pushen (im Hintergrund)
   pushAllToRelay();
 
+  // 14b. Nach dem Einspielen einer Sicherung (Neuladen): alles ans Relay und an Peers geben
+  try {
+    if (sessionStorage.getItem(AFTER_RESTORE_KEY)) {
+      sessionStorage.removeItem(AFTER_RESTORE_KEY);
+      distributeNotebooks(state.notebooks.map(nb => nb.id)).catch(() => {});
+    }
+  } catch {}
+
   // 15. P2P-Rooms für geteilte Notebooks beitreten
   joinAllSharedNotebooksP2P().catch(e => console.warn('[P2P] Shared rooms join fehlgeschlagen:', e));
 
@@ -5278,7 +5602,7 @@ async function init() {
  */
 let _resyncRunning = false;
 async function resync() {
-  if (_resyncRunning) return;
+  if (_resyncRunning || _dataSwapRunning) return;
   _resyncRunning = true;
   console.log('[App] Resync gestartet...');
   updateSyncDebug('resync-start');
@@ -5609,8 +5933,8 @@ function setupEvents() {
   document.getElementById('btn-key-download')?.addEventListener('click', () => { if (masterKeyRaw) downloadKeyFile(masterKeyRaw); });
   document.getElementById('btn-key-copy')?.addEventListener('click', (e) => { if (masterKeyRaw) copyText(keyHex(masterKeyRaw), e.currentTarget, 'Schlüssel'); });
   document.getElementById('btn-key-show')?.addEventListener('click', () => toggleKeyBox());
-  document.getElementById('btn-export-enc')?.addEventListener('click', () => exportApp('enc'));
-  document.getElementById('btn-import')?.addEventListener('click', importApp);
+  document.getElementById('btn-export-enc')?.addEventListener('click', exportBackup);
+  document.getElementById('btn-import')?.addEventListener('click', importBackup);
 
   // Sync-Status in Leiste und Schublade aktuell halten (Relay/Peers ändern sich ohne renderUI)
   setInterval(updateSyncStatus, 3000);

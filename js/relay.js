@@ -157,6 +157,14 @@ export function initRelay(roomKey) {
   });
 }
 
+/** Hauptverbindung schließen (z. B. bevor der Schlüssel dieses Geräts ersetzt wird). */
+export function closeRelay() {
+  if (ws) {
+    try { ws.close(); } catch {}
+    ws = null;
+  }
+}
+
 // ─── Blob Operations ─────────────────────────────────────────────────────────
 
 function _send(msg) {

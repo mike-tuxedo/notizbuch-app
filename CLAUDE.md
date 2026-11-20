@@ -41,7 +41,7 @@ js/
 ├── encryption.js     — AES-GCM 256 wrapper (generate/import/export/encrypt/decrypt)
 ├── p2p-sync.js       — Trystero multi-room P2P (Nostr signaling)
 ├── relay.js          — WebSocket relay client (backup snapshots)
-└── share.js          — Export/Import .enc bundle (passphrase-protected)
+└── share.js          — Sicherungsdatei packen/öffnen (`packBackup`/`unpackBackup`, Passphrase → PBKDF2 → AES-GCM)
 
 libs/                 — Vendored third-party libs (iro.js, qrcode.js)
 dev-server/           — Local dev server (HTTPS + WSS + static files, mkcert); tests/ = Playwright-Abnahmetests
@@ -212,8 +212,23 @@ Drawing pipeline: raw points → Catmull-Rom smoothing → polygon with perpendi
 ## Themes und Einstellungen
 
 - Tokens in `app.html` (`:root` / `[data-theme="dark"]`), Tabelle in `artifacts/redesign/README.md`. Wahl System/Hell/Dunkel unter Einstellungen → Allgemein (`setTheme`), gerätelokal in IndexedDB (`device:theme`), Kopie in `localStorage notizbuch:theme` für das Inline-Skript (kein Aufblitzen).
-- Einstellungen (`#settings-modal`, `openSettings(section)`): Allgemein (Theme, Nur Stift), Geräte (Gerät koppeln per Link/QR/Scan), Verbindung (TURN, Relay-Adresse, Sync-Diagnose), Daten & Schlüssel (Schlüssel sichern, Export/Import `.enc`).
+- Einstellungen (`#settings-modal`, `openSettings(section)`): Allgemein (Theme, Nur Stift), Geräte (Gerät koppeln per Link/QR/Scan), Verbindung (TURN, Relay-Adresse, Sync-Diagnose), Daten & Schlüssel (Schlüssel sichern, Sicherung `.enc` exportieren/importieren — siehe „Sicherung“).
 - Teilen (`#share-modal`, `openShareModal(tab)`): Reiter Einladen / Beitreten.
+
+## Sicherung (Export / Import)
+
+Einstellungen → Daten & Schlüssel; Import zusätzlich im Erststart-Dialog („Sicherung einspielen“, `#btn-restore-backup`). Code: Abschnitt „Sicherung (.enc)“ in `js/app.js`, Verschlüsselung in `js/share.js`.
+
+- **Datei** `notizbuch-backup.enc`: `[16 Bytes Salt][12 Bytes IV][AES-GCM-256]`, Schlüssel per PBKDF2-SHA-256 mit 600 000 Iterationen aus der Passphrase (`deriveKeyFromPassphrase`). Inhalt JSON, Typ `notizbuch-backup-v3`: `masterKey`, `notebookKeys`, `sharedNotebooks` (IDs), `notebooks[{id, name, pages[{…pageMeta, events}]}]` — das **vollständige Event-Log** jeder Seite, nicht nur materialisierte Striche. Gerätelokale Einstellungen stehen nicht darin.
+- **Export** (`exportBackup`): schreibt vorgemerktes Leeren/Löschen fest, fragt im Dialog `#backup-export-modal` Passphrase + Wiederholung ab (mindestens 8 Zeichen), lädt jede Seite von der Platte (`buildBackupPayload`).
+- **Import** (`importBackup` → `importBackupFile`), drei Fälle:
+  - Gerät ohne Schlüssel → `installBackup`: Schlüssel, NotebookKeys, Notizbücher und Seiten schreiben, neu laden.
+  - derselbe MasterKey → `mergeBackup`: nichts ersetzen; `applyFullSync` (Meta über `applyPageMeta`, Events über `mergePageEvents`), danach `distributeNotebooks` (Relay-Blobs, `full-sync` je Seite, Shared-Rooms).
+  - anderer MasterKey → `confirmDialog`, dann `installBackup`: geht offline (P2P, Live-Kanäle, Relay — nichts aus der Sicherung darf im Room des alten Schlüssels landen), `clearAll()`, entfernt `notizbuch:nbKey:*`, `notizbuch:sharedNotebooks`, den Merkzettel und die Navigations-Einstellungen des alten Schlüssels, schreibt den Inhalt, lädt neu. Währenddessen sperrt `_dataSwapRunning` Autosave, `saveAppMeta`, `applyFullSync` und `resync`.
+  - Nach dem Neuladen verteilt `init()` einmalig alles (`sessionStorage notizbuch:nachEinspielen`).
+- **Alte Formate:** `notizbuch-backup-v2` (mit dem MasterKey verschlüsselt, materialisierte Striche) wird zuerst mit dem Geräteschlüssel probiert (`openV2Backup`) und ohne Passphrase-Abfrage gemischt; Striche werden zu Events `import:{strokeId}`. Das alte Passphrase-Schlüsselbündel (`{masterKey, notebookKeys}` ohne Typ) installiert weiter nur die Schlüssel.
+- Passphrase und Schlüssel nie loggen, nicht in Hinweise, nicht in localStorage/sessionStorage; die Felder werden beim Schließen geleert.
+- Wie jeder Sync übernimmt das Mischen Name, Reihenfolge und Papierart aus der Datei (`mergeNotebookMetaIntoState`) — eine alte Sicherung kann eine spätere Umbenennung zurückdrehen.
 
 ## Notebook Management
 
@@ -293,7 +308,7 @@ Imperative, lowercase, concise. Examples: "Add pen-only mode toggle", "Fix share
   - `node tests/ui-d.cjs <URL>` — Seitenübersicht, gelöschte Seiten, Wiederherstellen über zwei Geräte, 40 Seiten, 360 px
 - **Redo-Test:** `node tests/redo.cjs <URL>` (zwei Kontexte, Geräte-Sync).
 - **Nicht geladene Seite:** `node tests/unloaded-page.cjs <URL>` (echtes P2P, Relay für B per `routeWebSocket` blockiert). B hat Seite 2 nach dem Neuladen nur als Meta; Peer-Join-`full-sync`, `stroke` und Meta-`full-sync` dürfen deren Datei nicht verkleinern (OPFS-Dateigrößen) und die Strichzahl muss stimmen.
-- **Export/Import-Rundlauf:** `node tests/export-roundtrip.cjs <URL>` (nur Befund, kein Pass/Fail).
+- **Sicherung Export/Import:** `node tests/export-roundtrip.cjs <URL>` — Export mit Passphrase, Einspielen ohne Schlüssel (Erststart), mit demselben Schlüssel (Mischen, Relay blockiert), mit anderem Schlüssel (Rückfrage, Ersetzen), falsche/kurze/ungleiche Passphrase, Altformat v2 und altes Schlüsselbündel (beide im Test nachgebaut). WebRTC ist dort immer blockiert.
 - Die Tests prüfen `APP_VERSION` (ui.cjs, ui-b.cjs) — beim Hochzählen anpassen.
 - **Drei-Peer-Test:** `node tests/three.cjs` baut ein Teilnetz (Handy und Tablet ohne direkte Verbindung) und prüft, dass der mittlere Peer Striche und Undo weiterreicht — auch zwischen Haupt-Room und Shared-Room (`forwardSyncEvent`).
 - **TURN-Test:** `node tests/turntest.cjs` prüft jeden TURN-Eintrag des ICE-Endpunkts mit erzwungenem Relay.

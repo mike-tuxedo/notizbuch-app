@@ -1,4 +1,4 @@
-// share.js — Notebook teilen (QR/Link) und App Export/Import (Passphrase)
+// share.js — Notebook teilen (QR/Link) und Sicherungsdatei packen/öffnen (Passphrase)
 // Der Notebook-Key landet ausschließlich im URL-Fragment (#) — nie am Server.
 //
 // TODO: Implementation in Phase 2
@@ -58,30 +58,16 @@ export async function generateQRDataURL(text) {
 }
 
 /**
- * Alle Schlüssel als verschlüsseltes Bundle exportieren.
- * Format: [16 bytes Salt] + AES-GCM-encrypt(passphrase, JSON(keys))
- * @param {CryptoKey} masterKey
- * @param {Object<string, CryptoKey>} notebookKeyMap
+ * Sicherung mit einer Passphrase verschlüsseln.
+ * Dateiformat: [16 Bytes Salt] + [12 Bytes IV] + AES-GCM-256(PBKDF2(passphrase, salt), JSON(payload))
+ * @param {Object} payload - JSON-fähiges Objekt (Typ 'notizbuch-backup-v3')
  * @param {string} passphrase
  * @returns {Promise<Uint8Array>}
  */
-export async function exportAppBundle(masterKey, notebookKeyMap, passphrase) {
+export async function packBackup(payload, passphrase) {
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const passphraseKey = await deriveKeyFromPassphrase(passphrase, salt);
-
-  const rawMaster = await exportKey(masterKey);
-  const notebookKeys = {};
-  for (const [id, key] of Object.entries(notebookKeyMap)) {
-    notebookKeys[id] = Array.from(await exportKey(key));
-  }
-
-  const payload = new TextEncoder().encode(JSON.stringify({
-    masterKey: Array.from(rawMaster),
-    notebookKeys,
-    exportedAt: new Date().toISOString(),
-  }));
-
-  const encrypted = await encrypt(passphraseKey, payload);
+  const encrypted = await encrypt(passphraseKey, new TextEncoder().encode(JSON.stringify(payload)));
   const bundle = new Uint8Array(16 + encrypted.byteLength);
   bundle.set(salt, 0);
   bundle.set(encrypted, 16);
@@ -89,25 +75,16 @@ export async function exportAppBundle(masterKey, notebookKeyMap, passphrase) {
 }
 
 /**
- * Verschlüsseltes Bundle importieren.
+ * Passphrase-verschlüsselte Sicherung öffnen (auch das alte reine Schlüsselbündel,
+ * das denselben Aufbau hat). Wirft bei falscher Passphrase oder fremder Datei.
  * @param {Uint8Array} bundleBytes
  * @param {string} passphrase
- * @returns {Promise<{masterKey: CryptoKey, notebookKeyMap: Object<string, CryptoKey>}>}
+ * @returns {Promise<Object>} entschlüsseltes JSON-Objekt
  */
-export async function importAppBundle(bundleBytes, passphrase) {
+export async function unpackBackup(bundleBytes, passphrase) {
+  if (!(bundleBytes instanceof Uint8Array) || bundleBytes.byteLength < 16 + 12 + 16) throw new Error('Datei zu kurz');
   const salt = bundleBytes.slice(0, 16);
-  const encrypted = bundleBytes.slice(16);
   const passphraseKey = await deriveKeyFromPassphrase(passphrase, salt);
-
-  const plainBuf = await decrypt(passphraseKey, encrypted);
-  const { masterKey: rawMaster, notebookKeys: rawNbKeys } = JSON.parse(
-    new TextDecoder().decode(plainBuf)
-  );
-
-  const masterKey = await importKey(new Uint8Array(rawMaster), true);
-  const notebookKeyMap = {};
-  for (const [id, raw] of Object.entries(rawNbKeys)) {
-    notebookKeyMap[id] = await importKey(new Uint8Array(raw), true);
-  }
-  return { masterKey, notebookKeyMap };
+  const plainBuf = await decrypt(passphraseKey, bundleBytes.slice(16));
+  return JSON.parse(new TextDecoder().decode(plainBuf));
 }

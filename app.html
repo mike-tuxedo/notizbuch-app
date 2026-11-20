@@ -1201,7 +1201,8 @@
 
     /* Rückfrage und Eingabe können über einem anderen Dialog (Einstellungen) aufgehen */
     #confirm-modal,
-    #prompt-modal {
+    #prompt-modal,
+    #backup-export-modal {
       z-index: 210;
     }
 
@@ -1965,6 +1966,9 @@
       <p class="muted">Deine Notizen werden Ende-zu-Ende verschlüsselt. Dafür bekommt dieses Gerät einen persönlichen Schlüssel – ein Konto oder Passwort gibt es nicht.</p>
       <button class="btn primary block" id="btn-new-start">Neues Notizbuch starten</button>
       <button class="btn block" id="btn-import-key">Ich habe schon einen Schlüssel</button>
+      <button class="btn block" id="btn-restore-backup">
+        <svg class="i" aria-hidden="true"><use href="#i-upload" /></svg> Sicherung einspielen
+      </button>
     </div>
   </div>
 
@@ -2019,6 +2023,30 @@
         <button class="btn danger" id="confirm-ok">Löschen</button>
       </div>
     </div>
+  </div>
+
+  <!-- Sicherung exportieren: Passphrase vergeben -->
+  <div class="modal-overlay hidden" id="backup-export-modal">
+    <form class="dialog" id="export-form" role="dialog" aria-modal="true" aria-labelledby="export-title" tabindex="-1" novalidate>
+      <h2 id="export-title">Sicherung exportieren</h2>
+      <p class="muted">Die Datei enthält deinen Schlüssel und alle Notizbücher und wird mit dieser Passphrase verschlüsselt.</p>
+      <div class="field">
+        <label for="export-pass">Passphrase für die Sicherungsdatei</label>
+        <input class="input" type="password" id="export-pass" autocomplete="new-password" autocapitalize="off" spellcheck="false"
+          placeholder="mindestens 8 Zeichen" aria-describedby="export-error">
+      </div>
+      <div class="field">
+        <label for="export-pass2">Passphrase wiederholen</label>
+        <input class="input" type="password" id="export-pass2" autocomplete="new-password" autocapitalize="off" spellcheck="false"
+          aria-describedby="export-error">
+        <span class="error-text" id="export-error" role="alert"></span>
+      </div>
+      <div class="note warn"><strong>Die Passphrase lässt sich nicht wiederherstellen.</strong> Ohne sie kann niemand die Datei öffnen – auch du nicht.</div>
+      <div class="row end">
+        <button class="btn" type="button" id="export-cancel">Abbrechen</button>
+        <button class="btn primary" type="submit" id="export-ok">Exportieren</button>
+      </div>
+    </form>
   </div>
 
   <!-- Eingabe (z. B. Passphrase beim Import) -->
@@ -2252,7 +2280,7 @@
                 <svg class="i" aria-hidden="true"><use href="#i-upload" /></svg> Sicherung importieren
               </button>
             </div>
-            <p class="muted small">Der Export ist eine verschlüsselte .enc-Datei. Einzelne Seiten als PNG oder SVG gibt es im Seiten-Menü „⋯“.</p>
+            <p class="muted small">Die Sicherung (.enc) enthält deinen Schlüssel und alle Notizbücher mit sämtlichen Seiten. Sie wird mit einer Passphrase verschlüsselt, die du beim Export vergibst – ohne sie lässt sich die Datei nicht einspielen. Einzelne Seiten als PNG oder SVG gibt es im Seiten-Menü „⋯“.</p>
             <p class="muted small" id="settings-version"></p>
           </section>
         </div>
