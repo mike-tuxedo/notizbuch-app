@@ -17,17 +17,24 @@ App ist produktiv deployed unter `notizbuch-app.vercel.app` (Version `2026-11-20
 
 Abgenommener Klickdummy: `artifacts/redesign/index.html` (Absichten, Token-Tabelle und Zuordnung alt → neu in `artifacts/redesign/README.md`). Zielgeräte in dieser Reihenfolge: großes Zeichen-Tablet mit Stift, Tablet, Handy.
 
-### Etappe 1 — Redesign, Redo, Seitenübersicht
+### Etappe 1 — Redesign, Redo, Seitenübersicht (umgesetzt 2026-11-20, lokal, Version `2026-11-20-redesign-v45`)
 
-- [ ] Token-System, helles und dunkles Theme (Zeichenfläche immer weiß, Akzent hell Petrol `#0b7285`, dunkel `#74b8ff`), zwei Textstufen mit hohem Kontrast
-- [ ] Werkzeugleiste: Hand als Schalter, Farbe und Strichstärke als getrennte Knöpfe, Seiten-Menü „⋯“ für Seltenes
-- [ ] Redo
-- [ ] Seiten: `‹ 3 / 7 ›` mit „+“, Seitenübersicht mit Vorschaubildern
-- [ ] Zoom-Pille `− [Alles] +` und Hinweis auf Inhalt außerhalb des Bildschirms (richtungsabhängig, nie automatisch verschieben)
-- [ ] Notizbuch-Liste hinter dem Titel, nicht anheftbar; einheitliches „⋯“-Menü statt Hover/Longpress
-- [ ] Einstellungen an einem Ort, ein Teilen-Dialog (Einladen / Beitreten)
-- [ ] Hinweise mit „Rückgängig“ und eigene Dialoge statt `confirm()`/`prompt()`/`alert()`
-- [ ] Tastaturkürzel, Fokus-Ring, `aria-label`s, 44-px-Bedienflächen bei `pointer: coarse`
+- [x] Token-System, helles und dunkles Theme (Zeichenfläche immer weiß, Akzent hell Petrol `#0b7285`, dunkel `#74b8ff`), zwei Textstufen mit hohem Kontrast
+- [x] Werkzeugleiste: Hand als Schalter, Farbe und Strichstärke als getrennte Knöpfe, Seiten-Menü „⋯“ für Seltenes
+- [x] Redo (Event-Typ `redo`, Sync-Aktion `redo`)
+- [x] Seiten: `‹ 3 / 7 ›` mit „+“, Seitenübersicht mit Vorschaubildern, gelöschte Seiten nur noch dort
+- [x] Zoom-Pille `− [Alles] +` und Hinweis auf Inhalt außerhalb des Bildschirms (richtungsabhängig, nie automatisch verschieben)
+- [x] Notizbuch-Liste hinter dem Titel, nicht anheftbar; einheitliches „⋯“-Menü statt Hover/Longpress
+- [x] Einstellungen an einem Ort (inkl. Relay-Adresse), ein Teilen-Dialog (Einladen / Beitreten)
+- [x] Hinweise mit „Rückgängig“ und eigene Dialoge statt `confirm()`/`prompt()`/`alert()`
+- [x] Tastaturkürzel, Fokus-Ring, `aria-label`s, 44-px-Bedienflächen bei `pointer: coarse`
+- [x] Mitbehoben: Seite wiederherstellen kommt bei anderen Geräten an (`restoredAt`), Seiten-Meta live in geteilten Notizbüchern, Reconnect-Schleife im Relay-Live-Kanal, Event-Log-Verlust bei Sync auf nicht geladene Seiten
+
+Noch offen aus Etappe 1:
+
+- [ ] Auf echten Geräten prüfen (Zeichen-Tablet mit Stift, Tablet, Handy; Touch, Kamera-Scan, Safe-Area), dann deployen
+- [ ] Export/Import: die exportierte `.enc`-Datei lässt sich nicht importieren (Export mit MasterKey, Import erwartet Passphrase; `tests/export-roundtrip.cjs` zeigt es). Entscheidung nötig, wie die Sicherung aussehen soll
+- [ ] Mischbetrieb: Geräte mit alter Version zeigen Redo und wiederhergestellte Seiten nicht, bis sie die neue Version laden
 
 ### Etappe 2 — Füllen, Formen, Auswahl
 
@@ -47,7 +54,7 @@ Braucht neue Event-Typen und greift in Sync und Rendering ein.
 
 ### Sync / Infrastruktur
 
-- [ ] Relay-URL als Einstellung statt fest in `js/relay.js` (Server ist nur für Privatgebrauch gedacht)
+- [x] Relay-URL als Einstellung (Einstellungen → Verbindung, gerätelokal)
 - [ ] Für öffentliche Version: Relay + Signaling serverless (z.B. Cloudflare Workers / Durable Objects)
 - [ ] Signaling: Trystero-Standard-Relays sind unzuverlässig; eigene geprüfte Liste (`relayConfig.urls`) oder eigener Broker
 - [ ] Event-Log kompaktieren (wächst unbegrenzt)
