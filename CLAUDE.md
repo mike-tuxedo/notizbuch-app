@@ -36,7 +36,7 @@ manifest.json         — PWA manifest
 
 js/
 ├── app.js            — State, Init, UI (Popover, Dialoge, Toasts, Seitenübersicht), Input, Navigation, Sync-Integration
-├── canvas.js         — Drawing Engine (Catmull-Rom smoothing, polygon fill)
+├── canvas.js         — Drawing Engine (Catmull-Rom smoothing, polygon fill), Formen (Vektor, Umriss, SVG), Abbildung/Grenzen/Treffertest für Objekte
 ├── storage.js        — OPFS + IndexedDB Fallback
 ├── encryption.js     — AES-GCM 256 wrapper (generate/import/export/encrypt/decrypt)
 ├── p2p-sync.js       — Trystero multi-room P2P (Nostr signaling)
@@ -74,7 +74,7 @@ P2P-Verbindungen nutzen standardmäßig Trysteros eingebautes STUN. Hinter stren
 
 Im selben Abschnitt lässt sich die **Relay-Adresse** überschreiben (`device:relayUrl`, ebenfalls gerätelokal, nur `wss://`/`ws://`). Leer = Standard aus `defaultRelayUrl()` in `js/relay.js` (auf localhost das Relay des Dev-Servers). Beim Speichern baut `rebuildRelayConnections()` Live-Kanäle und Relay-Verbindung ohne Neuladen neu auf.
 
-**Actions:** `stroke`, `undo`, `redo`, `clear`, `full-sync`, `nb-created`, `nb-deleted`, `nb-renamed`, `page-created`, `page-deleted`, `page-bg`
+**Actions:** `stroke`, `undo`, `redo`, `edit`, `clear`, `full-sync`, `nb-created`, `nb-deleted`, `nb-renamed`, `page-created`, `page-deleted`, `page-bg`
 
 **Cross-user notebook ID mapping:** Sharer and recipient have different local `notebookId` for the same notebook. `_resolveNbId(eventNbId, roomId)` maps incoming events from a shared room to the local notebookId via `notebookHash`.
 
@@ -106,7 +106,13 @@ Since version `v2` each page stores an encrypted event-log (`page.events`) inste
 `page.strokes` is only a **materialized view** computed by `materializePage()` / `refreshPageMaterializedState()`.
 
 - Event format: `{ id, type, createdAt, deviceId, seq, ... }`
-- Types: `stroke` (carries `stroke`), `undo` (carries `targetStrokeId`), `redo` (carries `targetEventId` = ID des aufgehobenen `undo`-Events)
+- Types:
+  - `stroke` (carries `stroke`) — ein Objekt: Stiftstrich, Radierer-Strich oder Form
+  - `undo` mit `targetStrokeId` — blendet ein Objekt aus; mit `reason: 'delete'` ist es ein Löschen über die Auswahl
+  - `undo` mit `targetEventId` — hebt ein `edit`-Event auf
+  - `redo` mit `targetEventId` — hebt ein `undo`-Event auf (beide Arten)
+  - `edit` mit `targetStrokeId` + `patch` — ändert ein Objekt (siehe „Objekte ändern“)
+- Alles ist additiv: Versionen vor v47 behalten unbekannte Typen/Felder im Log und reichen sie weiter, werten sie aber nicht aus.
 - Storage blob: `{ version: 2, events: [...] }` (legacy stroke arrays are converted to `legacy:` events on read)
 - Merging is always a **union by `event.id`**. Remote data is never replaced; `mergePageEvents()` adds only unknown events.
 - Duplicate strokes are prevented at event-merge time (same `stroke.id`) and defensively in `materializePage()`.
@@ -114,6 +120,31 @@ Since version `v2` each page stores an encrypted event-log (`page.events`) inste
 - `undo()` appends an `undo` event with the `targetStrokeId`. Undo events work regardless of arrival order because `materializePage()` applies all undos after rendering strokes.
 - `redo()` appends a `redo` event; `materializePage()` ignoriert jedes `undo`, dessen ID Ziel eines `redo` ist — ebenfalls unabhängig von der Reihenfolge.
 - `clearedAt` still hides stroke events with `createdAt <= clearedAt`; undo events are not affected by the clearedAt check.
+
+## Formen (stroke mit tool 'shape')
+
+Eine Form ist ein gewöhnliches `stroke`-Event — Vereinigung, `clearedAt`, Undo/Redo, Relay und P2P laufen unverändert.
+
+```
+stroke: { id, createdAt, tool: 'shape', shape: { type: 'rect'|'ellipse'|'line'|'arrow', x1, y1, x2, y2 },
+          color, size, fill: '#rrggbb'|null, points: [...] }
+```
+
+- `shape` in Weltkoordinaten, auf 0.1 gerundet (`roundShape`). `fill` nur für Rechteck/Ellipse, sonst `null`.
+- `points` ist der **Umriss als Punktfolge** (`shapeOutlinePoints`): Versionen vor v47 kennen `shape` nicht und zeichnen ihn als Stiftstrich. Gleichmäßig dichte Punkte (keine doppelten Eckpunkte — die erzeugen im Catmull-Rom Schleifen), Rechteck beginnt mitten auf der Oberkante, Ellipse läuft zwei Punkte über den Anfang hinaus. Im alten Renderer sieht das fast wie die Vektorform aus (Ecken minimal rund, keine Füllung).
+- `drawStrokeToCanvas` zeichnet Formen als Vektor (`drawShapeToCanvas`) — damit in Hauptansicht, Aufzieh-Vorschau, Vorschaubildern, PNG und Grenzen. SVG-Export: `shapeToSvg` (`<rect>`, `<ellipse>`, `<line>`, Pfeil als `<path>`).
+- Eine spätere Füllfläche (Füllwerkzeug) soll genauso eine weitere Objektart sein: `stroke`-Event mit eigenem `tool`, `points` als Ersatzdarstellung; `edit`, Löschen und Auswahl gelten dann ohne Weiteres.
+
+## Objekte ändern (edit-Events)
+
+`{ id, type: 'edit', createdAt, deviceId, seq, targetStrokeId, patch }` — `patch` enthält nur geänderte Felder:
+
+- `transform: [sx, sy, tx, ty]` — **absolute** Abbildung der *ursprünglichen* Geometrie (`x' = sx·x + tx`), kein Drehen. `sx`/`sy` auf 1e-6, `tx`/`ty` auf 0.1 gerundet. Gilt auch für Stiftstriche (Punkte werden abgebildet, Strichstärke bleibt).
+- `color`, `fill` (Farbe oder `null`), `size`.
+- `materializePageDetailed()` wendet pro Objekt und **pro Feld** den letzten nicht aufgehobenen edit an (Reihenfolge `sortPageEvents`: createdAt, deviceId, seq) — letzter gewinnt, unabhängig von der Ankunft. Das Ursprungs-Event wird nie verändert. edits für unbekannte/ausgeblendete Ziele bleiben wirkungslos im Log.
+- `page.strokes` / `materializePage()` liefern das **fertige Objekt** (`applyStrokePatch` → `transformStroke`); Renderer, Grenzen, Vorschau, Export und Sicherung wissen nichts von edits.
+- Live-Weg: Sync-Aktion `edit` (`onEdit`, wird wie `stroke`/`undo`/`redo` zwischen Haupt- und Shared-Room weitergereicht). Beim Ziehen entsteht **ein** Event beim Loslassen (`commitEdit`), vorher nur lokale Vorschau (`_selPreview`).
+- Löschen = `undo`-Event mit `targetStrokeId` und `reason: 'delete'`; Duplizieren = neues `stroke`-Event mit der fertigen Geometrie, versetzt um 16 Bildschirm-Pixel.
 
 ## Seiten-Meta (clearedAt / deletedAt / restoredAt)
 
@@ -175,7 +206,9 @@ Drawing pipeline: raw points → Catmull-Rom smoothing → polygon with perpendi
 
 **Papier** ist in beiden Themes weiß (`--paper`), Linien `--paper-line`. Weiß gibt es nicht als Stiftfarbe.
 
-**Wichtig für Tests:** `document.querySelectorAll('canvas')[2]` ist die aktive Zeichenfläche. Weitere Canvases (Vorschaubilder, QR) stehen im DOM dahinter.
+**Wichtig für Tests:** `document.querySelectorAll('canvas')[2]` ist die aktive Zeichenfläche. Weitere Canvases (Vorschaubilder, QR) stehen im DOM dahinter. Auf der aktiven Fläche liegt auch der Auswahlrahmen (im Werkzeug „Auswahl“ wird dort nicht gezeichnet); die Leiste `#selbar` steht als `<div>` hinter den drei Flächen im Container.
+
+**Radierer und Formen:** Radierer-Striche wirken pixelweise in Zeitreihenfolge auf alles davor Gezeichnete, auch auf Formen. Sie gehören nicht zum Objekt — siehe Known Issues.
 
 ## Input
 
@@ -183,16 +216,29 @@ Drawing pipeline: raw points → Catmull-Rom smoothing → polygon with perpendi
 - **Pen-only mode** (Einstellungen → Allgemein → „Nur Stift“): completely ignores touch in pen/eraser tools.
 - **Touch** in pen/eraser tool: 1 finger draws. (`penOnlyMode` blocks this.)
 - **Hand ist ein Schalter, kein Werkzeug** (`#btn-hand`, `toggleHand()`, Taste H): an = 1 Finger/Maus bewegt, 2 Finger zoomen; aus = zurück zum zuletzt benutzten Werkzeug (`state.lastDrawTool`). Ein Werkzeug wählen schaltet die Hand aus. Leertaste halten = vorübergehend bewegen.
-- **Tasten:** P Stift, E Radierer, H Hand, 0 alles zeigen, Strg/Cmd+Z Rückgängig, Strg/Cmd+Umschalt+Z bzw. Strg/Cmd+Y Wiederholen, Esc schließt Dialog → Popover → Schublade. Nicht in Textfeldern und nicht bei offenem Dialog.
+- **Formen** (`state.tool === 'shape'`, Form in `state.shapeType`, gerätelokal gemerkt): aufziehen mit Stift/Maus/Finger nach denselben Regeln wie der Stift (Nur-Stift-Modus sperrt den Finger). Umschalt hält Quadrat/Kreis bzw. rastet Linie/Pfeil auf 45°. Unter 5 Bildschirm-Pixeln wird nichts angelegt. Farbe und Stärke kommen von den Knöpfen der Leiste.
+- **Auswahl** (`state.tool === 'select'`): siehe Abschnitt „Auswahl“.
+- **Tasten:** P Stift, E Radierer, S Formen, V Auswahl, H Hand, 0 alles zeigen, Strg/Cmd+Z Rückgängig, Strg/Cmd+Umschalt+Z bzw. Strg/Cmd+Y Wiederholen, Esc schließt Dialog → Popover → Auswahl → Schublade. Nicht in Textfeldern und nicht bei offenem Dialog.
 - **No swipe page navigation** — explicit gestures removed.
 - DPR capped at 2.
 
 ## Hauptansicht
 
-- Leiste: Notizbuch-Titel (öffnet die Schublade), Hand-Schalter, Stift/Radierer, Farbe, Strichstärke (je ein eigenes Popover), Undo/Redo, Sync-Status, Seiten-Menü „⋯“ (Papierart, Teilen, Export PNG/SVG, Vollbild, Seite leeren/löschen).
+- Leiste: Notizbuch-Titel (öffnet die Schublade), Hand-Schalter, Stift/Radierer/Formen/Auswahl (der Formen-Knopf zeigt die gewählte Form und öffnet `#pop-shapes`), Farbe, Strichstärke (je ein eigenes Popover), Undo/Redo, Sync-Status, Seiten-Menü „⋯“ (Papierart, Teilen, Export PNG/SVG, Vollbild, Seite leeren/löschen).
 - Popover: `data-toggle="id"` am Auslöser, `data-pop` am Popover (`togglePopover`/`closePopovers`).
 - Seiten-Pille `‹ n / m › +`: „›“ legt keine Seite an, dafür „+“. Der Zähler (`#btn-page-overview`) öffnet die Seitenübersicht.
 - Breiten: ab 1180 px Werkzeuge mit Beschriftung, unter 760 px Werkzeugreihe unten. Bedienflächen mindestens 44 px.
+
+## Auswahl
+
+Werkzeug „Auswahl“ (V). Rein lokal, nicht synchronisiert; immer genau ein Objekt (keine Mehrfachauswahl). Code: Abschnitt „Auswahl“ in `js/app.js`, Geometrie in `js/canvas.js`.
+
+- **Treffer** (`hitTestObjects` → `hitTestStroke`): oberstes sichtbares Objekt; Stiftstrich und Kontur über den Abstand zur Linie, gefüllte Formen auch über die Fläche; Radierer-Striche nie. Toleranz in Bildschirm-Pixeln (Maus 8, Touch 20), unabhängig vom Zoom.
+- **Rahmen** mit 8 Griffen in Petrol `#0b7285` (beide Themes) auf `activeCanvas` (`drawSelectionOverlay`), folgt Pan/Zoom. Griff-Trefferfläche: Maus 20 px, Touch 44 px; nach innen höchstens ein Viertel des Rahmens, damit kleine Objekte verschiebbar bleiben.
+- **Ziehen** am Objekt bzw. im Rahmen verschiebt, an einem Griff ändert die Größe (gegenüberliegende Seite fest, kein Spiegeln — beim Überziehen bleibt die Mindestgröße von 8 Bildschirm-Pixeln). Tipp in den Rahmen ohne Ziehen wählt das Objekt darunter bzw. hebt auf.
+- **Leiste** `#selbar` am Objekt: Farbe, Füllung (nur Rechteck/Ellipse: „Keine Füllung“ + Palette), Duplizieren, Löschen (Hinweis „Objekt gelöscht“ mit „Rückgängig“).
+- **Tasten:** Entf/Rücktaste löscht, Esc hebt auf, Pfeiltasten schieben um 1 bzw. mit Umschalt 10 Bildschirm-Pixel; Tastendrücke innerhalb von 600 ms werden zu einem edit (`nudgeSelection`/`flushNudge`).
+- **Verschwindet** bei Seiten-/Notizbuchwechsel, Wechsel auf Stift/Radierer/Formen, Leeren der Seite und wenn das Objekt (auch durch ein anderes Gerät) verschwindet — geprüft bei jedem Neuzeichnen (`displayStrokes`). Der Hand-Schalter lässt sie stehen. Ändert ein anderes Gerät das Objekt, folgt der Rahmen; während des eigenen Ziehens gilt die lokale Vorschau.
 
 ## Seitenübersicht
 
@@ -240,9 +286,22 @@ Einstellungen → Daten & Schlüssel; Import zusätzlich im Erststart-Dialog (�
 
 ## Undo / Redo
 
-`undo()` determines the last visible stroke, appends an `undo` event with `targetStrokeId`, and re-materializes the page. Saves immediately (no debounce) so relay/peers see the new state.
+`undo()` nimmt die **letzte Aktion der Seite** zurück (`lastPageAction`). Aktionen sind:
 
-`redo()` hebt das letzte **eigene** Undo der aktuellen Seite auf: Event `redo` mit `targetEventId`, Sync-Aktion `redo` (Callback `onRedo`, wird wie `stroke`/`undo` zwischen Haupt- und Shared-Room weitergereicht). Der Redo-Stapel (`_redoStacks`, pro Seite) lebt nur im Speicher; ein neuer eigener Strich oder ein festgeschriebenes Leeren verwirft ihn, Remote-Events ändern ihn nicht. Solange ein Hinweis „Seite geleert/gelöscht“ läuft, nimmt Strg+Z zuerst diesen zurück.
+| Aktion | wirksam, wenn | Zeit | Rückgängig erzeugt |
+|---|---|---|---|
+| Objekt gezeichnet (`stroke`) | Objekt sichtbar | `createdAt` des Strichs | `undo` mit `targetStrokeId` |
+| Objekt geändert (`edit`) | nicht aufgehoben, Ziel sichtbar, Patch gültig | `createdAt` des Events | `undo` mit `targetEventId` |
+| Objekt gelöscht (`undo` mit `reason: 'delete'`) | nicht aufgehoben, Objekt existiert (nach `clearedAt`), kein zweites Undo auf demselben Objekt | `createdAt` des Events | `redo` mit `targetEventId` |
+
+Die späteste Zeit gewinnt; bei Gleichstand edit/Löschen vor Strich, sonst deviceId, seq. Ein gewöhnliches Rückgängig (`undo` ohne `reason`) und `redo` sind selbst **keine** Aktionen — deshalb ändert sich für reine Stiftstriche nichts (letzter sichtbarer Strich). Wie bisher zählt die Seite, nicht das Gerät: Rückgängig trifft auch die letzte Aktion eines anderen Geräts. Gespeichert wird sofort (`persistPage`, kein Debounce).
+
+`redo()` arbeitet den Redo-Stapel ab (`_redoStacks`, pro Seite, nur im Speicher, nur eigenes Rückgängig). Einträge:
+
+- `{ kind: 'undo', eventId }` — eigenes `undo`-Event (auf Strich oder edit): Wiederholen hängt `redo` mit `targetEventId` an.
+- `{ kind: 'delete', strokeId }` — zurückgenommenes Löschen: Wiederholen hängt ein neues Lösch-`undo` (`reason: 'delete'`) an, sofern das Objekt noch sichtbar ist.
+
+Ein neuer eigener Strich, eine eigene Änderung (edit, Löschen, Duplizieren) oder ein festgeschriebenes Leeren verwirft den Stapel; Remote-Events ändern ihn nicht. Solange ein Hinweis „Seite geleert/gelöscht“ läuft, nimmt Strg+Z zuerst diesen zurück. Der Hinweis „Objekt gelöscht → Rückgängig“ hebt genau dieses Löschen auf (`restoreDeletedObject`), ohne den Stapel zu berühren.
 
 ## Relay Server (backup-relay/)
 
@@ -275,6 +334,10 @@ LAN-IP changes per WiFi → cert must be regenerated. For mobile tests: install 
 ## Known Issues / Won't-fix
 
 - **Concurrent shared edits** are race-prone (~500ms window between fetch and push). Sub-second simultaneous strokes from two peers can lose one. Acceptable for typical async editing.
+- **Versionen vor v47** kennen `edit` nicht: dort bleibt ein Objekt an alter Stelle, in alter Farbe und ungefüllt; Formen erscheinen als Umriss-Stiftstrich (`points`). Löschen über die Auswahl kommt an (es ist ein `undo`). Die Events bleiben dort im Log erhalten und werden weitergereicht.
+- **Radierspur wandert nicht mit:** Ein teilweise wegradiertes Objekt nimmt die Radierspur beim Verschieben/Skalieren nicht mit (Radierer-Striche sind eigene Objekte und wirken pixelweise). Ein Radierer-Strich, der *nach* einer Form gezeichnet wurde, radiert die Form auch an ihrer neuen Stelle, wenn sie dorthin geschoben wird. Der Treffertest sieht Radiertes nicht (ein wegradierter Strich bleibt anwählbar).
+- **Gleichzeitige edits** entscheidet `createdAt` (Geräte-Uhr), nicht die echte Reihenfolge — bei falsch gehender Uhr gewinnt evtl. das „frühere“ Gerät; alle Geräte zeigen aber denselben Stand.
+- **Kein Spiegeln** beim Ändern der Größe: eine Linie von links oben nach rechts unten lässt sich nicht zur Gegendiagonale umziehen (neu zeichnen).
 - **Versionen vor v44** kennen `restoredAt` nicht: dort bleibt eine anderswo wiederhergestellte Seite gelöscht, und ein Wiederherstellen von dort kommt bei anderen nicht an.
 - **Empty pages** in shared notebooks: `pushSharedNotebook` pushes pages that have events (a page whose strokes were all undone has events but zero strokes). Empty pages without events still exist only in meta. Recipient creates them from meta.
 - **Firefox Stable + OPFS:** `GetDirectory` throws `SecurityError`. Falls back to IndexedDB.
@@ -287,7 +350,7 @@ Imperative, lowercase, concise. Examples: "Add pen-only mode toggle", "Fix share
 
 ## Debugging & Tests
 
-- **Sync-Diagnose-Overlay** (unten rechts): standardmäßig aus. Schalter unter Einstellungen → Verbindung (`localStorage notizbuch:debugOverlay`); Klick auf den Sync-Status öffnet diesen Abschnitt. Zeigt Version, ICE-Quelle, pro Peer den Candidate-Typ (`relay` = über TURN) und `striche: N (events: M)` der aktuellen Seite.
+- **Sync-Diagnose-Overlay** (unten rechts): standardmäßig aus. Schalter unter Einstellungen → Verbindung (`localStorage notizbuch:debugOverlay`); Klick auf den Sync-Status öffnet diesen Abschnitt. Zeigt Version, ICE-Quelle, pro Peer den Candidate-Typ (`relay` = über TURN) `striche: N (events: M)` der aktuellen Seite (N = sichtbare Objekte inkl. Formen und Radierer-Striche) und `ansicht: scale x y`.
 - **Version prüfen:** Erste Overlay-Zeile muss zur `APP_VERSION` in `js/app.js` passen. Der Service Worker liefert HTML und `js/` network-first.
 - **Abnahmetest Sync** (zwei isolierte Chromium-Instanzen, braucht `playwright-core`):
   ```bash
@@ -307,6 +370,7 @@ Imperative, lowercase, concise. Examples: "Add pen-only mode toggle", "Fix share
   - `node tests/ui-c.cjs <URL>` — Hinweise statt nativer Dialoge, Leeren/Löschen mit „Rückgängig“ über zwei Geräte
   - `node tests/ui-d.cjs <URL>` — Seitenübersicht, gelöschte Seiten, Wiederherstellen über zwei Geräte, 40 Seiten, 360 px
 - **Redo-Test:** `node tests/redo.cjs <URL>` (zwei Kontexte, Geräte-Sync).
+- **Formen + Auswahl:** `node tests/shapes.cjs <URL>` (zwei Kontexte im Geräte-Sync, `NO_P2P=1` reicht; dazu ein Kontext für die eingespielte Sicherung und einer mit Touch über CDP). Vier Formen, Verschieben/Größe/Füllung/Farbe mit Pixelproben auf beiden Geräten, Strg+Z/Redo je Änderung, gleichzeitige Änderung, Löschen/Duplizieren, Verhalten der Auswahl, Seite leeren, Reload, Vorschau/PNG/SVG, Sicherung, alter Renderer (`git show 176fc41:js/canvas.js`, Bild nach `/tmp/notes-ui/altgeraet-formen.png`), 360 px. Der Test rechnet in Weltkoordinaten und liest die Ansicht aus der Overlay-Zeile `ansicht: scale x y`.
 - **Nicht geladene Seite:** `node tests/unloaded-page.cjs <URL>` (echtes P2P, Relay für B per `routeWebSocket` blockiert). B hat Seite 2 nach dem Neuladen nur als Meta; Peer-Join-`full-sync`, `stroke` und Meta-`full-sync` dürfen deren Datei nicht verkleinern (OPFS-Dateigrößen) und die Strichzahl muss stimmen.
 - **Sicherung Export/Import:** `node tests/export-roundtrip.cjs <URL>` — Export mit Passphrase, Einspielen ohne Schlüssel (Erststart), mit demselben Schlüssel (Mischen, Relay blockiert), mit anderem Schlüssel (Rückfrage, Ersetzen), falsche/kurze/ungleiche Passphrase, Altformat v2 und altes Schlüsselbündel (beide im Test nachgebaut). WebRTC ist dort immer blockiert.
 - Die Tests prüfen `APP_VERSION` (ui.cjs, ui-b.cjs) — beim Hochzählen anpassen.

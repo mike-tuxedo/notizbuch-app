@@ -3,7 +3,11 @@
 // Importiert Module für Storage, Canvas-Engine, P2P, Encryption.
 
 import { initStorage, savePageData, loadPageData, deletePageData, deleteNotebookData, saveMeta, loadMeta, clearAll } from './storage.js';
-import { roundPoints, drawStrokeToCanvas, drawBackground } from './canvas.js';
+import {
+  roundPoints, drawStrokeToCanvas, drawBackground,
+  SHAPE_TYPES, roundShape, shapeOutlinePoints, shapeToSvg,
+  isValidTransform, transformStroke, strokeGeomBounds, hitTestStroke
+} from './canvas.js';
 import {
   initP2P, send as p2pSend, sendToAll as p2pSendToAll,
   joinSharedRoom, leaveSharedRoom, leaveRoom,
@@ -37,7 +41,7 @@ const PEN_SIZES = [
   { name: 'XL', label: 'Sehr dick', size: 16, dot: 24 }
 ];
 
-const APP_VERSION = '2026-11-20-redesign-v46';
+const APP_VERSION = '2026-11-20-shapes-v47';
 const PRESENCE_INTERVAL_MS = 5000;
 const PRESENCE_TIMEOUT_MS = 15000;
 
@@ -53,7 +57,8 @@ const state = {
   currentPageIds: {},
 
   // Tools
-  tool: 'pen',        // 'pen' | 'eraser' | 'hand' (hand = Bewegen-Schalter an)
+  tool: 'pen',        // 'pen' | 'eraser' | 'shape' | 'select' | 'hand' (hand = Bewegen-Schalter an)
+  shapeType: 'rect',  // Form des Werkzeugs „Formen“: 'rect' | 'ellipse' | 'line' | 'arrow'
   lastDrawTool: 'pen', // zuletzt benutztes Zeichenwerkzeug — kommt zurück, wenn die Hand ausgeht
   color: '#14171c',
   penSizeIndex: 2,
@@ -237,13 +242,53 @@ function newPageEvent(type, payload = {}) {
   };
 }
 
-function materializePage(page) {
+/** Felder, die ein edit-Event ändern darf. */
+const EDIT_FIELDS = ['transform', 'color', 'fill', 'size'];
+
+/** Nur gültige Werte eines edit-Patches übernehmen (Events kommen auch von anderen Geräten). */
+function editFieldValue(field, value) {
+  if (field === 'transform') return isValidTransform(value) ? value : undefined;
+  if (field === 'color') return typeof value === 'string' && value ? value : undefined;
+  if (field === 'fill') return value === null || (typeof value === 'string' && value) ? value : undefined;
+  if (field === 'size') return Number.isFinite(value) && value > 0 ? value : undefined;
+  return undefined;
+}
+
+/**
+ * Fertiges Objekt aus Ursprungs-Strich und zusammengeführtem Patch (neues Objekt, der Ursprung
+ * bleibt unverändert). transform bildet immer die URSPRÜNGLICHE Geometrie ab.
+ */
+function applyStrokePatch(base, patch) {
+  if (!patch) return base;
+  let out = { ...base };
+  if (patch.color !== undefined) out.color = patch.color;
+  if (patch.size !== undefined) out.size = patch.size;
+  if (patch.fill !== undefined && out.tool === 'shape' && (out.shape?.type === 'rect' || out.shape?.type === 'ellipse')) out.fill = patch.fill;
+  if (patch.transform) out = transformStroke(out, patch.transform);
+  else if (patch.size !== undefined && out.tool === 'shape' && out.shape) out.points = shapeOutlinePoints(out.shape, out.size);
+  return out;
+}
+
+/**
+ * Seite aus dem Event-Log aufbauen — mit allem, was Auswahl und Rückgängig dazu wissen müssen.
+ *  - stroke: Objekt (Stift, Radierer, Form), sichtbar ab clearedAt
+ *  - undo mit targetStrokeId: blendet das Objekt aus (reason:'delete' = über die Auswahl gelöscht)
+ *  - undo mit targetEventId: hebt ein edit-Event auf
+ *  - redo mit targetEventId: hebt ein undo-Event auf (beide Arten)
+ *  - edit: ändert Felder eines Objekts; pro Feld gilt der letzte nicht aufgehobene edit
+ *    (Reihenfolge wie sortPageEvents) — unabhängig von der Ankunftsreihenfolge
+ * @returns {{strokes: Array, baseById: Map, patches: Map, effectiveEdits: Array, effectiveDeletes: Array}}
+ */
+function materializePageDetailed(page) {
   ensurePageEvents(page);
   // Ein vorgemerktes Leeren blendet lokal schon aus, steht aber noch nicht in page.clearedAt
   const clearedAt = Math.max(page?.clearedAt || 0, pendingClearAt(page));
-  const undoneStrokeIds = new Set();
-  const visible = [];
-  const seenStrokeIds = new Set();
+  const undoneStrokeIds = new Map(); // strokeId → Anzahl wirksamer Undos
+  const undoneEditIds = new Set();
+  const base = [];
+  const baseById = new Map();
+  const edits = [];
+  const deletes = [];
   // Erster Durchlauf: aufgehobene Undo-Events sammeln. Ein Redo-Event hebt genau
   // ein Undo-Event auf (targetEventId) — unabhängig von der Reihenfolge im Log.
   const redoneUndoIds = new Set();
@@ -255,18 +300,79 @@ function materializePage(page) {
       // Striche vor dem letzten Clear bleiben ausgeblendet
       if ((Number(event?.createdAt) || 0) <= clearedAt) continue;
       // Doppelte stroke.id absichern (z.B. legacy/import/device-Duplikat)
-      if (seenStrokeIds.has(event.stroke.id)) continue;
-      seenStrokeIds.add(event.stroke.id);
-      visible.push(event.stroke);
-    } else if (event.type === 'undo' && event.targetStrokeId) {
+      if (baseById.has(event.stroke.id)) continue;
+      baseById.set(event.stroke.id, event.stroke);
+      base.push(event.stroke);
+    } else if (event.type === 'undo') {
       // Undo-Events wirken unabhängig von ihrer Reihenfolge und dürfen
       // nicht durch die clearedAt-Prüfung verloren gehen.
       // Ein per Redo aufgehobenes Undo wirkt nicht mehr.
       if (redoneUndoIds.has(event.id)) continue;
-      undoneStrokeIds.add(event.targetStrokeId);
+      if (event.targetStrokeId) {
+        undoneStrokeIds.set(event.targetStrokeId, (undoneStrokeIds.get(event.targetStrokeId) || 0) + 1);
+        if (event.reason === 'delete') deletes.push(event);
+      } else if (event.targetEventId) {
+        undoneEditIds.add(event.targetEventId);
+      }
+    } else if (event.type === 'edit' && event.targetStrokeId && event.patch && typeof event.patch === 'object') {
+      edits.push(event);
     }
   }
-  return visible.filter(s => !undoneStrokeIds.has(s.id));
+  const visible = base.filter(s => !undoneStrokeIds.has(s.id));
+  const visibleIds = new Set(visible.map(s => s.id));
+  // edits in Sortierreihenfolge: der spätere überschreibt pro Feld den früheren
+  const patches = new Map();
+  const effectiveEdits = [];
+  for (const event of edits) {
+    if (undoneEditIds.has(event.id) || !visibleIds.has(event.targetStrokeId)) continue;
+    let patch = patches.get(event.targetStrokeId);
+    let used = false;
+    for (const field of EDIT_FIELDS) {
+      if (!(field in event.patch)) continue;
+      const value = editFieldValue(field, event.patch[field]);
+      if (value === undefined) continue;
+      if (!patch) { patch = {}; patches.set(event.targetStrokeId, patch); }
+      patch[field] = value;
+      used = true;
+    }
+    if (used) effectiveEdits.push(event);
+  }
+  return {
+    strokes: visible.map(s => applyStrokePatch(s, patches.get(s.id))),
+    baseById,
+    patches,
+    effectiveEdits,
+    // Wirksames Löschen: das Objekt gäbe es noch, und nur dieses eine Event blendet es aus
+    effectiveDeletes: deletes.filter(e => baseById.has(e.targetStrokeId) && undoneStrokeIds.get(e.targetStrokeId) === 1)
+  };
+}
+
+/** Sichtbare, fertige Objekte der Seite (Geometrie inkl. transform, Farbe, Füllung). */
+function materializePage(page) {
+  return materializePageDetailed(page).strokes;
+}
+
+/**
+ * „Letzte Aktion“ der Seite — das, was Rückgängig als Nächstes zurücknimmt. Aktionen sind:
+ *  - ein sichtbares Objekt (stroke-Event), Zeit = createdAt des Strichs
+ *  - ein wirksames edit-Event (nicht aufgehoben, Ziel sichtbar), Zeit = createdAt des Events
+ *  - ein wirksames Löschen über die Auswahl (undo-Event mit reason:'delete'), Zeit = createdAt des Events
+ * Es gewinnt die späteste Zeit; bei Gleichstand Löschen/edit vor Strich, sonst deviceId, seq.
+ * Ein gewöhnliches Rückgängig (undo ohne reason) und redo sind selbst keine Aktionen.
+ * @returns {{kind: 'stroke', stroke: Object}|{kind: 'edit'|'delete', event: Object}|null}
+ */
+function lastPageAction(page) {
+  const det = materializePageDetailed(page);
+  const candidates = [];
+  const sorted = [...det.strokes].sort((a, b) => strokeCreatedAt(a) - strokeCreatedAt(b) || String(a.id).localeCompare(String(b.id)));
+  const lastStroke = sorted[sorted.length - 1];
+  if (lastStroke) candidates.push({ kind: 'stroke', stroke: lastStroke, time: strokeCreatedAt(lastStroke), rank: 0, deviceId: '', seq: 0 });
+  for (const [kind, list] of [['edit', det.effectiveEdits], ['delete', det.effectiveDeletes]]) {
+    const event = list[list.length - 1];
+    if (event) candidates.push({ kind, event, time: Number(event.createdAt) || 0, rank: 1, deviceId: String(event.deviceId || ''), seq: Number(event.seq) || 0 });
+  }
+  candidates.sort((a, b) => a.time - b.time || a.rank - b.rank || a.deviceId.localeCompare(b.deviceId) || a.seq - b.seq);
+  return candidates[candidates.length - 1] || null;
 }
 
 function refreshPageMaterializedState(page) {
@@ -342,7 +448,7 @@ function forwardSyncEvent(action, data, roomId, fromPeerId) {
   // Herkunfts-Room: unverändert weiterreichen
   syncSend(action, data, { roomId, noRelay: true });
   // Nur seitenbezogene Events wechseln den Room (full-sync bleibt im eigenen)
-  if (action !== 'stroke' && action !== 'undo' && action !== 'redo') return;
+  if (action !== 'stroke' && action !== 'undo' && action !== 'redo' && action !== 'edit') return;
   const localNbId = _resolveNbId(data.notebookId, roomId);
   if (!localNbId || !state.notebooks.some(n => n.id === localNbId)) return;
   const fromMain = roomId === state.masterKeyHash;
@@ -493,7 +599,8 @@ function notebookMeta(notebook, opts = {}) {
         ...pageMeta(page),
         strokes: include
           ? (page.strokes || []).map(s => ({
-              id: s.id, points: s.points, color: s.color, size: s.size, tool: s.tool, createdAt: strokeCreatedAt(s)
+              id: s.id, points: s.points, color: s.color, size: s.size, tool: s.tool, createdAt: strokeCreatedAt(s),
+              ...(s.shape ? { shape: s.shape, fill: s.fill ?? null } : {})
             }))
           : [],
         events: include
@@ -1105,7 +1212,7 @@ function redrawStrokes() {
   cacheCtx.clearRect(0, 0, w / DPR, h / DPR);
 
   const page = currentPage();
-  const strokes = page ? materializePage(page) : [];
+  const strokes = displayStrokes(page);
   noteContentMaybeChanged(page, strokes);
   cacheCtx.save();
   cacheCtx.translate(state.viewX, state.viewY);
@@ -1125,6 +1232,7 @@ function redrawStrokes() {
   ctx.clearRect(0, 0, w, h);
   ctx.drawImage(strokeCacheCanvas, 0, 0);
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  drawSelectionOverlay();
 }
 
 /**
@@ -1147,6 +1255,8 @@ function compositeStrokes() {
   ctx.scale(scaleRatio, scaleRatio);
   ctx.drawImage(strokeCacheCanvas, 0, 0);
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  // Der Auswahlrahmen folgt Pan/Zoom
+  drawSelectionOverlay();
 }
 
 // ─── Fit to Content ─────────────────────────────────────────────────────────
@@ -1256,6 +1366,7 @@ function fitToContent() {
   clearAllCanvases();
   redrawBackground();
   redrawStrokes();
+  updateSyncDebug();
 }
 
 /**
@@ -1274,6 +1385,7 @@ function zoomBy(factor) {
   state.viewScale = newScale;
   redrawBackground();
   redrawStrokes();
+  updateSyncDebug();
 }
 
 // ─── Hinweis „Weiterer Inhalt“ ──────────────────────────────────────────────
@@ -2060,49 +2172,89 @@ function updateRedoButton() {
   btn.disabled = !page || isPageGone(page) || !!pendingClearAt(page) || currentRedoStack().length === 0;
 }
 
-async function undo() {
-  const page = currentPage();
-  if (!page || isPageGone(page)) return;
-  refreshPageMaterializedState(page);
-  const lastStroke = page.strokes[page.strokes.length - 1];
-  if (!lastStroke) return;
-  const pageEvent = newPageEvent('undo', { targetStrokeId: lastStroke.id });
-  applyPageEvent(page, pageEvent);
-  redrawStrokes();
-  const notebookId = state.currentNotebookId;
-  // Eigenes Undo für Redo merken
-  const stackKey = redoStackKey(notebookId, page.id);
-  if (!_redoStacks.has(stackKey)) _redoStacks.set(stackKey, []);
-  _redoStacks.get(stackKey).push(pageEvent.id);
-  updateRedoButton();
+/** Seite sofort speichern und verteilen (Platte, Relay-Blob, Shared-Room). */
+async function persistPage(notebookId, page) {
   const data = await serializePageData(page, notebookId);
   await savePageData(notebookId, page.id, data);
   relayPut(`p:${notebookId}/${page.id}`, data);
   if (state.sharedNotebooks.has(notebookId)) {
     pushSharedNotebook(notebookId, { pageIds: [page.id] }).catch(() => {});
   }
-  p2pSendForNotebook('undo', { eventId: newEventId(), notebookId, pageId: page.id, strokeId: lastStroke.id, pageEvent, deviceId: state.deviceId, seq: pageEvent.seq });
 }
 
-/** Letztes eigenes Undo der aktuellen Seite aufheben (Redo-Event anhängen). */
+/**
+ * Eintrag auf den Redo-Stapel legen.
+ * @param {{kind: 'undo', eventId: string}|{kind: 'delete', strokeId: string}} entry
+ *   'undo' = eigenes undo-Event (Wiederholen hebt es per redo-Event auf);
+ *   'delete' = zurückgenommenes Löschen (Wiederholen löscht das Objekt erneut)
+ */
+function pushRedoEntry(notebookId, pageId, entry) {
+  const stackKey = redoStackKey(notebookId, pageId);
+  if (!_redoStacks.has(stackKey)) _redoStacks.set(stackKey, []);
+  _redoStacks.get(stackKey).push(entry);
+  updateRedoButton();
+}
+
+/**
+ * Letzte Aktion der Seite zurücknehmen (siehe lastPageAction):
+ *  - Objekt gezeichnet → undo-Event mit targetStrokeId (wie bisher)
+ *  - Objekt geändert   → undo-Event mit targetEventId (hebt genau diesen edit auf)
+ *  - Objekt gelöscht   → redo-Event auf das Lösch-Event (das Objekt kommt zurück)
+ */
+async function undo() {
+  flushNudge();
+  const page = currentPage();
+  if (!page || isPageGone(page)) return;
+  const action = lastPageAction(page);
+  if (!action) return;
+  const notebookId = state.currentNotebookId;
+  let pageEvent, redoEntry, syncAction = 'undo';
+  const extra = {};
+  if (action.kind === 'stroke') {
+    pageEvent = newPageEvent('undo', { targetStrokeId: action.stroke.id });
+    extra.strokeId = action.stroke.id;
+    redoEntry = { kind: 'undo', eventId: pageEvent.id };
+  } else if (action.kind === 'edit') {
+    pageEvent = newPageEvent('undo', { targetEventId: action.event.id });
+    redoEntry = { kind: 'undo', eventId: pageEvent.id };
+  } else {
+    pageEvent = newPageEvent('redo', { targetEventId: action.event.id });
+    syncAction = 'redo';
+    redoEntry = { kind: 'delete', strokeId: action.event.targetStrokeId };
+  }
+  applyPageEvent(page, pageEvent);
+  redrawStrokes();
+  // Eigenes Rückgängig für Redo merken
+  pushRedoEntry(notebookId, page.id, redoEntry);
+  await persistPage(notebookId, page);
+  p2pSendForNotebook(syncAction, { eventId: newEventId(), notebookId, pageId: page.id, ...extra, pageEvent, deviceId: state.deviceId, seq: pageEvent.seq });
+}
+
+/** Letztes eigenes Rückgängig der aktuellen Seite aufheben. */
 async function redo() {
+  flushNudge();
   const page = currentPage();
   if (!page || isPageGone(page)) return;
   const notebookId = state.currentNotebookId;
   const stack = _redoStacks.get(redoStackKey(notebookId, page.id));
   if (!stack || stack.length === 0 || pendingClearAt(page)) return;
-  const targetEventId = stack.pop();
+  const entry = stack.pop();
   updateRedoButton();
-  const pageEvent = newPageEvent('redo', { targetEventId });
+  let pageEvent, syncAction = 'redo';
+  const extra = {};
+  if (entry.kind === 'delete') {
+    // Zurückgenommenes Löschen wiederholen: neues Lösch-Event — nur wenn es das Objekt noch gibt
+    if (!materializePage(page).some(s => s.id === entry.strokeId)) return;
+    pageEvent = newPageEvent('undo', { targetStrokeId: entry.strokeId, reason: 'delete' });
+    syncAction = 'undo';
+    extra.strokeId = entry.strokeId;
+  } else {
+    pageEvent = newPageEvent('redo', { targetEventId: entry.eventId });
+  }
   applyPageEvent(page, pageEvent);
   redrawStrokes();
-  const data = await serializePageData(page, notebookId);
-  await savePageData(notebookId, page.id, data);
-  relayPut(`p:${notebookId}/${page.id}`, data);
-  if (state.sharedNotebooks.has(notebookId)) {
-    pushSharedNotebook(notebookId, { pageIds: [page.id] }).catch(() => {});
-  }
-  p2pSendForNotebook('redo', { eventId: newEventId(), notebookId, pageId: page.id, pageEvent, deviceId: state.deviceId, seq: pageEvent.seq });
+  await persistPage(notebookId, page);
+  p2pSendForNotebook(syncAction, { eventId: newEventId(), notebookId, pageId: page.id, ...extra, pageEvent, deviceId: state.deviceId, seq: pageEvent.seq });
 }
 
 /** Aktuelle Seite leeren — mit „Rückgängig“ im Hinweis. Der Redo-Stapel wird beim Festschreiben geleert. */
@@ -2110,13 +2262,486 @@ function clearPage() {
   startPendingPageOp('clear');
 }
 
+// ─── Formen ─────────────────────────────────────────────────────────────────
+
+/** Form für das Werkzeug „Formen“ wählen (Popover am Werkzeug-Knopf). */
+function setShapeType(type) {
+  if (!SHAPE_TYPES.includes(type)) return;
+  state.shapeType = type;
+  saveLocalSettings();
+  setTool('shape');
+}
+
+/**
+ * Geometrie aus Anfangs- und Endpunkt des Aufziehens.
+ * @param {boolean} constrain - Umschalt gehalten: Quadrat/Kreis bzw. Linie in 45°-Schritten
+ */
+function shapeFromDrag(a, b, type, constrain) {
+  let x2 = b.x, y2 = b.y;
+  const dx = x2 - a.x, dy = y2 - a.y;
+  if (constrain) {
+    if (type === 'line' || type === 'arrow') {
+      const ang = Math.round(Math.atan2(dy, dx) / (Math.PI / 4)) * (Math.PI / 4);
+      const len = Math.hypot(dx, dy);
+      x2 = a.x + len * Math.cos(ang);
+      y2 = a.y + len * Math.sin(ang);
+    } else {
+      const m = Math.max(Math.abs(dx), Math.abs(dy));
+      x2 = a.x + m * (Math.sign(dx) || 1);
+      y2 = a.y + m * (Math.sign(dy) || 1);
+    }
+  }
+  return roundShape({ type, x1: a.x, y1: a.y, x2, y2 });
+}
+
+/** Form als Strich-Objekt: tool 'shape' + Geometrie, dazu der Umriss in points für alte Versionen. */
+function newShapeStroke(shape) {
+  const size = PEN_SIZES[state.penSizeIndex].size;
+  return {
+    id: newId(),
+    createdAt: Date.now(),
+    points: shapeOutlinePoints(shape, size),
+    color: state.color,
+    size,
+    tool: 'shape',
+    shape,
+    fill: null
+  };
+}
+
+// ─── Auswahl ────────────────────────────────────────────────────────────────
+// Rein lokal (nicht synchronisiert). Der Rahmen liegt auf activeCanvas — dort wird im
+// Werkzeug „Auswahl“ nicht gezeichnet. Änderungen entstehen als EIN edit-Event beim Loslassen;
+// solange gezogen wird, zeigt _selPreview die Abbildung nur auf diesem Gerät.
+
+/** Rahmenfarbe: Petrol in beiden Themes — das Papier ist immer weiß. */
+const SELECT_COLOR = '#0b7285';
+const SELECT_HANDLES = [['nw', 0, 0], ['n', 0.5, 0], ['ne', 1, 0], ['e', 1, 0.5], ['se', 1, 1], ['s', 0.5, 1], ['sw', 0, 1], ['w', 0, 0.5]];
+
+/** @type {{pageKey: string, strokeId: string}|null} */
+let _selection = null;
+/** @type {{strokeId: string, transform: number[]}|null} lokale Vorschau beim Ziehen / Schieben per Taste */
+let _selPreview = null;
+/** @type {Object|null} laufende Zieh-Geste */
+let _selDrag = null;
+/** @type {Object|null} gesammelte Pfeiltasten-Schritte, die zu einem edit werden */
+let _nudge = null;
+/** Zuletzt gezeichnete Objekte der aktuellen Seite (inkl. Vorschau) — für Rahmen und Treffertest */
+let _displayStrokes = [];
+let _selOverlayShown = false;
+let _selRedrawQueued = false;
+
+/** Objekte für die Anzeige: materialisierte Seite, das ausgewählte Objekt ggf. mit lokaler Vorschau. */
+function displayStrokes(page) {
+  if (!page) { if (_selection) dropSelection(true); _displayStrokes = []; return _displayStrokes; }
+  const det = materializePageDetailed(page);
+  let strokes = det.strokes;
+  // Auswahl verschwindet mit ihrem Objekt (Seitenwechsel, Leeren, Löschen — auch von einem anderen Gerät)
+  if (_selection && (_selection.pageKey !== pageKey() || !strokes.some(s => s.id === _selection.strokeId))) dropSelection(true);
+  if (_selection && _selPreview && _selPreview.strokeId === _selection.strokeId) {
+    const id = _selection.strokeId;
+    const previewed = applyStrokePatch(det.baseById.get(id), { ...det.patches.get(id), transform: _selPreview.transform });
+    strokes = strokes.map(s => s.id === id ? previewed : s);
+  }
+  _displayStrokes = strokes;
+  return strokes;
+}
+
+/** Ausgewähltes Objekt mit Ursprung und aktueller Abbildung — oder null. */
+function selectedInfo() {
+  const page = currentPage();
+  if (!_selection || !page || _selection.pageKey !== pageKey()) return null;
+  const det = materializePageDetailed(page);
+  const id = _selection.strokeId;
+  const stroke = det.strokes.find(s => s.id === id);
+  if (!stroke) return null;
+  return { notebookId: state.currentNotebookId, page, id, stroke, transform: det.patches.get(id)?.transform || [1, 1, 0, 0] };
+}
+
+function selectStroke(strokeId) {
+  flushNudge();
+  _selection = { pageKey: pageKey(), strokeId };
+  _selPreview = null;
+  closePopovers();
+  drawSelectionOverlay();
+}
+
+/**
+ * Auswahl aufheben.
+ * @param {boolean} [fromRedraw] - Aufruf aus dem Neuzeichnen heraus: dort nicht erneut zeichnen
+ */
+function dropSelection(fromRedraw = false) {
+  if (!_selection && !_selPreview && !_nudge) return;
+  const hadPreview = !!_selPreview;
+  // Noch nicht festgeschriebene Pfeiltasten-Schritte gehören zur alten Seite — nach dem Zeichnen nachholen
+  if (_nudge) queueMicrotask(flushNudge);
+  _selection = null;
+  _selPreview = null;
+  _selDrag = null;
+  if (fromRedraw) return;
+  if (hadPreview) redrawStrokes(); else drawSelectionOverlay();
+}
+
+/** Rahmen der Auswahl in Bildschirm-Koordinaten (mit etwas Abstand zum Objekt). */
+function selectionFrame() {
+  if (!_selection) return null;
+  const stroke = _displayStrokes.find(s => s.id === _selection.strokeId);
+  const b = stroke ? strokeGeomBounds(stroke) : null;
+  if (!b) return null;
+  const k = state.viewScale;
+  const pad = 6 + (stroke.size || 1) * k / 2;
+  return {
+    stroke,
+    x0: b.minX * k + state.viewX - pad, y0: b.minY * k + state.viewY - pad,
+    x1: b.maxX * k + state.viewX + pad, y1: b.maxY * k + state.viewY + pad
+  };
+}
+
+/** Rahmen mit 8 Griffen auf activeCanvas zeichnen und die Leiste nachführen. */
+function drawSelectionOverlay() {
+  if (!activeCtx || !activeCanvas || isDrawing) return;
+  const frame = selectionFrame();
+  if (!frame && !_selOverlayShown) return;
+  const ctx = activeCtx;
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.clearRect(0, 0, activeCanvas.width / DPR, activeCanvas.height / DPR);
+  _selOverlayShown = !!frame;
+  updateSelbar(frame);
+  if (!frame) return;
+  const w = frame.x1 - frame.x0, h = frame.y1 - frame.y0;
+  ctx.save();
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.strokeStyle = SELECT_COLOR;
+  ctx.lineWidth = 2;
+  ctx.setLineDash([7, 6]);
+  ctx.strokeRect(frame.x0, frame.y0, w, h);
+  ctx.setLineDash([]);
+  ctx.fillStyle = '#ffffff';
+  for (const [, fx, fy] of SELECT_HANDLES) {
+    const x = frame.x0 + w * fx, y = frame.y0 + h * fy;
+    ctx.fillRect(x - 6, y - 6, 12, 12);
+    ctx.strokeRect(x - 6, y - 6, 12, 12);
+  }
+  ctx.restore();
+}
+
+/** Farbfelder in einem Popover der Auswahl-Leiste (Palette + eigene Farben). */
+function renderSelSwatches(box, current) {
+  if (!box) return;
+  const custom = state.customColors.filter(c => !COLORS.includes(c) && /^#[0-9a-f]{3,8}$/i.test(c));
+  const listKey = custom.join(',');
+  if (box.dataset.key !== listKey || !box.firstElementChild) {
+    box.dataset.key = listKey;
+    box.replaceChildren(...[...COLORS, ...custom].map((c, i) => {
+      const name = i < COLORS.length ? COLOR_NAMES[i] : `Eigene Farbe ${c}`;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'swatch';
+      btn.style.setProperty('--c', c);
+      btn.dataset.color = c;
+      btn.title = name;
+      btn.setAttribute('aria-label', name);
+      btn.appendChild(document.createElement('i'));
+      return btn;
+    }));
+  }
+  const cur = String(current || '').toLowerCase();
+  box.querySelectorAll('.swatch').forEach(btn => btn.setAttribute('aria-pressed', String(btn.dataset.color === cur)));
+}
+
+/** Kleine Leiste am ausgewählten Objekt: Farbe, Füllung (nur Rechteck/Ellipse), Duplizieren, Löschen. */
+function updateSelbar(frame = selectionFrame()) {
+  const bar = document.getElementById('selbar');
+  const container = document.getElementById('canvas-container');
+  if (!bar || !container) return;
+  const dragging = !!_selDrag && _selDrag.mode !== 'pending';
+  if (!frame || dragging) {
+    if (!bar.hidden) {
+      if (bar.querySelector('[data-pop]:not([hidden])')) closePopovers();
+      bar.hidden = true;
+    }
+    return;
+  }
+  const stroke = frame.stroke;
+  const fillable = stroke.tool === 'shape' && (stroke.shape?.type === 'rect' || stroke.shape?.type === 'ellipse');
+  const fillWrap = document.getElementById('sel-fill-wrap');
+  if (fillWrap) fillWrap.hidden = !fillable;
+  const chip = document.getElementById('sel-chip-color');
+  if (chip) chip.style.background = stroke.color || '#000000';
+  renderSelSwatches(document.getElementById('sel-color-swatches'), stroke.color);
+  renderSelSwatches(document.getElementById('sel-fill-swatches'), stroke.fill);
+  document.getElementById('btn-sel-nofill')?.setAttribute('aria-pressed', String(!stroke.fill));
+  bar.hidden = false;
+  // Über dem Rahmen, sonst darunter; immer ganz im Bild
+  const cw = container.clientWidth, ch = container.clientHeight;
+  const bw = bar.offsetWidth, bh = bar.offsetHeight, gap = 14;
+  let top = frame.y0 - bh - gap;
+  if (top < 4) top = frame.y1 + gap;
+  if (top + bh > ch - 4) top = Math.max(4, Math.min(ch - bh - 4, frame.y0 + gap));
+  const left = Math.max(4, Math.min(cw - bw - 4, (frame.x0 + frame.x1) / 2 - bw / 2));
+  bar.style.left = Math.round(left) + 'px';
+  bar.style.top = Math.round(top) + 'px';
+}
+
+/** Popover der Auswahl-Leiste so legen, dass es ganz in der Zeichenfläche bleibt. */
+function placeSelPopover(pop) {
+  const container = document.getElementById('canvas-container');
+  if (!pop || pop.hidden || !container) return;
+  pop.classList.remove('up');
+  pop.style.left = '0px';
+  const c = container.getBoundingClientRect();
+  let r = pop.getBoundingClientRect();
+  if (r.bottom > c.bottom - 4 && r.top - c.top > c.bottom - r.bottom) { pop.classList.add('up'); r = pop.getBoundingClientRect(); }
+  let shift = 0;
+  if (r.right > c.right - 4) shift = c.right - 4 - r.right;
+  if (r.left + shift < c.left + 4) shift = c.left + 4 - r.left;
+  pop.style.left = Math.round(shift) + 'px';
+}
+
+/** Oberstes sichtbares Objekt an einem Punkt (Weltkoordinaten); Radierer-Striche zählen nicht. */
+function hitTestObjects(world, tol) {
+  for (let i = _displayStrokes.length - 1; i >= 0; i--) {
+    if (hitTestStroke(_displayStrokes[i], world.x, world.y, tol)) return _displayStrokes[i];
+  }
+  return null;
+}
+
+/** Griff unter dem Zeiger. Nach außen gilt die volle Toleranz, nach innen höchstens ein Viertel des Rahmens. */
+function hitSelectionHandle(frame, pos, tol) {
+  const w = frame.x1 - frame.x0, h = frame.y1 - frame.y0;
+  const inX = Math.min(tol, w / 4), inY = Math.min(tol, h / 4);
+  const within = (d, f, inner) => f === 0 ? (d >= -tol && d <= inner) : f === 1 ? (d <= tol && d >= -inner) : Math.abs(d) <= inner;
+  let best = null, bestDist = Infinity;
+  for (const [name, fx, fy] of SELECT_HANDLES) {
+    const dx = pos.x - (frame.x0 + w * fx), dy = pos.y - (frame.y0 + h * fy);
+    if (!within(dx, fx, inX) || !within(dy, fy, inY)) continue;
+    const dist = Math.hypot(dx, dy);
+    if (dist < bestDist) { best = name; bestDist = dist; }
+  }
+  return best;
+}
+
+function roundTransform(t) {
+  return [Math.round(t[0] * 1e6) / 1e6, Math.round(t[1] * 1e6) / 1e6, Math.round(t[2] * 10) / 10, Math.round(t[3] * 10) / 10];
+}
+
+/**
+ * Abbildung beim Ziehen an einem Griff: die gegenüberliegende Seite bleibt fest.
+ * Kein Spiegeln — beim Überziehen bleibt die Mindestgröße stehen.
+ */
+function resizeTransform(drag, dx, dy) {
+  const b = drag.b0;
+  let [sx, sy, tx, ty] = drag.t0;
+  const minSize = 8 / state.viewScale;
+  const h = drag.handle;
+  const w0 = b.maxX - b.minX, h0 = b.maxY - b.minY;
+  // Ohne Ausdehnung in einer Richtung (waagrechte Linie) gibt es dort nichts zu skalieren
+  if (w0 > 0.05 && (h.includes('e') || h.includes('w'))) {
+    const east = h.includes('e');
+    const anchor = east ? b.minX : b.maxX;
+    const k = Math.max(Math.min(minSize, w0), east ? w0 + dx : w0 - dx) / w0;
+    sx *= k;
+    tx = k * (tx - anchor) + anchor;
+  }
+  if (h0 > 0.05 && (h.includes('n') || h.includes('s'))) {
+    const south = h.includes('s');
+    const anchor = south ? b.minY : b.maxY;
+    const k = Math.max(Math.min(minSize, h0), south ? h0 + dy : h0 - dy) / h0;
+    sy *= k;
+    ty = k * (ty - anchor) + anchor;
+  }
+  return [sx, sy, tx, ty];
+}
+
+function scheduleSelRedraw() {
+  if (_selRedrawQueued) return;
+  _selRedrawQueued = true;
+  requestAnimationFrame(() => { _selRedrawQueued = false; redrawStrokes(); });
+}
+
+function selectPointerDown(e, pos, world) {
+  if (_selDrag) return;
+  flushNudge();
+  const touch = e.pointerType === 'touch';
+  const frame = selectionFrame();
+  let mode = null, handle = null, fresh = false;
+  if (frame) {
+    // Griffe: bei Touch mindestens 44 px Trefferfläche
+    handle = hitSelectionHandle(frame, pos, touch ? 22 : 10);
+    if (handle) mode = 'resize';
+    else if (pos.x >= frame.x0 && pos.x <= frame.x1 && pos.y >= frame.y0 && pos.y <= frame.y1) mode = 'pending';
+  }
+  const tol = (touch ? 20 : 8) / state.viewScale;
+  if (!mode) {
+    const hit = hitTestObjects(world, tol);
+    if (!hit) { dropSelection(); return; }
+    selectStroke(hit.id);
+    mode = 'pending';
+    fresh = true;
+  }
+  const info = selectedInfo();
+  const b0 = info ? strokeGeomBounds(info.stroke) : null;
+  if (!info || !b0) return;
+  _selDrag = {
+    pointerId: e.pointerId, mode, handle, fresh, tol, moved: false,
+    startPos: pos, startWorld: world, slop: touch ? 8 : 4,
+    strokeId: info.id, t0: [...info.transform], b0
+  };
+  if (mode === 'resize') updateSelbar();
+}
+
+function selectPointerMove(e) {
+  const drag = _selDrag;
+  const pos = getCanvasPos(e);
+  if (drag.mode === 'pending') {
+    if (Math.hypot(pos.x - drag.startPos.x, pos.y - drag.startPos.y) < drag.slop) return;
+    drag.mode = 'move';
+  }
+  const world = screenToWorld(pos.x, pos.y);
+  const dx = world.x - drag.startWorld.x, dy = world.y - drag.startWorld.y;
+  const t = drag.mode === 'move' ? [drag.t0[0], drag.t0[1], drag.t0[2] + dx, drag.t0[3] + dy] : resizeTransform(drag, dx, dy);
+  drag.moved = true;
+  _selPreview = { strokeId: drag.strokeId, transform: t };
+  scheduleSelRedraw();
+}
+
+function selectPointerUp() {
+  const drag = _selDrag;
+  _selDrag = null;
+  const info = selectedInfo();
+  if (drag.moved && _selPreview && info && info.id === drag.strokeId) {
+    // EIN edit-Event für die ganze Geste
+    const transform = roundTransform(_selPreview.transform);
+    _selPreview = null;
+    commitEdit(info.notebookId, info.page, info.id, { transform });
+    return;
+  }
+  _selPreview = null;
+  if (drag.mode === 'pending' && !drag.fresh) {
+    // Tipp in den Rahmen: das Objekt darunter wählen, ins Leere hebt die Auswahl auf
+    const hit = hitTestObjects(drag.startWorld, drag.tol);
+    if (!hit) { dropSelection(); return; }
+    if (hit.id !== _selection?.strokeId) { selectStroke(hit.id); return; }
+  }
+  drawSelectionOverlay();
+}
+
+/**
+ * Objekt ändern: hängt EIN edit-Event an (das Ursprungs-Event bleibt unverändert), speichert und sendet.
+ * @param {{transform?: number[], color?: string, fill?: string|null, size?: number}} patch - nur geänderte Felder
+ */
+function commitEdit(notebookId, page, strokeId, patch) {
+  if (!page || isPageDeleted(page)) return null;
+  if (_pendingPageOp) commitPendingPageOp();
+  const pageEvent = newPageEvent('edit', { targetStrokeId: strokeId, patch });
+  applyPageEvent(page, pageEvent);
+  // Eine neue eigene Aktion verwirft den Redo-Stapel dieser Seite
+  clearRedoStack(notebookId, page.id);
+  if (notebookId === state.currentNotebookId && page === currentPage()) redrawStrokes();
+  persistPage(notebookId, page).catch(e => console.warn('[App] Änderung konnte nicht gespeichert werden:', e));
+  p2pSendForNotebook('edit', { eventId: newEventId(), notebookId, pageId: page.id, pageEvent, deviceId: state.deviceId, seq: pageEvent.seq });
+  return pageEvent;
+}
+
+/** Pfeiltasten: Objekt schieben. Schritte kurz hintereinander werden zu EINEM edit zusammengefasst. */
+function nudgeSelection(dxPx, dyPx) {
+  const info = selectedInfo();
+  if (!info || _selDrag) return;
+  if (!_nudge || _nudge.strokeId !== info.id || _nudge.page !== info.page) {
+    flushNudge();
+    _nudge = { notebookId: info.notebookId, page: info.page, strokeId: info.id, transform: [...info.transform], timer: null };
+  }
+  _nudge.transform[2] += dxPx / state.viewScale;
+  _nudge.transform[3] += dyPx / state.viewScale;
+  _selPreview = { strokeId: info.id, transform: [..._nudge.transform] };
+  redrawStrokes();
+  clearTimeout(_nudge.timer);
+  _nudge.timer = setTimeout(flushNudge, 600);
+}
+
+/** Gesammelte Pfeiltasten-Schritte als ein edit-Event festschreiben. */
+function flushNudge() {
+  const n = _nudge;
+  if (!n) return;
+  _nudge = null;
+  clearTimeout(n.timer);
+  if (_selPreview?.strokeId === n.strokeId) _selPreview = null;
+  commitEdit(n.notebookId, n.page, n.strokeId, { transform: roundTransform(n.transform) });
+}
+
+function setSelectedColor(color) {
+  flushNudge();
+  const info = selectedInfo();
+  if (!info || String(info.stroke.color).toLowerCase() === String(color).toLowerCase()) return;
+  commitEdit(info.notebookId, info.page, info.id, { color });
+}
+
+/** @param {string|null} fill - Füllfarbe oder null für „keine“ */
+function setSelectedFill(fill) {
+  flushNudge();
+  const info = selectedInfo();
+  if (!info || (info.stroke.fill || null) === fill) return;
+  commitEdit(info.notebookId, info.page, info.id, { fill });
+}
+
+/** Kopie des ausgewählten Objekts als neues stroke-Event, leicht versetzt; die Kopie wird ausgewählt. */
+function duplicateSelected() {
+  flushNudge();
+  const info = selectedInfo();
+  if (!info) return;
+  if (_pendingPageOp) commitPendingPageOp();
+  const off = Math.round(160 / state.viewScale) / 10;
+  const newStroke = { ...transformStroke(info.stroke, [1, 1, off, off]), id: newId(), createdAt: Date.now() };
+  const pageEvent = newPageEvent('stroke', { stroke: newStroke });
+  applyPageEvent(info.page, pageEvent);
+  clearRedoStack(info.notebookId, info.page.id);
+  _selection = { pageKey: pageKey(), strokeId: newStroke.id };
+  redrawStrokes();
+  saveCurrentPage();
+  p2pSendForNotebook('stroke', { eventId: newEventId(), notebookId: info.notebookId, pageId: info.page.id, stroke: newStroke, pageEvent });
+}
+
+/**
+ * Löschen über die Auswahl = undo-Event auf das Objekt, gekennzeichnet mit reason:'delete'.
+ * Die Kennzeichnung macht es zu einer Aktion, die Rückgängig wieder aufhebt.
+ */
+function deleteSelected() {
+  flushNudge();
+  const info = selectedInfo();
+  if (!info) return;
+  if (_pendingPageOp) commitPendingPageOp();
+  const { notebookId, page, id } = info;
+  const pageEvent = newPageEvent('undo', { targetStrokeId: id, reason: 'delete' });
+  applyPageEvent(page, pageEvent);
+  clearRedoStack(notebookId, page.id);
+  redrawStrokes(); // nimmt die Auswahl mit
+  persistPage(notebookId, page).catch(e => console.warn('[App] Löschen konnte nicht gespeichert werden:', e));
+  p2pSendForNotebook('undo', { eventId: newEventId(), notebookId, pageId: page.id, strokeId: id, pageEvent, deviceId: state.deviceId, seq: pageEvent.seq });
+  showToast('Objekt gelöscht', {
+    key: 'object-delete',
+    action: { label: 'Rückgängig', onClick: () => restoreDeletedObject(notebookId, page, pageEvent.id) }
+  });
+}
+
+/** Ein Löschen über die Auswahl aufheben (Hinweis „Rückgängig“). Wirkungslos, wenn es schon aufgehoben ist. */
+function restoreDeletedObject(notebookId, page, deleteEventId) {
+  if (isPageDeleted(page) || (page.events || []).some(e => e.type === 'redo' && e.targetEventId === deleteEventId)) return;
+  const pageEvent = newPageEvent('redo', { targetEventId: deleteEventId });
+  applyPageEvent(page, pageEvent);
+  if (notebookId === state.currentNotebookId && page === currentPage()) redrawStrokes();
+  persistPage(notebookId, page).catch(() => {});
+  p2pSendForNotebook('redo', { eventId: newEventId(), notebookId, pageId: page.id, pageEvent, deviceId: state.deviceId, seq: pageEvent.seq });
+}
+
 // ─── Tool Selection ─────────────────────────────────────────────────────────
 
 /**
- * @param {string} tool - 'pen' | 'eraser' | 'hand'
+ * @param {string} tool - 'pen' | 'eraser' | 'shape' | 'select' | 'hand'
  * Ein Zeichenwerkzeug zu wählen schaltet die Hand aus und wird als „zuletzt benutzt“ gemerkt.
  */
 function setTool(tool) {
+  // Die Auswahl gehört zum Werkzeug „Auswahl“; die Hand (bewegen/zoomen) lässt sie stehen
+  if (tool !== 'select' && tool !== 'hand') dropSelection();
   state.tool = tool;
   if (tool !== 'hand') state.lastDrawTool = tool;
   renderUI();
@@ -3240,6 +3865,7 @@ function updateSyncDebug(status = _syncDebugStatus) {
     `relay live in: ${relayLiveIn}`,
     `relay merge: ${relayIn}`,
     strokeLine,
+    `ansicht: ${state.viewScale.toFixed(4)} ${state.viewX.toFixed(1)} ${state.viewY.toFixed(1)}`,
     `letzter shared resync: ${_lastSharedResyncAt ? Math.round((Date.now() - _lastSharedResyncAt) / 1000) + 's' : '-'}`
   ];
 
@@ -3520,6 +4146,22 @@ const _p2pCallbacks = {
     serializePageData(page, notebookId).then(d => savePageData(notebookId, pageId, d));
   },
 
+  onEdit(payload, peerId, roomId) {
+    if (rememberSyncEvent(payload?.eventId)) return;
+    forwardSyncEvent('edit', payload, roomId, peerId);
+    let { notebookId, pageId, pageEvent } = payload;
+    notebookId = _resolveNbId(notebookId, roomId);
+    const nb = state.notebooks.find(n => n.id === notebookId);
+    const page = nb?.pages.find(p => p.id === pageId);
+    if (!page || isPageDeleted(page)) return;
+    if (pageEvent?.type !== 'edit' || !pageEvent.targetStrokeId) return;
+    // Wer zuletzt geändert hat, gewinnt (materializePage) — der Auswahlrahmen folgt beim Neuzeichnen
+    mergePageEvents(page, [pageEvent]);
+    if (notebookId === state.currentNotebookId && pageId === currentPage()?.id) redrawStrokes();
+    refreshPageOverview();
+    serializePageData(page, notebookId).then(d => savePageData(notebookId, pageId, d));
+  },
+
   onClear() {},
 
   onPageCreated() {},
@@ -3581,6 +4223,7 @@ const _mainP2pCallbacks = {
   onStroke: _p2pCallbacks.onStroke,
   onUndo: _p2pCallbacks.onUndo,
   onRedo: _p2pCallbacks.onRedo,
+  onEdit: _p2pCallbacks.onEdit,
   onClear: _p2pCallbacks.onClear,
 
   async onFullSync(payload, peerId) {
@@ -4775,6 +5418,11 @@ async function exportCurrentPageAsSvg() {
   const svgParts = [];
   const eraserMaskParts = ['<mask id="eraser-mask"><rect width="100%" height="100%" fill="white"/>'];
   for (const stroke of visibleStrokes) {
+    // Formen als echte SVG-Elemente
+    if (stroke.tool === 'shape' && stroke.shape) {
+      svgParts.push(shapeToSvg(stroke, escapeXml(stroke.color || '#000000'), stroke.fill ? escapeXml(stroke.fill) : null));
+      continue;
+    }
     const pts = stroke.points || [];
     if (pts.length < 2) continue;
     const path = strokeToSvgPath(pts);
@@ -5042,6 +5690,7 @@ async function saveLocalSettings() {
   await settingsPut(state.masterKeyHash + ':pagePositions', { ...state.currentPageIds });
   await settingsPut(state.masterKeyHash + ':color', state.color);
   await settingsPut(state.masterKeyHash + ':penSizeIndex', state.penSizeIndex);
+  await settingsPut(state.masterKeyHash + ':shapeType', state.shapeType);
   await settingsPut(state.masterKeyHash + ':customColors', [...state.customColors]);
   await settingsPut(state.masterKeyHash + ':penDetected', state.penDetected);
   await settingsPut(state.masterKeyHash + ':penOnlyMode', state.penOnlyMode);
@@ -5054,6 +5703,8 @@ async function loadLocalSettings() {
   if (savedColor && String(savedColor).toLowerCase() !== '#ffffff') state.color = savedColor;
   const savedPenSizeIndex = await settingsGet(state.masterKeyHash + ':penSizeIndex');
   if (typeof savedPenSizeIndex === 'number') state.penSizeIndex = savedPenSizeIndex;
+  const savedShapeType = await settingsGet(state.masterKeyHash + ':shapeType');
+  if (SHAPE_TYPES.includes(savedShapeType)) state.shapeType = savedShapeType;
   const savedCustomColors = await settingsGet(state.masterKeyHash + ':customColors');
   if (Array.isArray(savedCustomColors)) state.customColors = savedCustomColors.filter(c => String(c).toLowerCase() !== '#ffffff');
   const savedPenDetected = await settingsGet(state.masterKeyHash + ':penDetected');
@@ -5094,6 +5745,9 @@ function screenToWorld(sx, sy) {
 
 // ─── Pan State ──────────────────────────────────────────────────────────────
 
+/** Umschalt beim Aufziehen einer Form gehalten (Stand der letzten Bewegung) */
+let _shapeConstrain = false;
+
 let isPanning = false;
 let panStartX = 0, panStartY = 0;
 let panStartViewX = 0, panStartViewY = 0;
@@ -5101,6 +5755,8 @@ let panPointerId = null;
 
 function onPointerDown(e) {
   if (isPageGone()) return;
+  // Die Auswahl-Leiste liegt in der Zeichenfläche — Tipps darauf sind keine Zeichen-Eingabe
+  if (e.target?.closest?.('.selbar')) return;
   // Palm-Rejection: Pen erkannt → Touch ignorieren für Zeichnen
   if (e.pointerType === 'pen') {
     state.penDetected = true;
@@ -5146,7 +5802,16 @@ function onPointerDown(e) {
   const pos = getCanvasPos(e);
   const world = screenToWorld(pos.x, pos.y);
 
+  // Auswahl-Werkzeug: Objekt antippen, verschieben, an den Griffen ziehen
+  if (state.tool === 'select') {
+    selectPointerDown(e, pos, world);
+    if (_selDrag?.pointerId === e.pointerId) e.target?.setPointerCapture?.(e.pointerId);
+    e.preventDefault();
+    return;
+  }
+
   isDrawing = true;
+  _shapeConstrain = false;
   activePointerId = e.pointerId;
   activePointerType = e.pointerType;
   currentPoints = [world];
@@ -5183,11 +5848,35 @@ function onPointerMove(e) {
     return;
   }
 
+  if (_selDrag && e.pointerId === _selDrag.pointerId) {
+    selectPointerMove(e);
+    e.preventDefault();
+    return;
+  }
+
   if (!isDrawing || e.pointerId !== activePointerId) return;
   e.preventDefault();
 
   const pos = getCanvasPos(e);
   const world = screenToWorld(pos.x, pos.y);
+
+  // Form aufziehen: Anfangs- und Endpunkt, Vorschau als fertige Form
+  if (state.tool === 'shape') {
+    currentPoints = [currentPoints[0], world];
+    _shapeConstrain = e.shiftKey;
+    if (activeCtx) {
+      activeCtx.setTransform(DPR, 0, 0, DPR, 0, 0);
+      activeCtx.clearRect(0, 0, activeCanvas.width / DPR, activeCanvas.height / DPR);
+      activeCtx.save();
+      activeCtx.translate(state.viewX, state.viewY);
+      activeCtx.scale(state.viewScale, state.viewScale);
+      drawStrokeToCanvas(activeCtx, newShapeStroke(shapeFromDrag(currentPoints[0], world, state.shapeType, _shapeConstrain)));
+      activeCtx.restore();
+    }
+    lastPoint = pos;
+    return;
+  }
+
   currentPoints.push(world);
 
   // Live-Preview zeichnen
@@ -5215,6 +5904,7 @@ function onPointerUp(e) {
     if (Object.keys(pinchState.touches).length < 2) {
       pinchState.active = false;
       redrawStrokes(); // Cache nach Zoom aktualisieren
+      updateSyncDebug();
     }
     return;
   }
@@ -5224,6 +5914,12 @@ function onPointerUp(e) {
     isPanning = false;
     panPointerId = null;
     redrawStrokes(); // Cache aktualisieren
+    updateSyncDebug();
+    return;
+  }
+
+  if (_selDrag && e.pointerId === _selDrag.pointerId) {
+    selectPointerUp();
     return;
   }
 
@@ -5240,12 +5936,22 @@ function onPointerUp(e) {
   const page = currentPage();
   if (!page || isPageGone(page) || currentPoints.length < 2) { currentPoints = []; lastPoint = null; return; }
 
+  let shape = null;
+  if (state.tool === 'shape') {
+    shape = shapeFromDrag(currentPoints[0], currentPoints[1], state.shapeType, _shapeConstrain);
+    // Winzige Form = versehentlicher Tipp: verwerfen (5 Bildschirm-Pixel)
+    if (Math.max(Math.abs(shape.x2 - shape.x1), Math.abs(shape.y2 - shape.y1)) * state.viewScale < 5) {
+      currentPoints = [];
+      lastPoint = null;
+      return;
+    }
+  }
+
   // Ein neuer Strich schreibt ein vorgemerktes Leeren sofort fest (clearedAt liegt vor dem Strich)
   if (_pendingPageOp) commitPendingPageOp();
 
-  const strokeId = newId();
-  const newStroke = {
-    id: strokeId,
+  const newStroke = shape ? newShapeStroke(shape) : {
+    id: newId(),
     createdAt: Date.now(),
     points: roundPoints(currentPoints),
     color: state.color,
@@ -5323,12 +6029,17 @@ function renderUI() {
   document.querySelectorAll('[data-tool]').forEach(btn => {
     btn.setAttribute('aria-pressed', String(btn.dataset.tool === state.lastDrawTool));
   });
+  // Der Knopf „Formen“ zeigt die gewählte Form
+  document.getElementById('shape-icon')?.setAttribute('href', '#i-' + state.shapeType);
+  document.querySelectorAll('[data-shape]').forEach(btn => {
+    btn.setAttribute('aria-checked', String(btn.dataset.shape === state.shapeType));
+  });
 
   // Canvas-Cursor
   const container = document.getElementById('canvas-container');
   if (container) {
     container.classList.toggle('hand-cursor', handOn);
-    container.style.cursor = handOn ? '' : (deletedPage ? 'not-allowed' : (state.tool === 'eraser' ? 'cell' : 'crosshair'));
+    container.style.cursor = handOn ? '' : (deletedPage ? 'not-allowed' : (state.tool === 'eraser' ? 'cell' : (state.tool === 'select' ? 'default' : 'crosshair')));
   }
 
   // Knopf „Farbe“: zeigt die aktuelle Farbe
@@ -5731,7 +6442,7 @@ function setupEvents() {
   });
 
   // Tastatur ohne Zusatztaste: Leertaste halten = vorübergehend bewegen,
-  // P/E = Werkzeug, H = Hand-Schalter, 0 = alles zeigen, Esc = Popover/Liste schließen
+  // P/E/S/V = Werkzeug (Stift, Radierer, Formen, Auswahl), H = Hand-Schalter, 0 = alles zeigen, Esc = Popover/Liste schließen
   let spaceHeld = false;
   const releaseSpace = () => {
     if (!spaceHeld) return;
@@ -5754,6 +6465,7 @@ function setupEvents() {
         if (isShown(trigger)) trigger.focus();
         return;
       }
+      if (_selection) { dropSelection(); return; }
       if (document.querySelector('.sidebar.sidebar-open')) toggleSidebar(false);
       return;
     }
@@ -5770,10 +6482,29 @@ function setupEvents() {
       }
       return;
     }
+    // Auswahl: Entf/Rücktaste löscht, Pfeiltasten schieben (1 px, mit Umschalt 10 px am Bildschirm)
+    if (_selection && state.tool === 'select') {
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        e.preventDefault();
+        if (!e.repeat) deleteSelected();
+        return;
+      }
+      const arrows = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+      const dir = arrows[e.key];
+      // Auf einem fokussierten Bedienelement behalten die Pfeiltasten ihre normale Bedeutung
+      if (dir && !(t && t.closest && t.closest('.popover, .toast'))) {
+        e.preventDefault();
+        const step = e.shiftKey ? 10 : 1;
+        nudgeSelection(dir[0] * step, dir[1] * step);
+        return;
+      }
+    }
     if (e.repeat || e.shiftKey) return;
     const key = String(e.key || '').toLowerCase();
     if (key === 'p') setTool('pen');
     else if (key === 'e') setTool('eraser');
+    else if (key === 's') setTool('shape');
+    else if (key === 'v') setTool('select');
     else if (key === 'h') toggleHand();
     else if (key === '0') fitToContent();
   });
@@ -5824,6 +6555,31 @@ function setupEvents() {
     btn.addEventListener('click', (e) => { setTool(btn.dataset.tool); if (e.detail > 0) btn.blur(); });
   });
   document.getElementById('btn-hand')?.addEventListener('click', (e) => { toggleHand(); if (e.detail > 0) e.currentTarget.blur(); });
+
+  // Formen: Auswahl der Form im Popover des Werkzeug-Knopfs
+  document.querySelectorAll('[data-shape]').forEach(btn => {
+    btn.addEventListener('click', () => setShapeType(btn.dataset.shape));
+  });
+
+  // Auswahl-Leiste: Farbe, Füllung, Duplizieren, Löschen
+  document.querySelectorAll('#selbar [data-toggle]').forEach(btn => {
+    btn.addEventListener('click', () => placeSelPopover(document.getElementById(btn.dataset.toggle)));
+  });
+  document.getElementById('sel-color-swatches')?.addEventListener('click', (e) => {
+    const btn = e.target.closest('.swatch[data-color]');
+    if (!btn) return;
+    closePopovers();
+    setSelectedColor(btn.dataset.color);
+  });
+  document.getElementById('sel-fill-swatches')?.addEventListener('click', (e) => {
+    const btn = e.target.closest('.swatch[data-color]');
+    if (!btn) return;
+    closePopovers();
+    setSelectedFill(btn.dataset.color);
+  });
+  document.getElementById('btn-sel-nofill')?.addEventListener('click', () => { closePopovers(); setSelectedFill(null); });
+  document.getElementById('btn-sel-duplicate')?.addEventListener('click', (e) => { duplicateSelected(); if (e.detail > 0) e.currentTarget.blur(); });
+  document.getElementById('btn-sel-delete')?.addEventListener('click', deleteSelected);
 
   // Mausrad-Zoom
   document.getElementById('canvas-container')?.addEventListener('wheel', onWheel, { passive: false });

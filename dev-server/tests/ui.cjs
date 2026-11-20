@@ -36,7 +36,7 @@ const ok = (cond, label, extra = '') => { if (!cond) fails++; console.log(`${con
   await page.click('#btn-new-start'); await page.click('#btn-key-confirmed'); await ready(); await sleep(1500);
   ok(await $(() => document.querySelectorAll('canvas')[2]?.id === 'active-canvas'), 'canvas[2] ist die aktive Zeichenfläche');
   ok(await $(() => !document.getElementById('btn-add-testbook')), 'Testbuch-Knopf entfernt');
-  ok(await $(() => !document.querySelector('[data-tool="fill"],[data-tool="shape"],[data-tool="select"]')), 'keine Attrappen (Füllen/Formen/Auswahl)');
+  ok(await $(() => !document.querySelector('[data-tool="fill"]') && !!document.querySelector('[data-tool="shape"]') && !!document.querySelector('[data-tool="select"]')), 'Werkzeuge Formen und Auswahl vorhanden, keine Attrappe „Füllen“');
   ok(await $(() => !document.querySelector('[data-color="#ffffff"]')), 'Weiß nicht in der Palette');
   ok(await $(() => [...document.querySelectorAll('.main button')].every(b => b.getAttribute('aria-label') || b.title || b.textContent.trim())), 'alle Knöpfe der Hauptansicht haben aria-label/title');
 
@@ -237,7 +237,7 @@ const ok = (cond, label, extra = '') => { if (!cond) fails++; console.log(`${con
   await page.click('#sync-status'); await sleep(200);
   ok(await visible('#settings-modal') && await visible('#set-panel-connection') && await $(() => document.getElementById('console').classList.contains('debug-off')), 'Klick auf den Sync-Status öffnet Einstellungen → Verbindung (Diagnose bleibt aus)');
   await page.click('#set-diag'); await sleep(200);
-  ok(await $(() => !document.getElementById('console').classList.contains('debug-off')) && /redesign-v46/.test(await $(() => document.getElementById('console').innerText)), 'Schalter „Sync-Diagnose“ blendet das Overlay ein (Version v45)');
+  ok(await $(() => !document.getElementById('console').classList.contains('debug-off')) && /shapes-v47/.test(await $(() => document.getElementById('console').innerText)), 'Schalter „Sync-Diagnose“ blendet das Overlay ein (Version v45)');
   await page.click('#set-diag'); await sleep(200);
   ok(await $(() => document.getElementById('console').classList.contains('debug-off')), 'Schalter aus blendet es wieder aus');
   await page.keyboard.press('Escape'); await sleep(200);
