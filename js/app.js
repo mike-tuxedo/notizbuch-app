@@ -14,6 +14,7 @@ import { generateKey, exportKey, importKey, encrypt, decrypt } from './encryptio
 import { exportAppBundle, importAppBundle } from './share.js';
 import {
   initRelay, putBlob as relayPut, deleteBlob as relayDelete, isRelayConnected, fetchRoom, pushBlobsToRoom,
+  setRelayUrl, getCustomRelayUrl, defaultRelayUrl, isValidRelayUrl,
   openLiveChannel, closeLiveChannel, closeAllLiveChannels, sendLiveEvent, reconnectLiveChannels, liveChannelStatus
 } from './relay.js';
 
@@ -37,7 +38,7 @@ const PEN_SIZES = [
 ];
 
 const BACKGROUNDS = ['grid', 'lined', 'blank'];
-const APP_VERSION = '2026-11-20-redesign-v41';
+const APP_VERSION = '2026-11-20-redesign-v42';
 const PRESENCE_INTERVAL_MS = 5000;
 const PRESENCE_TIMEOUT_MS = 15000;
 
@@ -81,7 +82,6 @@ const state = {
   sharedNotebooks: new Set(),
 
   // UI
-  sidebarOpen: true,
   zenMode: false,
 };
 
@@ -1634,10 +1634,11 @@ function setPenSize(idx) {
 
 // ─── Stiftmodus (Finger-Zeichnen blockieren) ────────────────────────────────
 
-function togglePenOnlyMode() {
-  state.penOnlyMode = !state.penOnlyMode;
-  const btn = document.getElementById('btn-pen-only');
-  if (btn) btn.classList.toggle('active', state.penOnlyMode);
+/** „Nur der Stift zeichnet“ setzen (Schalter in den Einstellungen). */
+function setPenOnlyMode(on) {
+  state.penOnlyMode = !!on;
+  const sw = document.getElementById('set-pen-only');
+  if (sw) sw.checked = state.penOnlyMode;
   saveLocalSettings();
 }
 
@@ -1662,12 +1663,13 @@ function toggleZenMode() {
 
 // ─── Popover (Farbe, Stärke, Seiten-Menü) ───────────────────────────────────
 
-/** Alle offenen Popover schließen. */
+/** Alle offenen Popover schließen (auch das „⋯“-Menü eines Notizbuchs). */
 function closePopovers() {
   document.querySelectorAll('[data-pop]:not([hidden])').forEach(el => {
     el.hidden = true;
     document.querySelectorAll(`[data-toggle="${el.id}"]`).forEach(b => b.setAttribute('aria-expanded', 'false'));
   });
+  document.querySelectorAll('.nb-more[aria-expanded="true"]').forEach(b => b.setAttribute('aria-expanded', 'false'));
   toggleColorPicker(false);
 }
 
@@ -1683,63 +1685,322 @@ function togglePopover(trigger) {
   }
 }
 
-// ─── Notebook Rename + Kontextmenü ──────────────────────────────────────────
+// ─── Dialoge (Öffnen/Schließen, Fokus, Esc, Reiter) ─────────────────────────
 
-/** Inline-Rename in der Sidebar-Liste starten. */
-function inlineRenameNotebook(nbId) {
-  const tab = document.querySelector(`.notebook-tab[data-nb="${nbId}"]`);
-  if (!tab) return;
-  const nameEl = tab.querySelector('.nb-name');
-  if (!nameEl) return;
+let _dialogSeq = 0;
+
+/** @returns {boolean} Element ist im Bild und fokussierbar */
+function isShown(el) {
+  return !!el && el.isConnected && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden';
+}
+
+/** Fokus dorthin zurückgeben, wo er vor dem Dialog war — oder zum nächstliegenden sichtbaren Auslöser. */
+function restoreFocus(el) {
+  if (isShown(el)) { el.focus(); return; }
+  const pop = el?.closest?.('[data-pop]');
+  const trigger = pop?.id === 'nb-menu' ? _nbMenuTrigger : (pop ? document.querySelector(`[data-toggle="${pop.id}"]`) : null);
+  if (isShown(trigger)) { trigger.focus(); return; }
+  if (document.querySelector('.sidebar.sidebar-open')) {
+    (document.querySelector('#notebook-list .nb.current .nb-select') || document.getElementById('btn-close-sidebar'))?.focus();
+  } else if (!el || !el.isConnected || el.closest('.sidebar, #nb-menu')) {
+    document.getElementById('btn-notebooks')?.focus();
+  }
+}
+
+/** Oberster offener Dialog (zuletzt geöffnet) oder null. */
+function topDialog() {
+  let top = null;
+  document.querySelectorAll('.modal-overlay:not(.hidden)').forEach(o => {
+    if (!top || (o._seq || 0) >= (top._seq || 0)) top = o;
+  });
+  return top;
+}
+
+/**
+ * Dialog öffnen. Der Fokus landet im Dialog und kehrt beim Schließen zurück.
+ * @param {string} id - ID der .modal-overlay
+ * @param {{focus?: string, onClose?: Function, returnFocus?: Element}} [opts]
+ */
+function openDialog(id, opts = {}) {
+  const overlay = document.getElementById(id);
+  if (!overlay) return null;
+  const returnFocus = opts.returnFocus || document.activeElement;
+  closePopovers();
+  if (overlay.classList.contains('hidden') || !overlay._returnFocus) overlay._returnFocus = returnFocus;
+  overlay._seq = ++_dialogSeq;
+  overlay._onClose = opts.onClose || null;
+  overlay.classList.remove('hidden');
+  const dlg = overlay.querySelector('[role="dialog"]');
+  if (dlg) dlg.scrollTop = 0;
+  const target = (opts.focus && overlay.querySelector(opts.focus)) || dlg;
+  target?.focus({ preventScroll: true });
+  return overlay;
+}
+
+/** Dialog schließen, Aufräum-Funktion ausführen, Fokus zurückgeben. */
+function closeDialog(id) {
+  const overlay = document.getElementById(id);
+  if (!overlay || overlay.classList.contains('hidden')) return;
+  overlay.classList.add('hidden');
+  const onClose = overlay._onClose;
+  const back = overlay._returnFocus;
+  overlay._onClose = null;
+  overlay._returnFocus = null;
+  try { onClose?.(); } catch (e) { console.warn('[UI] Dialog-Aufräumen:', e); }
+  if (!topDialog()) restoreFocus(back);
+}
+
+/** Einmalig: Tab bleibt im obersten Dialog, Tipp neben den Dialog schließt ihn. */
+function setupDialogs() {
+  const FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Tab') return;
+    const top = topDialog();
+    if (!top) return;
+    const items = [...top.querySelectorAll(FOCUSABLE)].filter(el => !el.disabled && el.tabIndex >= 0 && isShown(el));
+    if (!items.length) { e.preventDefault(); return; }
+    const first = items[0], last = items[items.length - 1];
+    const active = document.activeElement;
+    if (!top.contains(active) || active === top.querySelector('[role="dialog"]')) {
+      e.preventDefault();
+      (e.shiftKey ? last : first).focus();
+    } else if (e.shiftKey && active === first) {
+      e.preventDefault(); last.focus();
+    } else if (!e.shiftKey && active === last) {
+      e.preventDefault(); first.focus();
+    }
+  }, true);
+
+  document.querySelectorAll('.modal-overlay').forEach(overlay => {
+    let downOnBackdrop = false;
+    overlay.addEventListener('pointerdown', (e) => { downOnBackdrop = e.target === overlay; });
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay && downOnBackdrop && !overlay.hasAttribute('data-persistent')) closeDialog(overlay.id);
+      downOnBackdrop = false;
+    });
+  });
+}
+
+/**
+ * Rückfrage als Dialog (statt confirm()).
+ * @param {{title: string, text: string, okLabel?: string}} opts
+ * @returns {Promise<boolean>}
+ */
+function confirmDialog({ title, text, okLabel = 'Löschen' }) {
+  return new Promise(resolve => {
+    let result = false;
+    document.getElementById('confirm-title').textContent = title;
+    document.getElementById('confirm-text').textContent = text;
+    const okBtn = document.getElementById('confirm-ok');
+    okBtn.textContent = okLabel;
+    okBtn.onclick = () => { result = true; closeDialog('confirm-modal'); };
+    document.getElementById('confirm-cancel').onclick = () => closeDialog('confirm-modal');
+    openDialog('confirm-modal', { focus: '#confirm-cancel', onClose: () => resolve(result) });
+  });
+}
+
+/** Reiter wählen: [role=tab][data-tab] ↔ [role=tabpanel][data-panel] innerhalb von root. */
+function selectTab(root, name, focusTab = false) {
+  if (!root) return;
+  root.querySelectorAll('[role="tab"]').forEach(tab => {
+    const on = tab.dataset.tab === name;
+    tab.setAttribute('aria-selected', String(on));
+    tab.tabIndex = on ? 0 : -1;
+    if (on && focusTab) tab.focus();
+  });
+  root.querySelectorAll('[role="tabpanel"]').forEach(panel => { panel.hidden = panel.dataset.panel !== name; });
+}
+
+/** Reiter bedienbar machen: Klick und Pfeiltasten. onChange(name) nach jedem Wechsel. */
+function setupTabs(root, onChange) {
+  if (!root) return;
+  const tabs = () => [...root.querySelectorAll('[role="tab"]')];
+  const go = (name, focusTab) => { selectTab(root, name, focusTab); onChange?.(name); };
+  root.querySelector('[role="tablist"]')?.addEventListener('click', (e) => {
+    const tab = e.target.closest('[role="tab"]');
+    if (tab) go(tab.dataset.tab, false);
+  });
+  root.querySelector('[role="tablist"]')?.addEventListener('keydown', (e) => {
+    const list = tabs();
+    const i = list.indexOf(document.activeElement);
+    if (i < 0) return;
+    let j = -1;
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') j = (i + 1) % list.length;
+    else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') j = (i - 1 + list.length) % list.length;
+    else if (e.key === 'Home') j = 0;
+    else if (e.key === 'End') j = list.length - 1;
+    if (j < 0) return;
+    e.preventDefault();
+    go(list[j].dataset.tab, true);
+  });
+}
+
+/** Knopf-Beschriftung kurz ersetzen („Kopiert!“), danach zurück. */
+function flashLabel(btn, text) {
+  if (!btn) return;
+  const el = btn.querySelector('[data-label]') || btn;
+  if (el.dataset.orig === undefined) el.dataset.orig = el.textContent;
+  el.textContent = text;
+  clearTimeout(el._flashTimer);
+  el._flashTimer = setTimeout(() => { el.textContent = el.dataset.orig; }, 2000);
+}
+
+/** Text in die Zwischenablage legen und am Knopf rückmelden. */
+async function copyText(text, btn) {
+  try {
+    await navigator.clipboard.writeText(text);
+    flashLabel(btn, 'Kopiert!');
+  } catch {
+    flashLabel(btn, 'Nicht möglich');
+  }
+}
+
+/** Symbol aus dem SVG-Sprite als Element. */
+function svgIcon(name) {
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('class', 'i');
+  svg.setAttribute('aria-hidden', 'true');
+  const use = document.createElementNS(NS, 'use');
+  use.setAttribute('href', '#i-' + name);
+  svg.appendChild(use);
+  return svg;
+}
+
+// ─── Notizbuch-Liste (Schublade): Zeilen, „⋯“-Menü, Umbenennen, Löschen ─────
+
+let _nbMenuFor = null;
+let _nbMenuTrigger = null;
+
+/**
+ * Liste der Notizbücher aufbauen. Namen kommen u. a. aus Einladungslinks —
+ * sie werden nur als Text gesetzt (textContent), nie als HTML.
+ * Baut nur neu auf, wenn sich etwas geändert hat; während des Umbenennens gar nicht.
+ */
+function renderNotebookList(force = false) {
+  const list = document.getElementById('notebook-list');
+  if (!list) return;
+  if (!force && list.querySelector('.rename-input')) return;
+  const sig = JSON.stringify(state.notebooks.map(nb =>
+    [nb.id, nb.name, nb.id === state.currentNotebookId, state.sharedNotebooks.has(nb.id)]));
+  if (!force && list.dataset.sig === sig && list.childElementCount === state.notebooks.length) return;
+  list.dataset.sig = sig;
+  const focusedNb = list.contains(document.activeElement) ? document.activeElement.closest('.nb')?.dataset.nb : null;
+
+  list.replaceChildren(...state.notebooks.map(nb => {
+    const current = nb.id === state.currentNotebookId;
+    const name = String(nb.name ?? '');
+    const row = document.createElement('div');
+    row.className = 'nb' + (current ? ' current' : '');
+    row.dataset.nb = nb.id;
+
+    const select = document.createElement('button');
+    select.type = 'button';
+    select.className = 'menu-item nb-select';
+    if (current) select.setAttribute('aria-current', 'true');
+    const label = document.createElement('span');
+    label.className = 'nb-name';
+    label.textContent = name;
+    select.append(svgIcon('book'), label);
+    if (state.sharedNotebooks.has(nb.id)) {
+      const badge = document.createElement('span');
+      badge.className = 'badge';
+      badge.textContent = 'geteilt';
+      select.appendChild(badge);
+    }
+
+    const more = document.createElement('button');
+    more.type = 'button';
+    more.className = 'btn ghost icon nb-more';
+    more.title = 'Umbenennen, Teilen, Löschen';
+    more.setAttribute('aria-label', `${name}: Umbenennen, Teilen, Löschen`);
+    more.setAttribute('aria-haspopup', 'menu');
+    more.setAttribute('aria-expanded', 'false');
+    more.appendChild(svgIcon('more'));
+
+    row.append(select, more);
+    return row;
+  }));
+
+  if (focusedNb) {
+    [...list.children].find(r => r.dataset.nb === focusedNb)?.querySelector('.nb-select')?.focus();
+  }
+}
+
+/** „⋯“-Menü eines Notizbuchs am Knopf öffnen bzw. schließen. */
+function toggleNbMenu(nbId, trigger) {
+  const menu = document.getElementById('nb-menu');
+  if (!menu) return;
+  const wasOpen = !menu.hidden && _nbMenuFor === nbId;
+  closePopovers();
+  if (wasOpen) return;
+  _nbMenuFor = nbId;
+  _nbMenuTrigger = trigger;
+  const delBtn = document.getElementById('nb-menu-delete');
+  if (delBtn) {
+    delBtn.disabled = state.notebooks.length <= 1;
+    delBtn.title = delBtn.disabled ? 'Das letzte Notizbuch kann nicht gelöscht werden' : '';
+  }
+  menu.hidden = false;
+  const r = trigger.getBoundingClientRect();
+  const w = menu.offsetWidth, h = menu.offsetHeight;
+  const left = Math.max(8, Math.min(r.right - w, window.innerWidth - w - 8));
+  let top = r.bottom + 4;
+  if (top + h > window.innerHeight - 8) top = Math.max(8, r.top - h - 4);
+  menu.style.left = left + 'px';
+  menu.style.top = top + 'px';
+  trigger.setAttribute('aria-expanded', 'true');
+  menu.querySelector('.menu-item:not(:disabled)')?.focus();
+}
+
+/** Umbenennen direkt in der Zeile (Eingabefeld statt prompt()). Enter/Verlassen speichert, Esc verwirft. */
+function startRenameNotebook(nbId) {
+  const list = document.getElementById('notebook-list');
+  const row = list && [...list.children].find(r => r.dataset.nb === nbId);
   const nb = state.notebooks.find(n => n.id === nbId);
-  if (!nb) return;
+  if (!row || !nb || row.querySelector('.rename-input')) return;
 
   const input = document.createElement('input');
   input.type = 'text';
-  input.value = nb.name;
   input.className = 'rename-input';
-  input.style.cssText = 'width:100%;font-size:13px;padding:2px 4px;background:var(--surface-2);border:1px solid var(--accent);border-radius:4px;color:var(--text);outline:none;';
-  const finish = async () => {
-    await renameNotebook(nbId, input.value);
-    renderUI();
+  input.value = nb.name;
+  input.maxLength = 80;
+  input.setAttribute('aria-label', 'Name des Notizbuchs');
+  let done = false;
+  const finish = async (save) => {
+    if (done) return;
+    done = true;
+    const value = input.value;
+    const hadFocus = document.activeElement === input;
+    input.remove();
+    if (save && value.trim() && value.trim() !== nb.name) await renameNotebook(nbId, value);
+    renderNotebookList(true);
+    if (hadFocus) [...list.children].find(r => r.dataset.nb === nbId)?.querySelector('.nb-more')?.focus();
   };
   input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') finish();
-    if (e.key === 'Escape') renderUI();
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
   });
-  input.addEventListener('blur', finish);
-  nameEl.textContent = '';
-  nameEl.appendChild(input);
+  input.addEventListener('blur', () => finish(true));
+  input.addEventListener('click', (e) => e.stopPropagation());
+
+  [...row.children].forEach(c => { c.hidden = true; });
+  row.appendChild(input);
   input.focus();
   input.select();
 }
 
-/** Kontextmenü für Notebook anzeigen (Touch Longpress). */
-function showNbContextMenu(nbId, x, y) {
-  const menu = document.getElementById('nb-context-menu');
-  if (!menu) return;
-  menu.classList.remove('hidden');
-  menu.style.left = Math.min(x, window.innerWidth - 160) + 'px';
-  menu.style.top = Math.min(y, window.innerHeight - 100) + 'px';
-
-  document.getElementById('nb-ctx-rename').onclick = () => {
-    menu.classList.add('hidden');
-    inlineRenameNotebook(nbId);
-  };
-  document.getElementById('nb-ctx-delete').onclick = () => {
-    menu.classList.add('hidden');
-    if (state.notebooks.length > 1 && confirm('Notebook löschen?')) {
-      deleteNotebook(nbId);
-    }
-  };
-  // Menü schließen bei Klick außerhalb
-  const close = (e) => {
-    if (!menu.contains(e.target)) {
-      menu.classList.add('hidden');
-      document.removeEventListener('pointerdown', close);
-    }
-  };
-  setTimeout(() => document.addEventListener('pointerdown', close), 10);
+/** Notizbuch löschen — die einzige echte Rückfrage der App. */
+async function requestDeleteNotebook(nbId) {
+  const nb = state.notebooks.find(n => n.id === nbId);
+  if (!nb || state.notebooks.length <= 1) return;
+  const n = nb.pages.filter(p => !p.deletedAt).length;
+  const ok = await confirmDialog({
+    title: `„${nb.name}“ löschen?`,
+    text: `${n} ${n === 1 ? 'Seite wird' : 'Seiten werden'} auf allen deinen Geräten entfernt.`,
+    okLabel: 'Löschen'
+  });
+  if (ok) await deleteNotebook(nbId);
 }
 
 // ─── MasterKey Management ───────────────────────────────────────────────────
@@ -1797,29 +2058,28 @@ function hexToBytes(hex) {
 }
 
 /**
- * Erst-Start-Dialog: Neuen Key generieren oder bestehenden importieren.
+ * Erststart, Schritt 1: Neuen Schlüssel erzeugen oder bestehenden importieren.
  * @returns {Promise<string>} masterKeyHash
  */
 function showFirstStartDialog() {
   return new Promise(resolve => {
-    const overlay = document.getElementById('firststart-modal');
-    if (!overlay) {
-      // Fallback: direkt neuen Key generieren
-      generateAndSaveKey().then(resolve);
-      return;
-    }
-    overlay.classList.remove('hidden');
+    const open = () => openDialog('firststart-modal', { focus: '#btn-new-start' });
 
     document.getElementById('btn-new-start').onclick = async () => {
-      overlay.classList.add('hidden');
+      closeDialog('firststart-modal');
       const hash = await generateAndSaveKey();
-      showKeyDisplayDialog(masterKeyRaw).then(() => resolve(hash));
+      await showKeyDisplayDialog(masterKeyRaw);
+      resolve(hash);
     };
 
-    document.getElementById('btn-import-key').onclick = () => {
-      overlay.classList.add('hidden');
-      showKeyImportDialog().then(resolve);
+    document.getElementById('btn-import-key').onclick = async () => {
+      closeDialog('firststart-modal');
+      const hash = await showKeyImportDialog();
+      if (hash) resolve(hash);
+      else open(); // „Zurück“
     };
+
+    open();
   });
 }
 
@@ -1835,94 +2095,80 @@ async function generateAndSaveKey() {
   return hash;
 }
 
+/** Schlüssel als Hex-Text. */
+function keyHex(raw) {
+  return Array.from(raw).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** Hex-Schlüssel in Achtergruppen (besser les- und abschreibbar). */
+function groupHex(hex) {
+  return (hex.match(/.{1,8}/g) || []).join(' ');
+}
+
 /**
- * Key-Anzeige-Dialog: Key anzeigen, Download anbieten, Bestätigung abwarten.
+ * Erststart, Schritt 2: Schlüssel zeigen, Sichern anbieten, Bestätigung abwarten.
  * @param {Uint8Array} raw
  * @returns {Promise<void>}
  */
 function showKeyDisplayDialog(raw) {
   return new Promise(resolve => {
-    const overlay = document.getElementById('keydisplay-modal');
-    if (!overlay) { resolve(); return; }
-    overlay.classList.remove('hidden');
-
-    // Modal auf Erst-Start-Modus zurücksetzen (kein QR)
-    const header = overlay.querySelector('.modal-header h2');
-    if (header) header.textContent = 'Dein Schlüssel';
-    const hint = overlay.querySelector('.modal-hint');
-    if (hint) {
-      hint.style.color = 'var(--danger)';
-      hint.textContent = 'Schreibe diesen Schlüssel auf oder speichere ihn sicher ab. Ohne ihn kannst du deine Daten auf anderen Geräten nicht wiederherstellen. Manuelles Aufschreiben wird aus Sicherheitsgründen empfohlen.';
-    }
-    const qrContainer = document.getElementById('keydisplay-qr');
-    if (qrContainer) { qrContainer.innerHTML = ''; qrContainer.style.display = 'none'; }
-
-    const hex = Array.from(raw).map(b => b.toString(16).padStart(2, '0')).join('');
+    const hex = keyHex(raw);
     const keyEl = document.getElementById('keydisplay-key');
-    if (keyEl) keyEl.textContent = hex;
+    if (keyEl) keyEl.textContent = groupHex(hex);
 
     document.getElementById('btn-download-key').onclick = () => downloadKeyFile(raw);
-    document.getElementById('btn-copy-key').textContent = 'Kopieren';
-    document.getElementById('btn-copy-key').onclick = () => {
-      navigator.clipboard.writeText(hex).then(() => {
-        const btn = document.getElementById('btn-copy-key');
-        if (btn) { btn.textContent = 'Kopiert!'; setTimeout(() => { btn.textContent = 'Kopieren'; }, 2000); }
-      });
-    };
-
-    document.getElementById('btn-key-confirmed').textContent = 'Ich habe den Schlüssel gesichert';
+    document.getElementById('btn-copy-key').onclick = (e) => copyText(hex, e.currentTarget);
     document.getElementById('btn-key-confirmed').onclick = () => {
-      overlay.classList.add('hidden');
+      closeDialog('keydisplay-modal');
+      if (keyEl) keyEl.textContent = '';
       resolve();
     };
+    openDialog('keydisplay-modal');
   });
 }
 
 /**
- * Key-Import-Dialog: Hex-Eingabe oder Datei-Upload.
- * @returns {Promise<string>} masterKeyHash
+ * Schlüssel-Import: Hex-Eingabe oder Datei.
+ * @returns {Promise<string|null>} masterKeyHash, oder null bei „Zurück“
  */
 function showKeyImportDialog() {
   return new Promise(resolve => {
-    const overlay = document.getElementById('keyimport-modal');
-    if (!overlay) {
-      // Fallback: prompt
-      const hex = prompt('MasterKey (64 Hex-Zeichen) eingeben:');
-      if (hex) {
-        importKeyFromHex(hex).then(resolve).catch(() => generateAndSaveKey().then(resolve));
-      } else {
-        generateAndSaveKey().then(resolve);
-      }
-      return;
-    }
-    overlay.classList.remove('hidden');
     const input = document.getElementById('keyimport-input');
     const fileInput = document.getElementById('keyimport-file');
-    const btn = document.getElementById('keyimport-ok');
     const error = document.getElementById('keyimport-error');
-    if (input) input.value = '';
-    if (error) error.textContent = '';
+    const setError = (msg) => {
+      error.textContent = msg || '';
+      input.classList.toggle('error', !!msg);
+      input.setAttribute('aria-invalid', String(!!msg));
+    };
+    input.value = '';
+    setError('');
 
     const submit = async (hex) => {
       try {
         const hash = await importKeyFromHex(hex);
-        overlay.classList.add('hidden');
+        closeDialog('keyimport-modal');
+        input.value = '';
         resolve(hash);
       } catch (e) {
-        if (error) error.textContent = e.message;
+        setError(e.message);
+        input.focus();
       }
     };
 
-    if (btn) btn.onclick = () => submit(input?.value || '');
-    if (input) input.onkeydown = (e) => { if (e.key === 'Enter') submit(input.value); };
-
-    if (fileInput) fileInput.onchange = async () => {
+    document.getElementById('keyimport-ok').onclick = () => submit(input.value);
+    document.getElementById('keyimport-back').onclick = () => { closeDialog('keyimport-modal'); resolve(null); };
+    document.getElementById('btn-keyimport-file').onclick = () => fileInput.click();
+    input.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); submit(input.value); } };
+    fileInput.onchange = async () => {
       const file = fileInput.files[0];
+      fileInput.value = '';
       if (!file) return;
       const text = (await file.text()).trim();
-      if (input) input.value = text;
+      input.value = text;
       submit(text);
     };
+    openDialog('keyimport-modal', { focus: '#keyimport-input' });
   });
 }
 
@@ -2213,7 +2459,7 @@ async function resyncVisibleSharedNotebooks(reason = 'manual', opts = {}) {
   }
 }
 
-/** Sync-Diagnose (Overlay unten rechts) ein-/ausblenden. Gerätelokal gemerkt. */
+/** Sync-Diagnose (Overlay unten rechts). Gerätelokal gemerkt; Schalter in Einstellungen → Verbindung. */
 function isSyncDebugOn() {
   return localStorage.getItem('notizbuch:debugOverlay') === '1';
 }
@@ -2222,8 +2468,10 @@ function applySyncDebugVisibility() {
   document.getElementById('console')?.classList.toggle('debug-off', !isSyncDebugOn());
 }
 
-function toggleSyncDebug() {
-  localStorage.setItem('notizbuch:debugOverlay', isSyncDebugOn() ? '0' : '1');
+function setSyncDebug(on) {
+  localStorage.setItem('notizbuch:debugOverlay', on ? '1' : '0');
+  const sw = document.getElementById('set-diag');
+  if (sw) sw.checked = !!on;
   applySyncDebugVisibility();
   updateSyncDebug();
 }
@@ -2257,7 +2505,7 @@ function updateSyncDebug(status = _syncDebugStatus) {
     `sichtbar: ${document.visibilityState}`,
     `ice: ${getIceStatus().replace(/[<>&]/g, '')}`,
     `peers: ${state.connectedPeers.length} [${peers}]`,
-    `relay: ${isRelayConnected() ? 'verbunden' : 'weg'}`,
+    `relay: ${isRelayConnected() ? 'verbunden' : 'weg'}${getCustomRelayUrl() ? ' (eigene Adresse)' : ''}`,
     `relay live: ${relayLiveText}`,
     `device: ${(state.deviceId || '-').slice(0, 8)}`,
     `aktuelles nb: ${(state.currentNotebookId || '-').slice(0, 8)}`,
@@ -2276,7 +2524,8 @@ function updateSyncDebug(status = _syncDebugStatus) {
     lines.push(`↳ ${safePeerId(d.peerId)} ${role} ${d.iceState} ${d.localType}/${d.remoteType} ${d.protocol}`);
   }
 
-  box.innerHTML = lines.join('<br>');
+  // Als Text setzen (kein HTML): Zeilen enthalten Daten von Peers
+  box.textContent = lines.join('\n');
 }
 
 function markSyncActivity(status) {
@@ -2824,75 +3073,129 @@ function resetView() {
   fitToContent();
 }
 
-// ─── Mobile Sidebar Toggle ──────────────────────────────────────────────────
+// ─── Schublade (Notizbuch-Liste) ────────────────────────────────────────────
 
-/** Sidebar (Notizbuch-Liste) ein-/ausblenden. Auslöser ist der Notizbuch-Titel. */
+/** Notizbuch-Liste ein-/ausblenden. Auslöser ist der Notizbuch-Titel. */
 function toggleSidebar(force) {
   const sidebar = document.querySelector('.sidebar');
   const overlay = document.getElementById('sidebar-overlay');
   if (!sidebar) return;
-  const open = sidebar.classList.toggle('sidebar-open', typeof force === 'boolean' ? force : undefined);
+  const wasOpen = sidebar.classList.contains('sidebar-open');
+  const open = typeof force === 'boolean' ? force : !wasOpen;
+  if (open === wasOpen) return;
+  closePopovers();
+  const hadFocus = sidebar.contains(document.activeElement);
+  sidebar.classList.toggle('sidebar-open', open);
   overlay?.classList.toggle('active', open);
-  document.getElementById('btn-notebooks')?.setAttribute('aria-expanded', String(open));
+  const titleBtn = document.getElementById('btn-notebooks');
+  titleBtn?.setAttribute('aria-expanded', String(open));
+  if (open) {
+    renderNotebookList();
+    (sidebar.querySelector('.nb.current .nb-select') || document.getElementById('btn-close-sidebar'))?.focus();
+  } else if (hadFocus) {
+    titleBtn?.focus();
+  }
 }
 
-// ─── Share Modal ────────────────────────────────────────────────────────────
-
+// ─── Teilen: Einladen / Beitreten ───────────────────────────────────────────
 
 let _scanStream = null;
 let _scanTimer = null;
+/** @type {{video: HTMLVideoElement, status: HTMLElement, device: boolean}|null} wo gerade gescannt wird */
+let _scanUi = null;
 
+function scanUi(kind) {
+  return kind === 'device'
+    ? { video: document.getElementById('device-scan-video'), status: document.getElementById('device-scan-status'), device: true }
+    : { video: document.getElementById('scan-video'), status: document.getElementById('scan-status'), device: false };
+}
+
+function setScanStatus(ui, text) {
+  if (!ui?.status) return;
+  ui.status.textContent = text || '';
+  ui.status.hidden = !text;
+}
+
+/** Einladungslink verarbeiten: Notizbuch hinzufügen und dorthin wechseln. */
 async function processInviteUrl(url) {
-  if (!url || !/#[^\s]+/.test(url)) throw new Error('Kein gültiger Invite-Link');
+  if (!url || !/#[^\s]+/.test(url)) throw new Error('Kein gültiger Einladungslink');
   const prevHash = location.hash;
   try {
     const u = new URL(url, location.origin);
     history.replaceState(null, '', location.pathname + u.hash);
     const invite = await parseInviteLink();
     history.replaceState(null, '', location.pathname + prevHash);
-    if (!invite) throw new Error('QR-Code enthält keinen gültigen Notebook-Link');
+    if (!invite) throw new Error('Kein gültiger Einladungslink');
     await handleInvite(invite);
-    closeScanModal();
-    alert('Geteiltes Notizbuch hinzugefügt.');
+    closeDialog('share-modal');
   } catch (e) {
     history.replaceState(null, '', location.pathname + prevHash);
     throw e;
   }
 }
 
-async function scanFrame() {
-  const video = document.getElementById('scan-video');
-  const status = document.getElementById('scan-status');
-  if (!_scanStream || !video || video.readyState < 2) return;
-  try {
-    if ('BarcodeDetector' in window) {
-      const detector = new BarcodeDetector({ formats: ['qr_code'] });
-      const codes = await detector.detect(video);
-      if (codes?.length && codes[0].rawValue) {
-        if (status) status.textContent = 'QR-Code erkannt…';
-        await processInviteUrl(codes[0].rawValue);
-        return;
-      }
-    }
-  } catch {}
-  _scanTimer = setTimeout(scanFrame, 500);
+/**
+ * Gescannten oder eingefügten Code auswerten.
+ * Einladung → Notizbuch beitreten. Geräte-Code (Link mit vollem Schlüssel) → nur unter „Geräte“.
+ * @param {string} text
+ * @param {boolean} device - true: es wird ein Geräte-Code erwartet
+ */
+async function handleScannedCode(text, device) {
+  const t = String(text || '').trim();
+  const m = t.match(/#([0-9a-fA-F]{64})$/) || t.match(/^([0-9a-fA-F]{64})$/);
+  if (device) {
+    if (!m) throw new Error('Das ist kein Geräte-Code.');
+    adoptDeviceKey(m[1].toLowerCase());
+    return;
+  }
+  if (m) throw new Error('Das ist ein Geräte-Code. Er gehört in Einstellungen → Geräte.');
+  await processInviteUrl(t);
 }
 
-async function startScanCamera() {
-  const video = document.getElementById('scan-video');
-  const status = document.getElementById('scan-status');
+async function scanFrame() {
+  const ui = _scanUi;
+  if (!_scanStream || !ui?.video) return;
+  if (ui.video.readyState >= 2) {
+    try {
+      const detector = new BarcodeDetector({ formats: ['qr_code'] });
+      const codes = await detector.detect(ui.video);
+      if (codes?.length && codes[0].rawValue) {
+        setScanStatus(ui, 'QR-Code erkannt …');
+        try {
+          await handleScannedCode(codes[0].rawValue, ui.device);
+          stopScanCamera();
+          return;
+        } catch (e) {
+          setScanStatus(ui, e.message || 'Code nicht erkannt.');
+        }
+      }
+    } catch {}
+  }
+  if (_scanStream && _scanUi === ui) _scanTimer = setTimeout(scanFrame, 500);
+}
+
+async function startScanCamera(kind = 'invite') {
+  stopScanCamera();
+  const ui = scanUi(kind);
+  if (!('BarcodeDetector' in window)) {
+    setScanStatus(ui, ui.device
+      ? 'Dieser Browser kann QR-Codes nicht lesen. Öffne stattdessen den Sync-Link auf diesem Gerät.'
+      : 'Dieser Browser kann QR-Codes nicht lesen. Füge stattdessen den Einladungslink ein.');
+    return;
+  }
   try {
-    stopScanCamera();
+    setScanStatus(ui, 'Kamera wird vorbereitet …');
     _scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
-    if (video) {
-      video.srcObject = _scanStream;
-      video.style.display = 'block';
-      await video.play().catch(() => {});
+    _scanUi = ui;
+    if (ui.video) {
+      ui.video.srcObject = _scanStream;
+      ui.video.hidden = false;
+      await ui.video.play().catch(() => {});
     }
-    if (status) status.textContent = 'QR-Code vor die Kamera halten';
+    setScanStatus(ui, 'QR-Code vor die Kamera halten');
     scanFrame();
   } catch (e) {
-    if (status) status.textContent = 'Kamera konnte nicht gestartet werden.';
+    setScanStatus(ui, 'Kamera konnte nicht gestartet werden.');
   }
 }
 
@@ -2902,60 +3205,75 @@ function stopScanCamera() {
     _scanStream.getTracks().forEach(t => t.stop());
     _scanStream = null;
   }
-  const video = document.getElementById('scan-video');
+  const video = _scanUi?.video;
   if (video) {
     video.pause?.();
     video.srcObject = null;
-    video.style.display = 'none';
+    video.hidden = true;
   }
+  _scanUi = null;
 }
 
-function openScanModal() {
-  document.getElementById('scan-modal')?.classList.remove('hidden');
-  const status = document.getElementById('scan-status');
-  if (status) status.textContent = 'Kamera wird vorbereitet…';
-  startScanCamera();
-}
-
-function closeScanModal() {
-  stopScanCamera();
-  document.getElementById('scan-modal')?.classList.add('hidden');
-}
-
-async function scanImageFile() {
+/** QR-Code aus einer Bilddatei lesen. */
+function scanImageFile(kind = 'invite') {
+  const ui = scanUi(kind);
   const input = Object.assign(document.createElement('input'), { type: 'file', accept: 'image/*' });
   input.onchange = async () => {
     const file = input.files?.[0];
     if (!file) return;
-    const status = document.getElementById('scan-status');
     try {
-      if (!('BarcodeDetector' in window)) throw new Error('BarcodeDetector nicht verfügbar');
+      if (!('BarcodeDetector' in window)) throw new Error('Dieser Browser kann QR-Codes nicht lesen.');
       const bitmap = await createImageBitmap(file);
       const detector = new BarcodeDetector({ formats: ['qr_code'] });
       const codes = await detector.detect(bitmap);
-      if (!codes?.length?.valueOf()) throw new Error('Kein QR-Code gefunden');
-      await processInviteUrl(codes[0].rawValue);
+      if (!codes?.length) throw new Error('Im Bild wurde kein QR-Code gefunden.');
+      await handleScannedCode(codes[0].rawValue, ui.device);
     } catch (e) {
-      if (status) status.textContent = 'Bild konnte nicht gelesen werden. Nutze alternativ Link einfügen.';
+      setScanStatus(ui, e.message || 'Bild konnte nicht gelesen werden.');
     }
   };
   input.click();
 }
 
-async function pasteInviteLink() {
-  const url = prompt('Invite-Link oder QR-Inhalt einfügen:');
-  if (!url) return;
+function setJoinError(msg) {
+  const input = document.getElementById('join-link');
+  const err = document.getElementById('join-error');
+  if (!input || !err) return;
+  input.classList.toggle('error', !!msg);
+  input.setAttribute('aria-invalid', String(!!msg));
+  err.hidden = !msg;
+  if (msg) err.textContent = msg;
+}
+
+/** „Beitreten“: Link aus dem Eingabefeld übernehmen (statt prompt()). */
+async function joinFromLinkField() {
+  const input = document.getElementById('join-link');
+  const btn = document.getElementById('btn-join');
+  if (!input) return;
+  const value = input.value.trim();
+  if (!value) { setJoinError('Bitte einen Einladungslink einfügen.'); input.focus(); return; }
+  if (btn) btn.disabled = true;
   try {
-    await processInviteUrl(url.trim());
+    await handleScannedCode(value, false);
+    setJoinError('');
+    input.value = '';
   } catch (e) {
-    alert(e.message || 'Ungültiger Invite-Link');
+    setJoinError(/Geräte-Code/.test(e.message || '') ? e.message : 'Das ist kein gültiger Einladungslink.');
+    input.focus();
+  } finally {
+    if (btn) btn.disabled = false;
   }
 }
 
-/** Share-Modal öffnen — Notebook-Invite-Link mit NotebookKey im Fragment. */
-async function openShareModal() {
+/**
+ * Teilen-Dialog öffnen. Reiter „Einladen“ zeigt QR + Link des aktuellen Notizbuchs
+ * (NotebookKey im Fragment), „Beitreten“ nimmt eine Einladung an.
+ * @param {'invite'|'join'} [tab]
+ */
+async function openShareModal(tab = 'invite') {
   const modal = document.getElementById('share-modal');
   if (!modal) return;
+  const returnFocus = document.activeElement;
   const nbId = state.currentNotebookId;
   const nbKey = await getNotebookKey(nbId);
   const nbKeyRaw = await exportKey(nbKey);
@@ -2973,27 +3291,35 @@ async function openShareModal() {
     } catch {}
   }
   // Format: #nb-{notebookHash}&k={base64(notebookKey)}&name={name}
-  const nb = currentNotebook();
+  const nb = state.notebooks.find(n => n.id === nbId);
   const nbHash = await notebookHash(nbId);
   const url = `${origin}${location.pathname}#nb-${nbHash}&k=${encodeURIComponent(keyB64)}&name=${encodeURIComponent(nb?.name || '')}`;
   const linkInput = document.getElementById('share-link');
   if (linkInput) linkInput.value = url;
+  const nameEl = document.getElementById('share-nb-name');
+  if (nameEl) nameEl.textContent = nb?.name || 'Notizbuch';
   // QR-Code generieren (qrcode.js API: new QRCode(element, options))
   const qrContainer = document.getElementById('qr-container');
   if (qrContainer && typeof QRCode !== 'undefined') {
-    qrContainer.innerHTML = '';
+    qrContainer.replaceChildren();
     new QRCode(qrContainer, {
       text: url, width: 200, height: 200,
-      colorDark: '#1a1730', colorLight: '#fefcf8',
+      colorDark: '#14171c', colorLight: '#ffffff',
       correctLevel: QRCode.CorrectLevel.L
     });
   }
-  modal.classList.remove('hidden');
+  const joinInput = document.getElementById('join-link');
+  if (joinInput) joinInput.value = '';
+  setJoinError('');
+  setScanStatus(scanUi('invite'), '');
+  selectTab(document.getElementById('share-dialog'), tab === 'join' ? 'join' : 'invite');
+  openDialog('share-modal', { returnFocus, onClose: stopScanCamera });
 
   // Notebook als geteilt markieren + Daten an shared Relay-Room pushen
   if (!state.sharedNotebooks.has(nbId)) {
     state.sharedNotebooks.add(nbId);
     saveSharedNotebooks();
+    renderNotebookList();
   }
   pushSharedNotebook(nbId);
   // P2P-Room für geteiltes Notebook beitreten
@@ -3001,7 +3327,7 @@ async function openShareModal() {
 }
 
 function closeShareModal() {
-  document.getElementById('share-modal')?.classList.add('hidden');
+  closeDialog('share-modal');
 }
 
 /**
@@ -3125,54 +3451,73 @@ async function handleInvite(invite) {
   console.log('[Share] Invite verarbeitet:', invite.name, notebookId);
 }
 
-// ─── Geräte-Sync Link ───────────────────────────────────────────────────────
+// ─── Geräte-Sync (Einstellungen → Geräte) ───────────────────────────────────
 
-/** Sync-Link anzeigen: URL mit vollem MasterKey + QR-Code für andere Geräte. */
-function showSyncLink() {
-  if (!masterKeyRaw) { alert('Kein MasterKey vorhanden.'); return; }
-  const hex = Array.from(masterKeyRaw).map(b => b.toString(16).padStart(2, '0')).join('');
-  const url = `${location.origin}${location.pathname}#${hex}`;
-  const overlay = document.getElementById('keydisplay-modal');
-  if (!overlay) { prompt('Sync-Link (auf anderem Gerät öffnen):', url); return; }
+/** Sync-Link dieses Geräts: URL mit vollem MasterKey. */
+function deviceSyncUrl() {
+  return masterKeyRaw ? `${location.origin}${location.pathname}#${keyHex(masterKeyRaw)}` : '';
+}
 
-  overlay.classList.remove('hidden');
-  // Header anpassen
-  const header = overlay.querySelector('.modal-header h2');
-  if (header) header.textContent = 'Geräte-Sync';
-  // Hinweistext anpassen
-  const hint = overlay.querySelector('.modal-hint');
-  if (hint) {
-    hint.style.color = '';
-    hint.textContent = 'Scanne den QR-Code mit deinem anderen Gerät oder kopiere den Sync-Link.';
-  }
-  // QR-Code
-  const qrContainer = document.getElementById('keydisplay-qr');
-  if (qrContainer && typeof QRCode !== 'undefined') {
-    qrContainer.innerHTML = '';
-    qrContainer.style.display = 'block';
-    new QRCode(qrContainer, {
+/**
+ * „Gerät hinzufügen“: Sync-Link + QR-Code ein-/ausblenden.
+ * Der Code enthält den Schlüssel — er steht nur im DOM, solange der Bereich offen ist.
+ */
+function togglePairBox(force) {
+  const box = document.getElementById('pair-box');
+  const btn = document.getElementById('btn-pair-toggle');
+  const qr = document.getElementById('sync-qr');
+  const linkEl = document.getElementById('sync-link-text');
+  if (!box) return;
+  const url = deviceSyncUrl();
+  const show = (typeof force === 'boolean' ? force : box.hidden) && !!url;
+  box.hidden = !show;
+  btn?.setAttribute('aria-expanded', String(show));
+  qr?.replaceChildren();
+  if (linkEl) linkEl.textContent = '';
+  if (!show) return;
+  toggleDeviceScan(false);
+  if (linkEl) linkEl.textContent = url;
+  if (qr && typeof QRCode !== 'undefined') {
+    new QRCode(qr, {
       text: url, width: 200, height: 200,
-      colorDark: '#1a1730', colorLight: '#fefcf8',
+      colorDark: '#14171c', colorLight: '#ffffff',
       correctLevel: QRCode.CorrectLevel.L
     });
   }
-  // Key anzeigen
-  const keyEl = document.getElementById('keydisplay-key');
-  if (keyEl) keyEl.textContent = hex;
-  // Buttons
-  document.getElementById('btn-copy-key').textContent = 'Link kopieren';
-  document.getElementById('btn-copy-key').onclick = () => {
-    navigator.clipboard.writeText(url).then(() => {
-      const btn = document.getElementById('btn-copy-key');
-      if (btn) { btn.textContent = 'Kopiert!'; setTimeout(() => { btn.textContent = 'Link kopieren'; }, 2000); }
-    });
-  };
-  document.getElementById('btn-download-key').onclick = () => downloadKeyFile(masterKeyRaw);
-  document.getElementById('btn-key-confirmed').textContent = 'Schließen';
-  document.getElementById('btn-key-confirmed').onclick = () => {
-    overlay.classList.add('hidden');
-    if (qrContainer) qrContainer.style.display = 'none';
-  };
+}
+
+/** „Code eines Geräts scannen“: Kamera-Bereich ein-/ausblenden. */
+function toggleDeviceScan(force) {
+  const box = document.getElementById('device-scan-box');
+  const btn = document.getElementById('btn-device-scan');
+  if (!box) return;
+  const show = typeof force === 'boolean' ? force : box.hidden;
+  if (box.hidden === !show) return;
+  box.hidden = !show;
+  btn?.setAttribute('aria-expanded', String(show));
+  if (show) {
+    togglePairBox(false);
+    startScanCamera('device');
+  } else {
+    if (_scanUi?.device) stopScanCamera();
+    setScanStatus(scanUi('device'), '');
+  }
+}
+
+/**
+ * Schlüssel eines anderen Geräts übernehmen (gescannter Sync-Code).
+ * Entspricht dem Öffnen des Sync-Links: Die App lädt mit dem Schlüssel im Fragment neu.
+ * @param {string} hex - 64 Hex-Zeichen
+ */
+function adoptDeviceKey(hex) {
+  if (masterKeyRaw && keyHex(masterKeyRaw) === hex) throw new Error('Dieses Gerät nutzt diesen Schlüssel bereits.');
+  stopScanCamera();
+  if (!confirm('Schlüssel des anderen Geräts übernehmen?\n\nDieses Gerät zeigt danach dessen Notizbücher. Die bisherigen Notizbücher dieses Geräts gehören zum alten Schlüssel — sichere ihn vorher unter „Daten & Schlüssel“.')) {
+    throw new Error('Abgebrochen.');
+  }
+  try { flushSave(); } catch {}
+  history.replaceState(null, '', location.pathname + '#' + hex);
+  location.reload();
 }
 
 // ─── Export / Import ─────────────────────────────────────────────────────────
@@ -3348,35 +3693,19 @@ async function exportCurrentPageAsSvg() {
   downloadBlob(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }), filename);
 }
 
-function showExportModal() {
-  const modal = document.getElementById('export-modal');
-  if (modal) modal.classList.remove('hidden');
-}
-
-function closeExportModal() {
-  document.getElementById('export-modal')?.classList.add('hidden');
-}
-
-
-/** Export-Optionen: alle Notizbücher als .enc oder aktuelle Seite als PNG. */
-async function exportApp(mode = null) {
+/**
+ * Export: alle Notizbücher als .enc oder die aktuelle Seite als PNG/SVG.
+ * @param {'enc'|'png'|'svg'} mode
+ */
+async function exportApp(mode) {
   try {
-    if (!mode) { showExportModal(); return; }
     if (mode === 'enc') {
       const bundle = await buildEncryptedBackupBundle();
       downloadBlob(new Blob([bundle], { type: 'application/octet-stream' }), 'notizbuch-backup.enc');
-      closeExportModal();
-      return;
-    }
-    if (mode === 'png') {
+    } else if (mode === 'png') {
       await exportCurrentPageAsPng();
-      closeExportModal();
-      return;
-    }
-    if (mode === 'svg') {
+    } else if (mode === 'svg') {
       await exportCurrentPageAsSvg();
-      closeExportModal();
-      return;
     }
   } catch (e) {
     alert('Export fehlgeschlagen: ' + e.message);
@@ -3415,60 +3744,210 @@ async function importApp() {
   input.click();
 }
 
-function copyShareLink() {
+function copyShareLink(e) {
   const link = document.getElementById('share-link')?.value;
-  if (!link) return;
-  navigator.clipboard.writeText(link).then(() => {
-    const btn = document.getElementById('btn-copy-link');
-    if (btn) { btn.textContent = 'Kopiert!'; setTimeout(() => { btn.textContent = 'Kopieren'; }, 2000); }
-  });
+  if (link) copyText(link, e?.currentTarget || document.getElementById('btn-copy-link'));
 }
 
-// ─── Verbindungs-Einstellungen (TURN/ICE) ───────────────────────────────────
+// ─── Einstellungen (Allgemein, Geräte, Verbindung, Daten & Schlüssel) ───────
 
-function openConnectionModal() {
-  const modal = document.getElementById('connection-modal');
-  if (!modal) return;
+const RELAY_SETTING_KEY = 'device:relayUrl';
+
+/** Text für „verbundene Geräte“ — Namen kennt die App nicht, nur die Anzahl. */
+function deviceCountText() {
+  const n = state.connectedPeers.length;
+  if (n > 0) return `Gerade direkt verbunden: ${n} ${n === 1 ? 'Gerät' : 'Geräte'}.`;
+  return 'Gerade ist kein weiteres Gerät direkt verbunden.';
+}
+
+function setRelayError(msg) {
+  const input = document.getElementById('conn-relay-url');
+  const err = document.getElementById('conn-relay-error');
+  if (!input || !err) return;
+  input.classList.toggle('error', !!msg);
+  input.setAttribute('aria-invalid', String(!!msg));
+  err.hidden = !msg;
+  err.textContent = msg || '';
+}
+
+function relayStatusText() {
+  return `Relay: ${isRelayConnected() ? 'verbunden' : 'nicht verbunden'}${getCustomRelayUrl() ? ' (eigene Adresse)' : ''} · ${getIceStatus()}`;
+}
+
+/** Schlüssel in „Daten & Schlüssel“ ein-/ausblenden (steht nur sichtbar im DOM). */
+function toggleKeyBox(force) {
+  const box = document.getElementById('key-box');
+  const btn = document.getElementById('btn-key-show');
+  if (!box) return;
+  const show = (typeof force === 'boolean' ? force : box.hidden) && !!masterKeyRaw;
+  box.hidden = !show;
+  box.textContent = show ? groupHex(keyHex(masterKeyRaw)) : '';
+  if (btn) {
+    btn.setAttribute('aria-expanded', String(show));
+    const label = btn.querySelector('[data-label]');
+    if (label) label.textContent = show ? 'Verbergen' : 'Anzeigen';
+  }
+}
+
+/** Felder der Einstellungen mit dem aktuellen Stand füllen. */
+function fillSettings() {
+  const theme = getTheme();
+  document.querySelectorAll('#theme-seg [data-choice]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.choice === theme)));
+  const penSw = document.getElementById('set-pen-only');
+  if (penSw) penSw.checked = state.penOnlyMode;
+  const diagSw = document.getElementById('set-diag');
+  if (diagSw) diagSw.checked = isSyncDebugOn();
+  const devStatus = document.getElementById('set-device-status');
+  if (devStatus) devStatus.textContent = deviceCountText();
+
   const urlInput = document.getElementById('conn-turn-url');
   const userInput = document.getElementById('conn-turn-user');
   const passInput = document.getElementById('conn-turn-pass');
-  const status = document.getElementById('conn-status');
   settingsGet('device:iceSettings').then(s => {
     if (urlInput) urlInput.value = s?.turnUrl || '';
     if (userInput) userInput.value = s?.username || '';
     if (passInput) passInput.value = s?.credential || '';
   }).catch(() => {});
-  if (status) status.textContent = getIceStatus();
-  modal.classList.remove('hidden');
+  const relayInput = document.getElementById('conn-relay-url');
+  if (relayInput) {
+    relayInput.value = getCustomRelayUrl();
+    relayInput.placeholder = defaultRelayUrl();
+  }
+  const relayDefault = document.getElementById('conn-relay-default');
+  if (relayDefault) relayDefault.textContent = defaultRelayUrl();
+  setRelayError('');
+  const status = document.getElementById('conn-status');
+  if (status) status.textContent = relayStatusText();
+
+  const version = document.getElementById('settings-version');
+  if (version) version.textContent = `Version ${APP_VERSION}`;
+  togglePairBox(false);
+  toggleDeviceScan(false);
+  toggleKeyBox(false);
 }
 
-function closeConnectionModal() {
-  document.getElementById('connection-modal')?.classList.add('hidden');
+/**
+ * Einstellungen öffnen.
+ * @param {'general'|'devices'|'connection'|'data'} [section]
+ */
+function openSettings(section = 'general') {
+  const returnFocus = document.activeElement;
+  fillSettings();
+  selectTab(document.getElementById('settings-sheet'), section);
+  openDialog('settings-modal', { returnFocus, onClose: onSettingsClosed });
+  toggleSidebar(false);
 }
 
+/** Beim Schließen: Kamera aus, Schlüssel und Sync-Code wieder aus dem DOM. */
+function onSettingsClosed() {
+  togglePairBox(false);
+  toggleDeviceScan(false);
+  toggleKeyBox(false);
+}
+
+/**
+ * Relay-Verbindungen mit der aktuell eingestellten Adresse neu aufbauen:
+ * Live-Kanäle (Haupt-Room + Shared-Rooms) schließen und neu öffnen, danach
+ * kompletter Resync (Haupt-Room holen/mergen/pushen, Shared-Rooms nachziehen).
+ */
+async function rebuildRelayConnections() {
+  const waitWhile = async (cond, maxMs) => {
+    for (let t = 0; t < maxMs && cond(); t += 100) await new Promise(r => setTimeout(r, 100));
+  };
+  try { flushSave(); } catch {}
+  closeAllLiveChannels();
+  // Ein laufender Resync könnte noch die alte Adresse benutzt haben — erst abwarten
+  await waitWhile(() => _resyncRunning, 15000);
+  openMainLiveChannel();
+  for (const nbHash of _sharedRoomMap.values()) openLiveChannel(nbHash, onLiveEvent);
+  // Erst weitermachen, wenn die neuen Kanäle verbunden oder gescheitert sind:
+  // resync() ruft reconnectLiveChannels(), das einen noch verbindenden Kanal abbrechen würde.
+  await waitWhile(() => liveChannelStatus().some(ch => ch.state === 'verbindet'), 6000);
+  _lastSharedResyncAt = 0;
+  await resync();
+  updateSyncStatus();
+  updateSyncDebug('relay-url');
+}
+
+/** Relay-Adresse gerätelokal speichern ('' = Standard) und Verbindungen neu aufbauen. */
+async function applyRelayUrl(url) {
+  if (url) await settingsPut(RELAY_SETTING_KEY, url);
+  else await settingsDelete(RELAY_SETTING_KEY);
+  setRelayUrl(url);
+  await rebuildRelayConnections();
+}
+
+/** „Standard wiederherstellen“: eigene Relay-Adresse verwerfen. */
+async function restoreDefaultRelay() {
+  const input = document.getElementById('conn-relay-url');
+  const status = document.getElementById('conn-status');
+  if (input) input.value = '';
+  setRelayError('');
+  if (!getCustomRelayUrl()) {
+    if (status) status.textContent = 'Der Standard gilt bereits. ' + relayStatusText();
+    return;
+  }
+  if (status) status.textContent = 'Standard-Relay wird verbunden …';
+  await applyRelayUrl('');
+  if (status) status.textContent = 'Standard wiederhergestellt. ' + relayStatusText();
+}
+
+/**
+ * „Speichern“ im Abschnitt Verbindung: Relay-Adresse prüfen und übernehmen,
+ * TURN/ICE speichern. Geänderte ICE-Einstellungen brauchen ein Neuladen.
+ */
 async function saveConnectionSettings() {
   const urlInput = document.getElementById('conn-turn-url');
   const userInput = document.getElementById('conn-turn-user');
   const passInput = document.getElementById('conn-turn-pass');
+  const relayInput = document.getElementById('conn-relay-url');
+  const status = document.getElementById('conn-status');
+
+  const relay = (relayInput?.value || '').trim();
+  if (relay && !isValidRelayUrl(relay)) {
+    setRelayError('Bitte eine Adresse angeben, die mit wss:// oder ws:// beginnt.');
+    relayInput?.focus();
+    return;
+  }
+  setRelayError('');
+
   const settings = {
     turnUrl: (urlInput?.value || '').trim(),
     username: (userInput?.value || '').trim(),
     credential: (passInput?.value || '').trim()
   };
-  if (!settings.turnUrl) {
-    // Leere Eingabe = Einstellung entfernen
-    await settingsDelete('device:iceSettings');
-    setIceSettings({});
-  } else {
-    await settingsPut('device:iceSettings', settings);
-    setIceSettings(settings);
+  const prev = await settingsGet('device:iceSettings') || {};
+  const iceChanged = (prev.turnUrl || '') !== settings.turnUrl
+    || (settings.turnUrl && ((prev.username || '') !== settings.username || (prev.credential || '') !== settings.credential));
+  const relayChanged = relay !== getCustomRelayUrl();
+
+  if (iceChanged) {
+    if (!settings.turnUrl) {
+      // Leere Eingabe = Einstellung entfernen
+      await settingsDelete('device:iceSettings');
+      setIceSettings({});
+    } else {
+      await settingsPut('device:iceSettings', settings);
+      setIceSettings(settings);
+    }
+    if (relayChanged) {
+      if (relay) await settingsPut(RELAY_SETTING_KEY, relay);
+      else await settingsDelete(RELAY_SETTING_KEY);
+    }
+    // Trystero hält Offer-Pool und geteilte Peer-Verbindungen modulweit mit der
+    // Konfiguration des ersten Room-Beitritts. Ein Rejoin übernimmt neue
+    // ICE-Server daher nicht zuverlässig — nur ein Neuladen tut das.
+    closeDialog('settings-modal');
+    try { flushSave(); } catch {}
+    location.reload();
+    return;
   }
-  // Trystero hält Offer-Pool und geteilte Peer-Verbindungen modulweit mit der
-  // Konfiguration des ersten Room-Beitritts. Ein Rejoin übernimmt neue
-  // ICE-Server daher nicht zuverlässig — nur ein Neuladen tut das.
-  closeConnectionModal();
-  try { flushSave(); } catch {}
-  location.reload();
+
+  if (relayChanged) {
+    if (status) status.textContent = 'Gespeichert – Relay wird neu verbunden …';
+    await applyRelayUrl(relay);
+  }
+  if (status) status.textContent = 'Gespeichert. ' + relayStatusText();
 }
 
 // ─── Settings Persistence ───────────────────────────────────────────────────
@@ -3723,59 +4202,8 @@ function onPointerUp(e) {
 
 /** Sidebar + Toolbar + Page-Bar aktualisieren. */
 function renderUI() {
-  // Notebook-Liste in Sidebar
-  const nbList = document.getElementById('notebook-list');
-  if (nbList) {
-    const renameSvg = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>';
-    const deleteSvg = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
-    nbList.innerHTML = state.notebooks.map(nb => `
-      <button class="notebook-tab ${nb.id === state.currentNotebookId ? 'active' : ''}" data-nb="${nb.id}">
-        <span class="nb-name">${nb.name}</span>
-        <span class="nb-actions">
-          <span class="nb-action-btn" data-rename="${nb.id}" title="Umbenennen">${renameSvg}</span>
-          ${state.notebooks.length > 1 ? `<span class="nb-action-btn danger" data-delete="${nb.id}" title="Löschen">${deleteSvg}</span>` : ''}
-        </span>
-      </button>
-    `).join('');
-
-    // Event-Listener
-    nbList.querySelectorAll('.notebook-tab').forEach(btn => {
-      const nbId = btn.dataset.nb;
-      // Klick → Notebook wechseln
-      btn.addEventListener('click', (e) => {
-        if (e.target.closest('.nb-action-btn')) return;
-        if (e.target.closest('.rename-input')) return;
-        toggleSidebar(false);
-        selectNotebook(nbId);
-      });
-      // Longpress → Kontextmenü (Touch)
-      let lpTimer = null;
-      btn.addEventListener('pointerdown', (e) => {
-        if (e.pointerType !== 'touch') return;
-        lpTimer = setTimeout(() => {
-          lpTimer = null;
-          showNbContextMenu(nbId, e.clientX, e.clientY);
-        }, 500);
-      });
-      btn.addEventListener('pointerup', () => { if (lpTimer) clearTimeout(lpTimer); });
-      btn.addEventListener('pointerleave', () => { if (lpTimer) clearTimeout(lpTimer); });
-      btn.addEventListener('pointermove', () => { if (lpTimer) clearTimeout(lpTimer); });
-    });
-    // Hover-Buttons: Umbenennen
-    nbList.querySelectorAll('[data-rename]').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        inlineRenameNotebook(btn.dataset.rename);
-      });
-    });
-    // Hover-Buttons: Löschen
-    nbList.querySelectorAll('[data-delete]').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        if (confirm('Notebook löschen?')) deleteNotebook(btn.dataset.delete);
-      });
-    });
-  }
+  // Notizbuch-Liste in der Schublade
+  renderNotebookList();
 
   // Notebook-Name im Titel-Knopf (öffnet die Notizbuch-Liste)
   const nbName = currentNotebook()?.name || '';
@@ -3895,16 +4323,6 @@ function renderUI() {
   updateSyncDebug();
   updateSyncStatus();
 
-  // Peer-Count (Sidebar)
-  const peerEl = document.getElementById('peer-count');
-  if (peerEl) {
-    const n = state.connectedPeers.length;
-    peerEl.textContent = n > 0 ? `${n} Peer${n > 1 ? 's' : ''}` : '';
-  }
-
-  // Stiftmodus-Button
-  const penOnlyBtn = document.getElementById('btn-pen-only');
-  if (penOnlyBtn) penOnlyBtn.classList.toggle('active', state.penOnlyMode);
 }
 
 /** Sync-Status in der Leiste (Punkt + Text). Schreibt nur bei Änderung ins DOM. */
@@ -3924,9 +4342,19 @@ function updateSyncStatus() {
   el.classList.toggle('off', cls === 'off');
   const textEl = document.getElementById('sync-text');
   if (textEl) textEl.textContent = text;
-  el.setAttribute('aria-label', `Sync-Status: ${text}. Klick: Sync-Diagnose ein/aus`);
-  el.title = `${text} · Klick: Sync-Diagnose ein/aus`;
-  document.getElementById('status-dot')?.classList.toggle('connected', cls === '');
+  el.setAttribute('aria-label', `Sync-Status: ${text}. Öffnet die Verbindungseinstellungen`);
+  el.title = `${text} · Verbindungseinstellungen öffnen`;
+  // Statuszeile im Fuß der Schublade: gleicher Stand
+  const row = document.getElementById('status-row');
+  if (row) {
+    row.classList.toggle('busy', cls === 'busy');
+    row.classList.toggle('off', cls === 'off');
+    row.setAttribute('aria-label', `Sync-Status: ${text}. Öffnet die Verbindungseinstellungen`);
+    const rowText = document.getElementById('status-text');
+    if (rowText) rowText.textContent = text;
+  }
+  const devStatus = document.getElementById('set-device-status');
+  if (devStatus) devStatus.textContent = deviceCountText();
 }
 
 // ─── Init ───────────────────────────────────────────────────────────────────
@@ -3934,6 +4362,9 @@ function updateSyncStatus() {
 async function init() {
   console.log('[App] Init...', APP_VERSION);
   updateSyncDebug('init');
+
+  // Dialoge bedienbar machen (der Erststart-Dialog kommt vor setupEvents)
+  setupDialogs();
 
   ensureDeviceId();
 
@@ -3966,6 +4397,14 @@ async function init() {
     });
   } catch (e) {
     console.warn('[App] ICE-Einstellungen konnten nicht geladen werden:', e);
+  }
+
+  // 5a2. Gerätelokale Relay-Adresse laden (vor der ersten Relay-Verbindung!). Ohne Eintrag gilt der Standard.
+  try {
+    const savedRelay = await settingsGet(RELAY_SETTING_KEY);
+    if (isValidRelayUrl(savedRelay)) setRelayUrl(savedRelay);
+  } catch (e) {
+    console.warn('[App] Relay-Adresse konnte nicht geladen werden:', e);
   }
 
   // 5b. Geteilte Notebooks laden
@@ -4207,7 +4646,7 @@ function setupEvents() {
   document.addEventListener('keydown', (e) => {
     if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
     const t = e.target;
-    if (isTextTarget(t)) return;
+    if (isTextTarget(t) || topDialog()) return;
     const key = String(e.key || '').toLowerCase();
     if (key === 'z' && !e.shiftKey) {
       e.preventDefault();
@@ -4229,7 +4668,19 @@ function setupEvents() {
   const modalOpen = () => !!document.querySelector('.modal-overlay:not(.hidden)');
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
-      closePopovers();
+      // Von oben nach unten: Dialog → Popover/Menü → Notizbuch-Liste
+      const dlg = topDialog();
+      if (dlg) {
+        if (!dlg.hasAttribute('data-persistent')) closeDialog(dlg.id);
+        return;
+      }
+      const nbMenuOpen = !document.getElementById('nb-menu')?.hidden;
+      if (nbMenuOpen || document.querySelector('[data-pop]:not([hidden])')) {
+        const trigger = nbMenuOpen ? _nbMenuTrigger : null;
+        closePopovers();
+        if (isShown(trigger)) trigger.focus();
+        return;
+      }
       if (document.querySelector('.sidebar.sidebar-open')) toggleSidebar(false);
       return;
     }
@@ -4261,7 +4712,7 @@ function setupEvents() {
     btn.addEventListener('click', () => togglePopover(btn));
   });
   document.addEventListener('pointerdown', (e) => {
-    if (!e.target.closest?.('.pop-wrap')) closePopovers();
+    if (!e.target.closest?.('.pop-wrap, .nb-menu, .nb-more')) closePopovers();
   }, true);
   document.querySelectorAll('[data-pop]').forEach(pop => {
     pop.addEventListener('click', (e) => { if (e.target.closest('[data-close]')) closePopovers(); });
@@ -4311,48 +4762,104 @@ function setupEvents() {
   document.getElementById('btn-zoom-in')?.addEventListener('click', () => zoomBy(1.25));
   document.getElementById('btn-zoom-out')?.addEventListener('click', () => zoomBy(0.8));
 
-  // Notizbuch-Titel öffnet die Notizbuch-Liste (Sidebar)
-  document.getElementById('btn-notebooks')?.addEventListener('click', toggleSidebar);
-  // Sidebar schließen bei Klick auf Overlay
-  document.getElementById('sidebar-overlay')?.addEventListener('click', toggleSidebar);
+  // Notizbuch-Titel öffnet die Notizbuch-Liste (Schublade)
+  document.getElementById('btn-notebooks')?.addEventListener('click', () => toggleSidebar());
+  document.getElementById('btn-close-sidebar')?.addEventListener('click', () => toggleSidebar(false));
+  document.getElementById('sidebar-overlay')?.addEventListener('click', () => toggleSidebar(false));
 
-  // Stiftmodus
-  document.getElementById('btn-pen-only')?.addEventListener('click', togglePenOnlyMode);
+  // Notizbuch-Liste: Tipp auf die Zeile wechselt, „⋯“ öffnet das Menü (Maus und Touch gleich)
+  document.getElementById('notebook-list')?.addEventListener('click', (e) => {
+    const row = e.target.closest('.nb');
+    if (!row || e.target.closest('.rename-input')) return;
+    const more = e.target.closest('.nb-more');
+    if (more) { toggleNbMenu(row.dataset.nb, more); return; }
+    toggleSidebar(false);
+    selectNotebook(row.dataset.nb);
+  });
+  const nbMenu = document.getElementById('nb-menu');
+  nbMenu?.addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+    const items = [...nbMenu.querySelectorAll('.menu-item:not(:disabled)')];
+    const i = items.indexOf(document.activeElement);
+    e.preventDefault();
+    items[(i + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length]?.focus();
+  });
+  document.getElementById('nb-menu-rename')?.addEventListener('click', () => {
+    const nbId = _nbMenuFor;
+    closePopovers();
+    startRenameNotebook(nbId);
+  });
+  document.getElementById('nb-menu-share')?.addEventListener('click', async () => {
+    const nbId = _nbMenuFor;
+    closePopovers();
+    toggleSidebar(false);
+    await selectNotebook(nbId);
+    openShareModal('invite');
+  });
+  document.getElementById('nb-menu-delete')?.addEventListener('click', () => {
+    const nbId = _nbMenuFor;
+    const trigger = _nbMenuTrigger;
+    closePopovers();
+    trigger?.focus();
+    requestDeleteNotebook(nbId);
+  });
 
-  // Share
-  document.getElementById('btn-share')?.addEventListener('click', openShareModal);
-  document.getElementById('btn-share-sidebar')?.addEventListener('click', openShareModal);
+  // Teilen: Einladen / Beitreten
+  document.getElementById('btn-share')?.addEventListener('click', () => openShareModal('invite'));
+  document.getElementById('btn-close-share')?.addEventListener('click', closeShareModal);
+  document.getElementById('btn-copy-link')?.addEventListener('click', copyShareLink);
+  setupTabs(document.getElementById('share-dialog'), (tab) => {
+    if (tab !== 'join') { stopScanCamera(); setScanStatus(scanUi('invite'), ''); }
+  });
+  document.getElementById('btn-start-scan')?.addEventListener('click', () => startScanCamera('invite'));
+  document.getElementById('btn-scan-image')?.addEventListener('click', () => scanImageFile('invite'));
+  document.getElementById('btn-join')?.addEventListener('click', joinFromLinkField);
+  document.getElementById('join-link')?.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); joinFromLinkField(); } });
+  document.getElementById('join-link')?.addEventListener('input', () => setJoinError(''));
+
+  // Seiten-Menü: Export der aktuellen Seite
   document.getElementById('btn-menu-export-png')?.addEventListener('click', () => exportApp('png'));
   document.getElementById('btn-menu-export-svg')?.addEventListener('click', () => exportApp('svg'));
-  document.getElementById('btn-scan-share')?.addEventListener('click', openScanModal);
-  document.getElementById('btn-sync-link')?.addEventListener('click', showSyncLink);
-  document.getElementById('btn-export')?.addEventListener('click', () => exportApp());
+
+  // Einstellungen: Zahnrad in der Schublade; Sync-Status öffnet direkt „Verbindung“
+  document.getElementById('btn-settings')?.addEventListener('click', () => openSettings('general'));
+  document.getElementById('status-row')?.addEventListener('click', () => openSettings('connection'));
+  document.getElementById('sync-status')?.addEventListener('click', () => openSettings('connection'));
+  document.getElementById('btn-close-settings')?.addEventListener('click', () => closeDialog('settings-modal'));
+  setupTabs(document.getElementById('settings-sheet'), (tab) => {
+    if (tab !== 'devices') { togglePairBox(false); toggleDeviceScan(false); }
+    if (tab !== 'data') toggleKeyBox(false);
+  });
+  // Allgemein
+  document.getElementById('theme-seg')?.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-choice]');
+    if (!btn) return;
+    const choice = await setTheme(btn.dataset.choice);
+    document.querySelectorAll('#theme-seg [data-choice]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.choice === choice)));
+  });
+  document.getElementById('set-pen-only')?.addEventListener('change', (e) => setPenOnlyMode(e.currentTarget.checked));
+  // Geräte
+  document.getElementById('btn-pair-toggle')?.addEventListener('click', () => togglePairBox());
+  document.getElementById('btn-copy-sync-link')?.addEventListener('click', (e) => copyText(deviceSyncUrl(), e.currentTarget));
+  document.getElementById('btn-device-scan')?.addEventListener('click', () => toggleDeviceScan());
+  document.getElementById('btn-device-scan-image')?.addEventListener('click', () => scanImageFile('device'));
+  // Verbindung
+  document.getElementById('set-diag')?.addEventListener('change', (e) => setSyncDebug(e.currentTarget.checked));
+  document.getElementById('btn-save-connection')?.addEventListener('click', saveConnectionSettings);
+  document.getElementById('btn-relay-default')?.addEventListener('click', restoreDefaultRelay);
+  document.getElementById('conn-relay-url')?.addEventListener('input', () => setRelayError(''));
+  // Daten & Schlüssel
+  document.getElementById('btn-key-download')?.addEventListener('click', () => { if (masterKeyRaw) downloadKeyFile(masterKeyRaw); });
+  document.getElementById('btn-key-copy')?.addEventListener('click', (e) => { if (masterKeyRaw) copyText(keyHex(masterKeyRaw), e.currentTarget); });
+  document.getElementById('btn-key-show')?.addEventListener('click', () => toggleKeyBox());
+  document.getElementById('btn-export-enc')?.addEventListener('click', () => exportApp('enc'));
   document.getElementById('btn-import')?.addEventListener('click', importApp);
-  document.getElementById('btn-connection')?.addEventListener('click', openConnectionModal);
-  document.getElementById('status-row')?.addEventListener('click', toggleSyncDebug);
-  document.getElementById('sync-status')?.addEventListener('click', toggleSyncDebug);
-  // Sync-Status in der Leiste aktuell halten (Relay/Peers ändern sich ohne renderUI)
+
+  // Sync-Status in Leiste und Schublade aktuell halten (Relay/Peers ändern sich ohne renderUI)
   setInterval(updateSyncStatus, 3000);
   window.addEventListener('online', updateSyncStatus);
   window.addEventListener('offline', updateSyncStatus);
   applySyncDebugVisibility();
-  document.getElementById('btn-close-connection')?.addEventListener('click', closeConnectionModal);
-  document.getElementById('btn-close-connection-2')?.addEventListener('click', closeConnectionModal);
-  document.getElementById('btn-save-connection')?.addEventListener('click', saveConnectionSettings);
-  document.getElementById('connection-modal')?.addEventListener('click', e => {
-    if (e.target.id === 'connection-modal') closeConnectionModal();
-  });
-
-  document.getElementById('btn-close-share')?.addEventListener('click', closeShareModal);
-  document.getElementById('btn-close-scan')?.addEventListener('click', closeScanModal);
-  document.getElementById('btn-start-scan')?.addEventListener('click', startScanCamera);
-  document.getElementById('btn-scan-image')?.addEventListener('click', scanImageFile);
-  document.getElementById('btn-scan-paste')?.addEventListener('click', pasteInviteLink);
-  document.getElementById('btn-copy-link')?.addEventListener('click', copyShareLink);
-  document.getElementById('btn-close-export')?.addEventListener('click', closeExportModal);
-  document.getElementById('btn-export-enc')?.addEventListener('click', () => exportApp('enc'));
-  document.getElementById('btn-export-png')?.addEventListener('click', () => exportApp('png'));
-  document.getElementById('btn-export-svg')?.addEventListener('click', () => exportApp('svg'));
 
   // Zen-Mode
   document.getElementById('btn-zen')?.addEventListener('click', toggleZenMode);

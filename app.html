@@ -548,11 +548,18 @@
       border-radius: var(--r-sm);
       overflow: hidden;
       background: var(--surface);
+    }
+
+    #pop-page .seg {
       margin: 0 var(--s3) var(--s2);
     }
 
     .seg button {
       flex: 1;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: var(--s2);
       min-height: calc(var(--tap) - 2px);
       padding: 0 var(--s3);
       color: var(--text);
@@ -567,7 +574,8 @@
       background: var(--surface-2);
     }
 
-    .seg button[aria-pressed="true"] {
+    .seg button[aria-pressed="true"],
+    .seg button[aria-selected="true"] {
       background: var(--accent-soft);
       color: var(--accent);
     }
@@ -741,7 +749,226 @@
       transform: rotate(90deg);
     }
 
-    /* ─── Sidebar (Notizbuch-Liste) als Schublade — Inhalt folgt in Teil B ─ */
+    /* ─── Buttons: weitere Varianten ─────────────────────────────────────── */
+    .btn.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: var(--on-accent);
+    }
+
+    .btn.primary:hover {
+      background: var(--accent);
+      filter: brightness(1.08);
+    }
+
+    .btn.danger {
+      color: var(--danger);
+    }
+
+    .btn.danger:hover {
+      background: var(--danger-soft);
+    }
+
+    .btn.block {
+      width: 100%;
+    }
+
+    .btn[aria-expanded="true"]:not(.ghost):not(.primary) {
+      background: var(--accent-soft);
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    /* ─── Text-Helfer (zwei Textstufen: --text und --text-2) ─────────────── */
+    .muted {
+      color: var(--text-2);
+    }
+
+    .small {
+      font-size: var(--fs-sm);
+    }
+
+    .mono {
+      font-family: var(--font-mono);
+      font-size: var(--fs-sm);
+      word-break: break-all;
+      user-select: text;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      flex: none;
+      padding: 2px 8px;
+      border-radius: var(--r-pill);
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-size: var(--fs-sm);
+      font-weight: 700;
+      line-height: 1.3;
+    }
+
+    .note {
+      padding: var(--s3) var(--s4);
+      border-radius: var(--r-sm);
+      background: var(--surface-2);
+      border-left: 4px solid var(--accent);
+      font-size: var(--fs-sm);
+    }
+
+    .note.warn {
+      border-left-color: var(--warn);
+    }
+
+    .note.danger {
+      border-left-color: var(--danger);
+      background: var(--danger-soft);
+    }
+
+    .row {
+      display: flex;
+      align-items: center;
+      gap: var(--s3);
+      flex-wrap: wrap;
+    }
+
+    .row.between {
+      justify-content: space-between;
+    }
+
+    .row.end {
+      justify-content: flex-end;
+    }
+
+    .row.top {
+      align-items: flex-start;
+    }
+
+    .row>.grow {
+      flex: 1 1 180px;
+      min-width: 0;
+    }
+
+    .stack {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: var(--s4);
+    }
+
+    /* ─── Formulare ──────────────────────────────────────────────────────── */
+    .field {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: var(--s1);
+    }
+
+    .field label {
+      font-weight: 600;
+    }
+
+    .input {
+      min-height: var(--tap);
+      padding: 0 var(--s3);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--r-sm);
+      background: var(--surface);
+      color: var(--text);
+      font: 400 var(--fs-md) var(--font-ui);
+      width: 100%;
+      min-width: 0;
+      user-select: text;
+    }
+
+    textarea.input {
+      padding: var(--s2) var(--s3);
+      line-height: 1.5;
+      resize: none;
+    }
+
+    .input.mono {
+      font-family: var(--font-mono);
+      font-size: var(--fs-sm);
+    }
+
+    .input::placeholder {
+      color: var(--text-2);
+      opacity: .8;
+    }
+
+    .input:hover {
+      border-color: var(--text);
+    }
+
+    .input.error {
+      border-color: var(--danger);
+    }
+
+    .error-text {
+      color: var(--danger);
+      font-size: var(--fs-sm);
+      font-weight: 600;
+    }
+
+    .error-text:empty {
+      display: none;
+    }
+
+    .linkrow {
+      display: flex;
+      gap: var(--s2);
+    }
+
+    .linkrow .input {
+      flex: 1;
+    }
+
+    .linkrow .btn {
+      flex: none;
+    }
+
+    .switch {
+      appearance: none;
+      width: 52px;
+      height: 30px;
+      border-radius: var(--r-pill);
+      border: 1px solid var(--border-strong);
+      background: var(--surface-2);
+      position: relative;
+      cursor: pointer;
+      flex: none;
+      margin: 7px 0;
+    }
+
+    /* Trefferfläche auf 44 px Höhe vergrößern, ohne den Schalter größer zu zeichnen */
+    .switch::before {
+      content: "";
+      position: absolute;
+      inset: -8px -1px;
+    }
+
+    .switch::after {
+      content: "";
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      background: var(--border-strong);
+      transition: transform .15s;
+    }
+
+    .switch:checked {
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+
+    .switch:checked::after {
+      transform: translateX(22px);
+      background: var(--on-accent);
+    }
+
+    /* ─── Schublade (Notizbuch-Liste): immer Überlagerung, nicht anheftbar ─ */
     .sidebar {
       position: fixed;
       left: 0;
@@ -779,241 +1006,131 @@
       display: block;
     }
 
-    .brand {
+    .drawer-head {
       display: flex;
       align-items: center;
-      gap: 10px;
-      padding: calc(16px + var(--safe-top)) 16px 14px;
+      justify-content: space-between;
+      gap: var(--s2);
+      padding: calc(var(--s3) + var(--safe-top)) var(--s3) var(--s3) var(--s4);
       border-bottom: 1px solid var(--border);
     }
 
-    .brand-icon {
-      font-size: 18px;
-    }
-
-    .brand-name {
+    .drawer-head h2 {
       font-size: var(--fs-lg);
       font-weight: 700;
     }
 
-    .notebook-section {
+    .drawer-list {
       flex: 1;
-      padding: 12px 8px;
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
+      min-height: 0;
       overflow-y: auto;
+      padding: var(--s2);
+      touch-action: pan-y;
+      overscroll-behavior: contain;
     }
 
-    .section-label {
-      font-size: var(--fs-sm);
-      font-weight: 700;
-      color: var(--text-2);
-      padding: 0 8px 8px;
+    #notebook-list {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 2px;
+      margin-bottom: 2px;
     }
 
-    .notebook-tab {
+    .nb {
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      padding: 9px 12px;
+      min-width: 0;
+      min-height: var(--tap);
       border-radius: var(--r-sm);
-      color: var(--text);
-      font-size: var(--fs-md);
+      cursor: pointer;
+    }
+
+    .nb .menu-item {
+      flex: 1;
+      min-width: 0;
       font-weight: 600;
-      transition: background 0.15s, color 0.15s;
-      text-align: left;
-      width: 100%;
-    }
-
-    .notebook-tab:hover {
-      background: var(--surface-2);
-    }
-
-    .notebook-tab.active {
-      background: var(--accent-soft);
-      color: var(--accent);
     }
 
     .nb-name {
       flex: 1;
+      min-width: 0;
       overflow: hidden;
       text-overflow: ellipsis;
-      white-space: nowrap;
     }
 
-    .nb-actions {
-      display: flex;
-      gap: 2px;
-      opacity: 0;
-      transition: opacity 0.15s;
-      flex-shrink: 0;
-    }
-
-    .notebook-tab:hover .nb-actions {
-      opacity: 1;
-    }
-
-    .nb-action-btn {
-      width: 26px;
-      height: 26px;
-      border-radius: 4px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      color: var(--text-2);
-      transition: background 0.15s, color 0.15s;
-    }
-
-    .nb-action-btn:hover {
-      background: var(--surface);
-      color: var(--text);
-    }
-
-    .nb-action-btn.danger:hover {
-      color: var(--danger);
-    }
-
-    /* Touch: Longpress-Menü */
-    .nb-context-menu {
-      position: fixed;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--r-sm);
-      padding: 4px;
-      z-index: 300;
-      box-shadow: var(--shadow);
-      min-width: 160px;
-    }
-
-    .nb-context-menu.hidden {
-      display: none;
-    }
-
-    .nb-context-item {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      width: 100%;
-      min-height: var(--tap);
-      padding: 8px 12px;
-      border-radius: 5px;
-      color: var(--text);
-      font-size: var(--fs-md);
-      text-align: left;
-    }
-
-    .nb-context-item:hover {
-      background: var(--surface-2);
-    }
-
-    .nb-context-item.danger {
-      color: var(--danger);
-    }
-
-    .nb-add-btn {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 9px 12px;
-      border-radius: var(--r-sm);
-      color: var(--accent);
-      font-size: var(--fs-md);
-      font-weight: 600;
-      transition: background 0.15s, color 0.15s;
-      width: 100%;
-    }
-
-    .nb-add-btn:hover {
-      background: var(--surface-2);
-    }
-
-    .sidebar-footer {
-      padding: 10px 8px calc(14px + var(--safe-bottom));
-      border-top: 1px solid var(--border);
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
-      overflow-y: auto;
-    }
-
-    .status-row {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 6px 12px;
-      min-height: 32px;
-    }
-
-    .status-dot {
-      width: 10px;
-      height: 10px;
-      border-radius: 50%;
-      background: var(--border-strong);
-      transition: background 0.3s;
-      flex-shrink: 0;
-    }
-
-    .status-dot.connected {
-      background: var(--ok);
-    }
-
-    .peer-label {
-      font-size: var(--fs-sm);
-      color: var(--text-2);
-    }
-
-    .footer-btn {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 8px 12px;
-      border-radius: var(--r-sm);
-      color: var(--text);
-      font-size: var(--fs-md);
-      font-weight: 500;
-      transition: background 0.15s, color 0.15s;
-      width: 100%;
-    }
-
-    .footer-btn:hover {
-      background: var(--surface-2);
-    }
-
-    .footer-btn svg {
-      flex-shrink: 0;
-    }
-
-    .footer-btn.active {
+    .nb.current {
       background: var(--accent-soft);
+    }
+
+    .nb.current .menu-item {
       color: var(--accent);
     }
 
-    /* ─── Rename Input ───────────────────────────────────────────────────── */
-    .rename-input {
+    .nb.current .menu-item:hover,
+    .nb.current .btn.ghost:hover {
       background: transparent;
-      border: none;
-      border-bottom: 1px solid var(--accent);
-      color: var(--text);
-      font-size: var(--fs-md);
+    }
+
+    .nb-add {
+      color: var(--accent);
       font-weight: 600;
-      outline: none;
-      padding: 2px 4px;
-      width: 200px;
-      font-family: inherit;
+    }
+
+    .rename-input {
+      flex: 1;
+      min-width: 0;
+      min-height: 36px;
+      margin: 0 var(--s1);
+      padding: 0 var(--s2);
+      border: 1px solid var(--accent);
+      border-radius: var(--r-sm);
+      background: var(--surface);
+      color: var(--text);
+      font: 600 var(--fs-md) var(--font-ui);
       user-select: text;
     }
 
-    /* ─── Modals (Inhalt folgt in Teil B/C, hier nur neue Tokens) ────────── */
+    .drawer-foot {
+      display: flex;
+      align-items: center;
+      gap: var(--s1);
+      padding: var(--s2) var(--s2) calc(var(--s2) + var(--safe-bottom));
+      border-top: 1px solid var(--border);
+    }
+
+    .drawer-foot .status {
+      flex: 1;
+      min-width: 0;
+      width: auto;
+      padding: 0 var(--s3);
+      justify-content: flex-start;
+    }
+
+    .drawer-foot .status span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* „⋯“-Menü eines Notizbuchs: eine Fläche für Maus und Touch, per JS am Knopf ausgerichtet */
+    .popover.nb-menu {
+      position: fixed;
+      z-index: 60;
+      top: 0;
+      left: 0;
+      min-width: 200px;
+      padding: var(--s2);
+    }
+
+    /* ─── Dialoge ────────────────────────────────────────────────────────── */
     .modal-overlay {
       position: fixed;
       inset: 0;
-      background: var(--scrim);
-      backdrop-filter: blur(6px);
+      z-index: 200;
       display: flex;
       align-items: center;
       justify-content: center;
-      z-index: 200;
+      padding: max(var(--s4), var(--safe-top)) max(var(--s4), var(--safe-right)) max(var(--s4), var(--safe-bottom)) max(var(--s4), var(--safe-left));
+      background: var(--scrim);
       animation: fadeIn 0.2s ease;
     }
 
@@ -1031,113 +1148,187 @@
       }
     }
 
-    .modal {
+    .dialog {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      align-content: start;
+      gap: var(--s4);
+      width: min(520px, 100%);
+      max-height: 100%;
+      overflow-x: hidden;
+      overflow-y: auto;
+      padding: var(--s5);
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: var(--r-lg);
-      width: 380px;
-      max-width: calc(100vw - 32px);
-      max-height: calc(100dvh - 32px);
-      overflow-y: auto;
       box-shadow: var(--shadow);
+      touch-action: pan-y;
+      overscroll-behavior: contain;
     }
 
-    .modal-header {
+    .dialog.wide {
+      width: min(820px, 100%);
+      min-height: min(600px, 100%);
+    }
+
+    .dialog-head {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 16px 18px;
-      border-bottom: 1px solid var(--border);
+      gap: var(--s3);
     }
 
-    .modal-header h2 {
+    .dialog h2 {
       font-size: var(--fs-lg);
+      font-weight: 700;
+      line-height: 1.3;
+      overflow-wrap: anywhere;
+    }
+
+    .dialog h3 {
+      font-size: var(--fs-md);
       font-weight: 700;
     }
 
-    .modal-close {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      width: 36px;
-      height: 36px;
+    .dialog code {
+      font-family: var(--font-mono);
+      font-size: var(--fs-sm);
+    }
+
+    .keybox {
+      padding: var(--s3);
+      border: 1px solid var(--border);
       border-radius: var(--r-sm);
-      color: var(--text);
-      transition: background 0.15s;
-    }
-
-    .modal-close:hover {
       background: var(--surface-2);
-    }
-
-    .modal-body {
-      padding: 18px;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 14px;
+      word-break: normal;
+      overflow-wrap: anywhere;
+      user-select: all;
     }
 
     .qr-wrap {
+      width: fit-content;
+      margin: 0 auto;
+      padding: 10px;
       background: #ffffff;
       border-radius: var(--r-sm);
-      padding: 10px;
-      line-height: 0;
       outline: 1px solid var(--border);
+      line-height: 0;
     }
 
-    .qr-wrap canvas {
+    .qr-wrap canvas,
+    .qr-wrap img {
       display: block;
-      border-radius: 4px;
     }
 
-    .modal-hint {
-      font-size: var(--fs-sm);
-      color: var(--text-2);
-      text-align: center;
-      line-height: 1.6;
-    }
-
-    .link-row {
-      display: flex;
-      gap: 8px;
+    .scan-video {
       width: 100%;
-    }
-
-    .link-input {
-      flex: 1;
-      background: var(--surface);
-      border: 1px solid var(--border-strong);
+      max-height: 40vh;
       border-radius: var(--r-sm);
-      color: var(--text);
-      font-size: var(--fs-sm);
-      padding: 8px 10px;
-      outline: none;
-      min-width: 0;
-      font-family: var(--font-mono);
-      user-select: text;
+      background: #0b0a12;
     }
 
-    .link-input::placeholder {
-      color: var(--text-2);
-      opacity: .8;
+    .seg.tabbar {
+      width: 100%;
+      margin: 0;
     }
 
-    .copy-btn {
-      padding: 8px 14px;
-      min-height: 40px;
-      background: var(--accent);
-      border: 1px solid var(--accent);
-      border-radius: var(--r-sm);
-      color: var(--on-accent);
-      font-size: var(--fs-md);
+    /* Einstellungen: links die Bereiche, rechts der gewählte Bereich */
+    .sheet {
+      display: grid;
+      grid-template-columns: 210px minmax(0, 1fr);
+      gap: var(--s5);
+      align-items: start;
+    }
+
+    .tabs {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 2px;
+    }
+
+    .tabs [role="tab"][aria-selected="true"] {
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-weight: 700;
+    }
+
+    .panel {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: var(--s4);
+    }
+
+    .set {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: var(--s4);
+      padding: var(--s3) 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .set:last-child {
+      border-bottom: 0;
+    }
+
+    .set-title {
+      display: block;
       font-weight: 600;
-      transition: filter 0.15s, background 0.15s;
-      flex-shrink: 0;
     }
 
-    .copy-btn:hover {
-      filter: brightness(1.08);
+    .set p {
+      color: var(--text-2);
+      font-size: var(--fs-sm);
+      max-width: 52ch;
+    }
+
+    .set .seg {
+      margin: 0;
+      flex: none;
+    }
+
+    @media (max-width: 700px) {
+      .modal-overlay {
+        padding: max(var(--s2), var(--safe-top)) max(var(--s2), var(--safe-right)) max(var(--s2), var(--safe-bottom)) max(var(--s2), var(--safe-left));
+      }
+
+      .dialog {
+        padding: var(--s4);
+      }
+
+      .sheet {
+        grid-template-columns: minmax(0, 1fr);
+        gap: var(--s4);
+      }
+
+      .tabs {
+        grid-template-columns: 1fr 1fr;
+      }
+
+      .tabs [role="tab"] {
+        white-space: normal;
+        line-height: 1.2;
+        padding: 0 var(--s2);
+        gap: var(--s2);
+      }
+
+      .tabs [role="tab"] .i {
+        display: none;
+      }
+
+      .set {
+        flex-wrap: wrap;
+      }
+
+      .set .seg {
+        flex: 1 1 100%;
+      }
+    }
+
+    @media (pointer: coarse) {
+      .rename-input {
+        min-height: var(--tap);
+      }
     }
 
     /* ─── Vollbild (Zen): Leisten schweben über der Zeichenfläche ────────── */
@@ -1310,28 +1501,6 @@
       }
     }
 
-    /* Bedienflächen mind. 44 px bei Touch — auch in Sidebar und Dialogen */
-    @media (pointer: coarse) {
-
-      .notebook-tab,
-      .nb-add-btn,
-      .footer-btn,
-      .status-row,
-      .copy-btn {
-        min-height: var(--tap);
-      }
-
-      .modal-close {
-        width: var(--tap);
-        height: var(--tap);
-      }
-
-      .nb-action-btn {
-        width: 36px;
-        height: 36px;
-      }
-    }
-
     /* ─── Scrollbar ──────────────────────────────────────────────────────── */
     ::-webkit-scrollbar {
       width: 6px;
@@ -1356,6 +1525,12 @@
     .menu-item:focus-visible {
       outline-offset: -3px;
     }
+
+    /* Der Dialog selbst bekommt beim Öffnen den Fokus — ohne Ring um die ganze Fläche */
+    [role="dialog"]:focus,
+    [role="dialog"]:focus-visible {
+      outline: none;
+    }
   </style>
 </head>
 
@@ -1377,96 +1552,45 @@
     <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></symbol>
     <symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5M12 15V3"/></symbol>
     <symbol id="i-zen" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+    <symbol id="i-book" viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></symbol>
+    <symbol id="i-edit" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
+    <symbol id="i-camera" viewBox="0 0 24 24"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m17 8-5-5-5 5M12 3v12"/></symbol>
+    <symbol id="i-device" viewBox="0 0 24 24"><rect x="5" y="2" width="14" height="20" rx="2"/><path d="M12 18h.01"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></symbol>
     <symbol id="i-fit" viewBox="0 0 24 24"><path d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"/><rect x="8" y="8" width="8" height="8" rx="1"/></symbol>
   </svg>
 
   <div class="app">
 
 
-    <!-- ── Sidebar ─────────────────────────────────────────────────────── -->
-    <aside class="sidebar" id="sidebar" aria-label="Notizbücher">
-      <div class="brand">
-        <span class="brand-icon">📒</span>
-        <span class="brand-name">Notizbuch</span>
+    <!-- ── Schublade: Notizbuch-Liste (Überlagerung hinter dem Titel-Knopf) ── -->
+    <aside class="sidebar" id="sidebar" aria-labelledby="drawer-title">
+      <div class="drawer-head">
+        <h2 id="drawer-title">Notizbücher</h2>
+        <button class="btn ghost icon" id="btn-close-sidebar" aria-label="Notizbuch-Liste schließen" title="Schließen">
+          <svg class="i" aria-hidden="true"><use href="#i-x" /></svg>
+        </button>
       </div>
 
-      <div class="notebook-section">
-        <div class="section-label">Notizbücher</div>
+      <div class="drawer-list">
         <div id="notebook-list">
-          <!-- Dynamisch via renderUI() -->
+          <!-- Dynamisch via renderNotebookList() -->
         </div>
-        <button class="nb-add-btn" id="btn-add-notebook">+ Neues Notizbuch</button>
+        <button class="menu-item nb-add" id="btn-add-notebook">
+          <svg class="i" aria-hidden="true"><use href="#i-plus" /></svg> Neues Notizbuch
+        </button>
       </div>
 
-      <div class="sidebar-footer">
-        <div class="status-row" id="status-row" title="Klick: Sync-Diagnose ein/aus" style="cursor:pointer;">
-          <span class="status-dot" id="status-dot"></span>
-          <span class="peer-label" id="peer-count"></span>
-        </div>
-        <button class="footer-btn" id="btn-pen-only" title="Nur Stift zum Zeichnen (Finger ignorieren)">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-            stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 19l7-7 3 3-7 7-3-3z" />
-            <path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z" />
-          </svg>
-          Nur Stift
+      <div class="drawer-foot">
+        <button class="status btn ghost busy" id="status-row" aria-label="Sync-Status" title="Verbindungseinstellungen öffnen">
+          <span id="status-text">Verbindet …</span>
         </button>
-        <button class="footer-btn" id="btn-connection" title="P2P-Verbindung / TURN-Einstellungen">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-            stroke-linecap="round" stroke-linejoin="round">
-            <path d="M5 12h14" />
-            <path d="M12 5v14" />
-            <circle cx="12" cy="12" r="9" />
-          </svg>
-          Verbindung
-        </button>
-        <button class="footer-btn" id="btn-share-sidebar" title="Notebook teilen">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-            stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="18" cy="5" r="3" />
-            <circle cx="6" cy="12" r="3" />
-            <circle cx="18" cy="19" r="3" />
-            <line x1="8.59" y1="13.51" x2="15.42" y2="17.49" />
-            <line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
-          </svg>
-          Teilen
-        </button>
-        <button class="footer-btn" id="btn-scan-share" title="Geteiltes Notebook per QR-Code scannen">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M3 7V5a2 2 0 0 1 2-2h2" />
-            <path d="M21 7V5a2 2 0 0 0-2-2h-2" />
-            <path d="M3 17v2a2 2 0 0 0 2 2h2" />
-            <path d="M21 17v2a2 2 0 0 1-2 2h-2" />
-            <path d="M8 12h8" />
-            <path d="M12 8v8" />
-          </svg>
-          QR scannen
-        </button>
-        <button class="footer-btn" id="btn-sync-link" title="Sync-Link für andere Geräte">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-            stroke-linecap="round" stroke-linejoin="round">
-            <rect x="5" y="2" width="14" height="20" rx="2" ry="2" />
-            <line x1="12" y1="18" x2="12.01" y2="18" />
-          </svg>
-          Geräte-Sync
-        </button>
-        <button class="footer-btn" id="btn-export" title="Export">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-            stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-            <polyline points="7 10 12 15 17 10" />
-            <line x1="12" y1="15" x2="12" y2="3" />
-          </svg>
-          Export
-        </button>
-        <button class="footer-btn" id="btn-import" title="Import">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-            stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-            <polyline points="17 8 12 3 7 8" />
-            <line x1="12" y1="3" x2="12" y2="15" />
-          </svg>
-          Import
+        <button class="btn ghost icon" id="btn-settings" aria-label="Einstellungen" title="Einstellungen">
+          <svg class="i" aria-hidden="true"><use href="#i-gear" /></svg>
         </button>
       </div>
     </aside>
@@ -1536,7 +1660,7 @@
         </button>
         <span class="divider"></span>
         <button class="status btn ghost busy" id="sync-status" aria-label="Sync-Status"
-          title="Sync-Status · Klick: Sync-Diagnose ein/aus">
+          title="Verbindungseinstellungen öffnen">
           <span class="sync-text" id="sync-text">Verbindet …</span>
         </button>
         <span class="pop-wrap">
@@ -1623,197 +1747,305 @@
     </main>
   </div>
 
-  <!-- Erst-Start Modal -->
-  <div class="modal-overlay hidden" id="firststart-modal">
-    <div class="modal" style="width: 380px;">
-      <div class="modal-header">
-        <h2>Willkommen bei Notizbuch</h2>
-      </div>
-      <div class="modal-body" style="gap: 16px;">
-        <p class="modal-hint" style="text-align: left; width: 100%;">
-          Deine Daten werden Ende-zu-Ende verschlüsselt. Zum Synchronisieren zwischen Geräten brauchst du deinen persönlichen Schlüssel.
-        </p>
-        <button class="copy-btn" id="btn-new-start" style="width: 100%; text-align: center; padding: 12px;">
-          Neues Notizbuch starten
-        </button>
-        <button class="copy-btn" id="btn-import-key"
-          style="width: 100%; text-align: center; padding: 12px; background: transparent; border: 1px solid var(--border-strong); color: var(--text);">
-          Bestehenden Key importieren
-        </button>
-      </div>
-    </div>
-  </div>
-
-  <!-- Key-Anzeige Modal -->
-  <div class="modal-overlay hidden" id="keydisplay-modal">
-    <div class="modal" style="width: 420px;">
-      <div class="modal-header">
-        <h2>Dein Schlüssel</h2>
-      </div>
-      <div class="modal-body" style="gap: 14px;">
-        <p class="modal-hint" style="text-align: left; width: 100%; color: var(--danger);">
-          Schreibe diesen Schlüssel auf oder speichere ihn sicher ab. Ohne ihn kannst du deine Daten auf anderen Geräten nicht wiederherstellen. Manuelles Aufschreiben wird aus Sicherheitsgründen empfohlen.
-        </p>
-        <div class="qr-wrap" id="keydisplay-qr" style="display: none; align-self: center;"></div>
-        <code id="keydisplay-key" style="display: block; width: 100%; padding: 12px; background: var(--surface-2); border-radius: 6px; font-size: 11px; word-break: break-all; line-height: 1.6; user-select: all; color: var(--accent);"></code>
-        <div style="display: flex; gap: 8px; width: 100%;">
-          <button class="copy-btn" id="btn-copy-key" style="flex: 1; text-align: center;">Kopieren</button>
-          <button class="copy-btn" id="btn-download-key" style="flex: 1; text-align: center;">Als Datei speichern</button>
-        </div>
-        <button class="copy-btn" id="btn-key-confirmed"
-          style="width: 100%; text-align: center; padding: 12px; margin-top: 4px;">
-          Ich habe den Schlüssel gesichert
-        </button>
-      </div>
-    </div>
-  </div>
-
-  <!-- Key-Import Modal -->
-  <div class="modal-overlay hidden" id="keyimport-modal">
-    <div class="modal" style="width: 400px;">
-      <div class="modal-header">
-        <h2>Schlüssel importieren</h2>
-      </div>
-      <div class="modal-body" style="gap: 12px;">
-        <p class="modal-hint" style="text-align: left; width: 100%;">
-          Gib deinen Schlüssel ein oder lade die Key-Datei hoch.
-        </p>
-        <textarea class="link-input" id="keyimport-input" placeholder="64 Hex-Zeichen eingeben..."
-          style="width: 100%; font-size: 12px; padding: 10px 12px; min-height: 60px; resize: none; font-family: monospace;"></textarea>
-        <span id="keyimport-error" style="color: var(--danger); font-size: 12px; min-height: 16px;"></span>
-        <label class="copy-btn"
-          style="width: 100%; text-align: center; cursor: pointer; background: transparent; border: 1px solid var(--border-strong); color: var(--text);">
-          Key-Datei hochladen
-          <input type="file" id="keyimport-file" accept=".txt" style="display: none;">
-        </label>
-        <button class="copy-btn" id="keyimport-ok" style="width: 100%; text-align: center; padding: 12px;">
-          Verbinden
-        </button>
-      </div>
-    </div>
-  </div>
-
-  <!-- Notebook Kontextmenü (Touch Longpress) -->
-  <div class="nb-context-menu hidden" id="nb-context-menu">
-    <button class="nb-context-item" id="nb-ctx-rename">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>
-      Umbenennen
-    </button>
-    <button class="nb-context-item danger" id="nb-ctx-delete">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-      Löschen
-    </button>
-  </div>
-
-  <!-- Sidebar Overlay (mobil) -->
+  <!-- Schublade: Abdunklung -->
   <div class="sidebar-overlay" id="sidebar-overlay"></div>
 
-  <!-- Share Modal -->
+  <!-- „⋯“-Menü eines Notizbuchs (für Maus und Touch gleich) -->
+  <div class="popover nb-menu" id="nb-menu" data-pop hidden role="menu" aria-label="Notizbuch-Aktionen">
+    <div class="menu">
+      <button class="menu-item" id="nb-menu-rename" role="menuitem">
+        <svg class="i" aria-hidden="true"><use href="#i-edit" /></svg> Umbenennen
+      </button>
+      <button class="menu-item" id="nb-menu-share" role="menuitem">
+        <svg class="i" aria-hidden="true"><use href="#i-share" /></svg> Teilen
+      </button>
+      <div class="sep"></div>
+      <button class="menu-item danger" id="nb-menu-delete" role="menuitem">
+        <svg class="i" aria-hidden="true"><use href="#i-trash" /></svg> Löschen
+      </button>
+    </div>
+  </div>
+
+  <!-- Erststart, Schritt 1: neu beginnen oder Schlüssel importieren -->
+  <div class="modal-overlay hidden" id="firststart-modal" data-persistent>
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="firststart-title" tabindex="-1">
+      <div><span class="badge">Schritt 1 von 2</span></div>
+      <h2 id="firststart-title">Willkommen bei Notizbuch</h2>
+      <p class="muted">Deine Notizen werden Ende-zu-Ende verschlüsselt. Dafür bekommt dieses Gerät einen persönlichen Schlüssel – ein Konto oder Passwort gibt es nicht.</p>
+      <button class="btn primary block" id="btn-new-start">Neues Notizbuch starten</button>
+      <button class="btn block" id="btn-import-key">Ich habe schon einen Schlüssel</button>
+    </div>
+  </div>
+
+  <!-- Erststart, Schritt 2: Schlüssel sichern und bestätigen -->
+  <div class="modal-overlay hidden" id="keydisplay-modal" data-persistent>
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="keydisplay-title" tabindex="-1">
+      <div><span class="badge">Schritt 2 von 2</span></div>
+      <h2 id="keydisplay-title">Sichere deinen Schlüssel</h2>
+      <p class="muted">Er entsperrt deine Notizen auf weiteren Geräten. Es gibt keine „Passwort vergessen“-Funktion – ohne ihn lassen sich die Notizen dort nicht wiederherstellen.</p>
+      <p class="mono keybox" id="keydisplay-key" aria-label="Dein Schlüssel"></p>
+      <div class="row">
+        <button class="btn grow" id="btn-download-key">
+          <svg class="i" aria-hidden="true"><use href="#i-download" /></svg> Als Datei
+        </button>
+        <button class="btn grow" id="btn-copy-key">
+          <svg class="i" aria-hidden="true"><use href="#i-copy" /></svg> <span data-label>Kopieren</span>
+        </button>
+      </div>
+      <button class="btn primary block" id="btn-key-confirmed">Ich habe den Schlüssel gesichert</button>
+    </div>
+  </div>
+
+  <!-- Erststart: bestehenden Schlüssel importieren -->
+  <div class="modal-overlay hidden" id="keyimport-modal" data-persistent>
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="keyimport-title" tabindex="-1">
+      <h2 id="keyimport-title">Schlüssel importieren</h2>
+      <p class="muted">Gib den Schlüssel eines deiner Geräte ein oder wähle die gesicherte Schlüsseldatei.</p>
+      <div class="field">
+        <label for="keyimport-input">Schlüssel (64 Hex-Zeichen)</label>
+        <textarea class="input mono" id="keyimport-input" rows="3" autocomplete="off" autocapitalize="off"
+          spellcheck="false" aria-describedby="keyimport-error"></textarea>
+        <span class="error-text" id="keyimport-error" role="alert"></span>
+      </div>
+      <button class="btn block" id="btn-keyimport-file">
+        <svg class="i" aria-hidden="true"><use href="#i-upload" /></svg> Schlüsseldatei wählen
+      </button>
+      <input type="file" id="keyimport-file" accept=".txt" hidden>
+      <div class="row">
+        <button class="btn" id="keyimport-back">Zurück</button>
+        <button class="btn primary grow" id="keyimport-ok">Verbinden</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Rückfrage (nur beim Löschen eines Notizbuchs) -->
+  <div class="modal-overlay hidden" id="confirm-modal">
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-text" tabindex="-1">
+      <h2 id="confirm-title"></h2>
+      <p class="muted" id="confirm-text"></p>
+      <div class="row end">
+        <button class="btn" id="confirm-cancel">Abbrechen</button>
+        <button class="btn danger" id="confirm-ok">Löschen</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Teilen: Einladen / Beitreten -->
   <div class="modal-overlay hidden" id="share-modal">
-    <div class="modal">
-      <div class="modal-header">
-        <h2>Notebook teilen</h2>
-        <button class="modal-close" id="btn-close-share">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
-            stroke-linecap="round">
-            <line x1="18" y1="6" x2="6" y2="18" />
-            <line x1="6" y1="6" x2="18" y2="18" />
-          </svg>
+    <div class="dialog" id="share-dialog" role="dialog" aria-modal="true" aria-labelledby="share-title" tabindex="-1">
+      <div class="dialog-head">
+        <h2 id="share-title">Teilen</h2>
+        <button class="btn ghost icon" id="btn-close-share" aria-label="Schließen" title="Schließen">
+          <svg class="i" aria-hidden="true"><use href="#i-x" /></svg>
         </button>
       </div>
-      <div class="modal-body">
+      <div class="seg tabbar" role="tablist" aria-label="Teilen">
+        <button role="tab" id="share-tab-invite" data-tab="invite" aria-selected="true" aria-controls="share-panel-invite">
+          <svg class="i" aria-hidden="true"><use href="#i-share" /></svg> Einladen
+        </button>
+        <button role="tab" id="share-tab-join" data-tab="join" aria-selected="false" aria-controls="share-panel-join" tabindex="-1">
+          <svg class="i" aria-hidden="true"><use href="#i-camera" /></svg> Beitreten
+        </button>
+      </div>
+
+      <div class="stack" role="tabpanel" id="share-panel-invite" data-panel="invite" aria-labelledby="share-tab-invite">
+        <p><strong id="share-nb-name"></strong> <span class="muted">– wer den Code hat, kann mitlesen und mitzeichnen. Andere Notizbücher bleiben privat.</span></p>
         <div class="qr-wrap" id="qr-container"></div>
-        <p class="modal-hint">Scanne den QR-Code oder kopiere den Link.<br>Gleicher Link = gleiches Notizbuch.</p>
-        <div class="link-row">
-          <input class="link-input" type="text" id="share-link" readonly>
-          <button class="copy-btn" id="btn-copy-link">Kopieren</button>
+        <div class="field">
+          <label for="share-link">Einladungslink</label>
+          <div class="linkrow">
+            <input class="input mono" type="text" id="share-link" readonly>
+            <button class="btn primary" id="btn-copy-link">
+              <svg class="i" aria-hidden="true"><use href="#i-copy" /></svg> <span data-label>Kopieren</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="stack" role="tabpanel" id="share-panel-join" data-panel="join" aria-labelledby="share-tab-join" hidden>
+        <p class="muted">Code eines geteilten Notizbuchs scannen oder den Link einfügen.</p>
+        <div class="row">
+          <button class="btn grow" id="btn-start-scan">
+            <svg class="i" aria-hidden="true"><use href="#i-camera" /></svg> Kamera
+          </button>
+          <button class="btn grow" id="btn-scan-image">
+            <svg class="i" aria-hidden="true"><use href="#i-upload" /></svg> Bild mit QR-Code
+          </button>
+        </div>
+        <video class="scan-video" id="scan-video" autoplay playsinline muted hidden></video>
+        <p class="small muted" id="scan-status" role="status" hidden></p>
+        <div class="field">
+          <label for="join-link">Einladungslink</label>
+          <div class="linkrow">
+            <input class="input" type="text" id="join-link" inputmode="url" autocomplete="off" autocapitalize="off"
+              spellcheck="false" placeholder="https://…#nb-…" aria-describedby="join-error">
+            <button class="btn primary" id="btn-join">Beitreten</button>
+          </div>
+          <span class="error-text" id="join-error" role="alert" hidden>Das ist kein gültiger Einladungslink.</span>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- Verbindungs-Einstellungen Modal -->
-  <div class="modal-overlay hidden" id="connection-modal">
-    <div class="modal" style="width: 420px;">
-      <div class="modal-header">
-        <h2>Verbindung</h2>
-        <button class="modal-close" id="btn-close-connection">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
-            stroke-linecap="round">
-            <line x1="18" y1="6" x2="6" y2="18" />
-            <line x1="6" y1="6" x2="18" y2="18" />
-          </svg>
+  <!-- Einstellungen: ein Ort für Allgemein, Geräte, Verbindung, Daten & Schlüssel -->
+  <div class="modal-overlay hidden" id="settings-modal">
+    <div class="dialog wide" role="dialog" aria-modal="true" aria-labelledby="settings-title" tabindex="-1">
+      <div class="dialog-head">
+        <h2 id="settings-title">Einstellungen</h2>
+        <button class="btn ghost icon" id="btn-close-settings" aria-label="Schließen" title="Schließen">
+          <svg class="i" aria-hidden="true"><use href="#i-x" /></svg>
         </button>
       </div>
-      <div class="modal-body" style="gap: 12px; align-items: stretch;">
-        <p class="modal-hint" style="text-align:left; width:100%;">
-          Direktangabe eines TURN-Servers oder HTTPS-Adresse, die <code>{"iceServers":[…]}</code> liefert.
-          Ohne Eintrag wird nur STUN verwendet. Die Einstellung gilt nur für dieses Gerät. Beim Speichern wird die App neu geladen.
-        </p>
-        <label style="display:flex; flex-direction:column; gap:4px; font-size:12px; color:var(--text-2);">
-          TURN-Server oder ICE-Endpunkt
-          <input class="link-input" type="text" id="conn-turn-url"
-            placeholder="turn:turn.example.org:3478 oder https://…"
-            style="width:100%; font-family: inherit;">
-        </label>
-        <label style="display:flex; flex-direction:column; gap:4px; font-size:12px; color:var(--text-2);">
-          Benutzername (nur bei turn:/turns:)
-          <input class="link-input" type="text" id="conn-turn-user" style="width:100%; font-family: inherit;">
-        </label>
-        <label style="display:flex; flex-direction:column; gap:4px; font-size:12px; color:var(--text-2);">
-          Passwort (nur bei turn:/turns:)
-          <input class="link-input" type="password" id="conn-turn-pass" style="width:100%; font-family: inherit;">
-        </label>
-        <div id="conn-status" style="font-size:12px; color:var(--text-2); min-height:18px;">-</div>
-        <div class="link-row" style="margin-top:4px;">
-          <button class="copy-btn" id="btn-save-connection" style="flex:1;">Speichern</button>
-          <button class="copy-btn" id="btn-close-connection-2"
-            style="flex:1; background:transparent; border:1px solid var(--border-strong); color:var(--text);">Abbrechen</button>
+
+      <div class="sheet" id="settings-sheet">
+        <div class="tabs" role="tablist" aria-label="Bereiche">
+          <button class="menu-item" role="tab" id="set-tab-general" data-tab="general" aria-selected="true" aria-controls="set-panel-general">
+            <svg class="i" aria-hidden="true"><use href="#i-settings" /></svg> Allgemein
+          </button>
+          <button class="menu-item" role="tab" id="set-tab-devices" data-tab="devices" aria-selected="false" aria-controls="set-panel-devices" tabindex="-1">
+            <svg class="i" aria-hidden="true"><use href="#i-device" /></svg> Geräte
+          </button>
+          <button class="menu-item" role="tab" id="set-tab-connection" data-tab="connection" aria-selected="false" aria-controls="set-panel-connection" tabindex="-1">
+            <svg class="i" aria-hidden="true"><use href="#i-share" /></svg> Verbindung
+          </button>
+          <button class="menu-item" role="tab" id="set-tab-data" data-tab="data" aria-selected="false" aria-controls="set-panel-data" tabindex="-1">
+            <svg class="i" aria-hidden="true"><use href="#i-download" /></svg> Daten &amp; Schlüssel
+          </button>
         </div>
-      </div>
-    </div>
-  </div>
 
-  <!-- Export Modal -->
-  <div class="modal-overlay hidden" id="export-modal">
-    <div class="modal" style="width: 420px;">
-      <div class="modal-header">
-        <h2>Export</h2>
-        <button class="modal-close" id="btn-close-export">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
-            <line x1="18" y1="6" x2="6" y2="18" />
-            <line x1="6" y1="6" x2="18" y2="18" />
-          </svg>
-        </button>
-      </div>
-      <div class="modal-body" style="gap: 12px;">
-        <p class="modal-hint" style="text-align:left; width:100%;">Wähle, ob du alle Notizbücher verschlüsselt sichern oder die aktuelle Seite als PNG oder SVG exportieren möchtest.</p>
-        <button class="copy-btn" id="btn-export-enc" style="width:100%; text-align:center; padding:12px;">Alle Notizbücher als .enc</button>
-        <button class="copy-btn" id="btn-export-png" style="width:100%; text-align:center; padding:12px; background: transparent; border: 1px solid var(--border-strong); color: var(--text);">Aktuelle Seite als PNG</button>
-        <button class="copy-btn" id="btn-export-svg" style="width:100%; text-align:center; padding:12px; background: transparent; border: 1px solid var(--border-strong); color: var(--text);">Aktuelle Seite als Vektorgrafik (.svg)</button>
-      </div>
-    </div>
-  </div>
+        <div>
+          <!-- Allgemein -->
+          <section class="panel" role="tabpanel" id="set-panel-general" data-panel="general" aria-labelledby="set-tab-general">
+            <h3>Darstellung</h3>
+            <div class="set">
+              <div>
+                <span class="set-title" id="lbl-theme">Erscheinungsbild</span>
+                <p>Betrifft nur Leisten und Dialoge. Die Zeichenfläche bleibt immer weiß.</p>
+              </div>
+              <div class="seg" role="group" aria-labelledby="lbl-theme" id="theme-seg">
+                <button data-choice="system" aria-pressed="true">System</button>
+                <button data-choice="light" aria-pressed="false">Hell</button>
+                <button data-choice="dark" aria-pressed="false">Dunkel</button>
+              </div>
+            </div>
+            <h3>Eingabe</h3>
+            <div class="set">
+              <div>
+                <label class="set-title" for="set-pen-only">Nur der Stift zeichnet</label>
+                <p>Finger zeichnen nicht. Schützt vor Strichen durch die aufliegende Hand.</p>
+              </div>
+              <input class="switch" type="checkbox" id="set-pen-only">
+            </div>
+          </section>
 
-  <!-- Scan Share Modal -->
-  <div class="modal-overlay hidden" id="scan-modal">
-    <div class="modal">
-      <div class="modal-header">
-        <h2>Geteiltes Notebook scannen</h2>
-        <button class="modal-close" id="btn-close-scan">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
-            <line x1="18" y1="6" x2="6" y2="18" />
-            <line x1="6" y1="6" x2="18" y2="18" />
-          </svg>
-        </button>
-      </div>
-      <div class="modal-body">
-        <video id="scan-video" autoplay playsinline muted style="width:100%; border-radius:12px; background:#0b0a12; display:none;"></video>
-        <div id="scan-status" class="modal-hint">Kamera wird vorbereitet…</div>
-        <div class="link-row" style="margin-top:12px; gap:8px; flex-wrap:wrap;">
-          <button class="copy-btn" id="btn-start-scan">Kamera starten</button>
-          <button class="copy-btn" id="btn-scan-image">Bild auswählen</button>
-          <button class="copy-btn" id="btn-scan-paste">Link einfügen</button>
+          <!-- Geräte -->
+          <section class="panel" role="tabpanel" id="set-panel-devices" data-panel="devices" aria-labelledby="set-tab-devices" hidden>
+            <h3>Meine Geräte</h3>
+            <p class="muted">Geräte mit demselben Schlüssel zeigen dieselben Notizbücher. <span id="set-device-status"></span></p>
+            <div class="row">
+              <button class="btn primary" id="btn-pair-toggle" aria-expanded="false" aria-controls="pair-box">
+                <svg class="i" aria-hidden="true"><use href="#i-plus" /></svg> Gerät hinzufügen
+              </button>
+              <button class="btn" id="btn-device-scan" aria-expanded="false" aria-controls="device-scan-box">
+                <svg class="i" aria-hidden="true"><use href="#i-camera" /></svg> Code eines Geräts scannen
+              </button>
+            </div>
+            <div class="stack" id="pair-box" hidden>
+              <div class="note warn"><strong>Dieser Code enthält deinen Schlüssel.</strong> Nur auf eigenen Geräten scannen oder öffnen – wer ihn hat, liest alle Notizbücher mit.</div>
+              <div class="row top">
+                <div class="qr-wrap" id="sync-qr"></div>
+                <div class="stack grow">
+                  <p class="small muted">Mit dem anderen Gerät scannen oder den Sync-Link dort öffnen.</p>
+                  <p class="mono" id="sync-link-text"></p>
+                  <div>
+                    <button class="btn" id="btn-copy-sync-link">
+                      <svg class="i" aria-hidden="true"><use href="#i-copy" /></svg> <span data-label>Link kopieren</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="stack" id="device-scan-box" hidden>
+              <div class="note warn"><strong>Dieses Gerät übernimmt den Schlüssel des anderen Geräts.</strong> Halte dessen Sync-Code (Einstellungen → Geräte → Gerät hinzufügen) vor die Kamera.</div>
+              <video class="scan-video" id="device-scan-video" autoplay playsinline muted hidden></video>
+              <p class="small muted" id="device-scan-status" role="status" hidden></p>
+              <div class="row">
+                <button class="btn" id="btn-device-scan-image">
+                  <svg class="i" aria-hidden="true"><use href="#i-upload" /></svg> Bild mit QR-Code
+                </button>
+              </div>
+            </div>
+          </section>
+
+          <!-- Verbindung -->
+          <section class="panel" role="tabpanel" id="set-panel-connection" data-panel="connection" aria-labelledby="set-tab-connection" hidden>
+            <h3>Verbindung</h3>
+            <p class="muted">Gilt nur für dieses Gerät und wird nicht synchronisiert.</p>
+            <div class="field">
+              <label for="conn-turn-url">TURN-Server oder ICE-Endpunkt</label>
+              <input class="input" type="text" id="conn-turn-url" autocomplete="off" autocapitalize="off" spellcheck="false"
+                placeholder="turn:turn.example.org:3478 oder https://…" aria-describedby="conn-turn-hint">
+              <span class="small muted" id="conn-turn-hint">Leer lassen: nur STUN. Nötig hinter strengem NAT. Eine https-Adresse muss <code>{"iceServers":[…]}</code> liefern. Eine Änderung lädt die App neu.</span>
+            </div>
+            <div class="row top">
+              <div class="field grow">
+                <label for="conn-turn-user">Benutzername</label>
+                <input class="input" type="text" id="conn-turn-user" autocomplete="off" autocapitalize="off" spellcheck="false">
+              </div>
+              <div class="field grow">
+                <label for="conn-turn-pass">Passwort</label>
+                <input class="input" type="password" id="conn-turn-pass" autocomplete="off">
+              </div>
+            </div>
+            <div class="field">
+              <label for="conn-relay-url">Relay-Server</label>
+              <input class="input" type="text" id="conn-relay-url" inputmode="url" autocomplete="off" autocapitalize="off"
+                spellcheck="false" aria-describedby="conn-relay-hint conn-relay-error">
+              <span class="error-text" id="conn-relay-error" role="alert" hidden></span>
+              <span class="small muted" id="conn-relay-hint">Adresse mit wss:// oder ws://. Leer lassen: Standard (<span id="conn-relay-default"></span>).</span>
+              <div>
+                <button class="btn" id="btn-relay-default">Standard wiederherstellen</button>
+              </div>
+            </div>
+            <div class="set">
+              <div>
+                <label class="set-title" for="set-diag">Sync-Diagnose anzeigen</label>
+                <p>Blendet Version, Verbindungsweg und Strichzahl unten rechts ein.</p>
+              </div>
+              <input class="switch" type="checkbox" id="set-diag">
+            </div>
+            <div class="row">
+              <button class="btn primary" id="btn-save-connection">Speichern</button>
+              <span class="small muted grow" id="conn-status" role="status"></span>
+            </div>
+          </section>
+
+          <!-- Daten & Schlüssel -->
+          <section class="panel" role="tabpanel" id="set-panel-data" data-panel="data" aria-labelledby="set-tab-data" hidden>
+            <h3>Schlüssel</h3>
+            <div class="note danger"><strong>Ohne Schlüssel keine Wiederherstellung.</strong> Geht er verloren, sind die Notizen auf neuen Geräten nicht mehr lesbar.</div>
+            <div class="row">
+              <button class="btn" id="btn-key-download">
+                <svg class="i" aria-hidden="true"><use href="#i-download" /></svg> Als Datei sichern
+              </button>
+              <button class="btn" id="btn-key-copy">
+                <svg class="i" aria-hidden="true"><use href="#i-copy" /></svg> <span data-label>Kopieren</span>
+              </button>
+              <button class="btn" id="btn-key-show" aria-expanded="false" aria-controls="key-box"><span data-label>Anzeigen</span></button>
+            </div>
+            <p class="mono keybox" id="key-box" aria-label="Dein Schlüssel" hidden></p>
+            <h3>Sicherung</h3>
+            <div class="row">
+              <button class="btn" id="btn-export-enc">
+                <svg class="i" aria-hidden="true"><use href="#i-download" /></svg> Alle Notizbücher exportieren
+              </button>
+              <button class="btn" id="btn-import">
+                <svg class="i" aria-hidden="true"><use href="#i-upload" /></svg> Sicherung importieren
+              </button>
+            </div>
+            <p class="muted small">Der Export ist eine verschlüsselte .enc-Datei. Einzelne Seiten als PNG oder SVG gibt es im Seiten-Menü „⋯“.</p>
+            <p class="muted small" id="settings-version"></p>
+          </section>
         </div>
       </div>
     </div>
@@ -1838,7 +2070,7 @@
       font: 11px/1.35 monospace;
       opacity: 0.92;
       pointer-events: none;
-      white-space: normal;
+      white-space: pre-line;
       word-break: break-word;
     }
     #console.debug-off { display: none; }

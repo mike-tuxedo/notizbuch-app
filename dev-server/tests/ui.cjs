@@ -229,16 +229,17 @@ const ok = (cond, label, extra = '') => { if (!cond) fails++; console.log(`${con
   ok((await look()).paper === 'rgb(255, 255, 255)', '360 dunkel: Papier bleibt weiß');
   await $(() => window.setTheme('system')); await sleep(200);
 
-  // ── Diagnose-Overlay per Klick auf den Sync-Status ─────────────────────
+  // ── Sync-Status öffnet die Einstellungen bei „Verbindung“ (Teil B; Details in ui-b.cjs) ──
   await page.setViewportSize({ width: 1400, height: 900 }); await sleep(400);
   ok(/\S/.test(await $(() => document.getElementById('sync-text').textContent)), 'Sync-Status zeigt Text', await $(() => document.getElementById('sync-text').textContent));
   await page.click('#sync-status'); await sleep(200);
-  ok(await $(() => !document.getElementById('console').classList.contains('debug-off')) && /redesign-v41/.test(await $(() => document.getElementById('console').innerText)), 'Klick auf den Sync-Status schaltet die Diagnose ein (Version v41)');
-  await page.click('#sync-status'); await sleep(200);
-  ok(await $(() => document.getElementById('console').classList.contains('debug-off')), 'zweiter Klick schaltet sie aus');
-  await $(() => document.getElementById('status-row').click());
-  ok(await $(() => !document.getElementById('console').classList.contains('debug-off')), 'Statuszeile in der Sidebar schaltet weiterhin um');
-  await $(() => document.getElementById('status-row').click());
+  ok(await visible('#settings-modal') && await visible('#set-panel-connection') && await $(() => document.getElementById('console').classList.contains('debug-off')), 'Klick auf den Sync-Status öffnet Einstellungen → Verbindung (Diagnose bleibt aus)');
+  await page.click('#set-diag'); await sleep(200);
+  ok(await $(() => !document.getElementById('console').classList.contains('debug-off')) && /redesign-v42/.test(await $(() => document.getElementById('console').innerText)), 'Schalter „Sync-Diagnose“ blendet das Overlay ein (Version v42)');
+  await page.click('#set-diag'); await sleep(200);
+  ok(await $(() => document.getElementById('console').classList.contains('debug-off')), 'Schalter aus blendet es wieder aus');
+  await page.keyboard.press('Escape'); await sleep(200);
+  ok(!(await visible('#settings-modal')), 'Escape schließt die Einstellungen');
 
   // ── Konsole ────────────────────────────────────────────────────────────
   const bad = logs.filter(l => /PAGEERROR|^error|ReferenceError|TypeError|fehlgeschlagen/.test(l) && !/User-Initiated Abort|WebRTC blockiert/.test(l));

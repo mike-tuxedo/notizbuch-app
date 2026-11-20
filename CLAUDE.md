@@ -68,7 +68,9 @@ We do NOT host our own Nostr relay. A custom list would go in `relayConfig: { ur
 
 ### TURN / ICE-Einstellungen (device-lokal)
 
-P2P-Verbindungen nutzen standardmäßig Trysteros eingebautes STUN. Hinter strengem NAT braucht es oft ein TURN-Relay. Der Nutzer kann in der Sidebar unter „Verbindung“ einen TURN-Server (`turn:…`/`turns:…` mit Benutzername/Passwort) oder einen HTTPS-Endpunkt eintragen, der kurzlebige `{"iceServers":[…]}`-Zugangsdaten liefert. Die Einstellung wird gerätelokal in IndexedDB (`notizbuch-settings`, Schlüssel `device:iceSettings`) gespeichert — sie wird **nicht** synchronisiert, nicht exportiert und nicht in Share-Links aufgenommen. Beim Speichern werden alle P2P-Rooms mit der neuen Konfiguration neu betreten.
+P2P-Verbindungen nutzen standardmäßig Trysteros eingebautes STUN. Hinter strengem NAT braucht es oft ein TURN-Relay. Der Nutzer kann unter Einstellungen → „Verbindung“ einen TURN-Server (`turn:…`/`turns:…` mit Benutzername/Passwort) oder einen HTTPS-Endpunkt eintragen, der kurzlebige `{"iceServers":[…]}`-Zugangsdaten liefert. Die Einstellung wird gerätelokal in IndexedDB (`notizbuch-settings`, Schlüssel `device:iceSettings`) gespeichert — sie wird **nicht** synchronisiert, nicht exportiert und nicht in Share-Links aufgenommen. Eine geänderte ICE-Einstellung lädt die App beim Speichern neu.
+
+Im selben Abschnitt lässt sich die **Relay-Adresse** überschreiben (`device:relayUrl`, ebenfalls gerätelokal, nur `wss://`/`ws://`). Leer = Standard aus `defaultRelayUrl()` in `js/relay.js` (auf localhost das Relay des Dev-Servers). Beim Speichern baut `rebuildRelayConnections()` Live-Kanäle und Relay-Verbindung ohne Neuladen neu auf.
 
 **Actions:** `stroke`, `undo`, `clear`, `full-sync`, `nb-created`, `nb-deleted`, `nb-renamed`, `page-created`, `page-deleted`, `page-bg`
 
@@ -165,9 +167,11 @@ Drawing pipeline: raw points → Catmull-Rom smoothing → polygon with perpendi
 
 ## Notebook Management
 
-- **Hover (desktop)**: rename (pencil) + delete (X) icons appear on notebook in sidebar
-- **Longpress (touch)**: 500ms hold → context menu with rename/delete
-- **Inline rename**: input replaces name text in sidebar list
+- Notebook list is a drawer (overlay) behind the title button; footer = sync status + gear (settings)
+- **„⋯“ menu per notebook** (same for mouse and touch): rename, share, delete (`#nb-menu`)
+- **Inline rename**: input replaces the row in the list; delete asks via `confirmDialog()`
+- Names are untrusted (invite links, `name=`): always set via `textContent`, never `innerHTML`
+- **Dialogs**: `openDialog(id)` / `closeDialog(id)` handle focus, Esc and focus return; settings (`openSettings(section)`) and share (`openShareModal(tab)`) are the only two places
 
 ## Undo
 
@@ -215,7 +219,7 @@ Imperative, lowercase, concise. Examples: "Add pen-only mode toggle", "Fix share
 
 ## Debugging & Tests
 
-- **Sync-Diagnose-Overlay** (unten rechts): standardmäßig aus. Klick auf die Statuszeile in der Sidebar schaltet es um (`localStorage notizbuch:debugOverlay`). Zeigt Version, ICE-Quelle, pro Peer den Candidate-Typ (`relay` = über TURN) und `striche: N (events: M)` der aktuellen Seite.
+- **Sync-Diagnose-Overlay** (unten rechts): standardmäßig aus. Schalter unter Einstellungen → Verbindung (`localStorage notizbuch:debugOverlay`); Klick auf den Sync-Status öffnet diesen Abschnitt. Zeigt Version, ICE-Quelle, pro Peer den Candidate-Typ (`relay` = über TURN) und `striche: N (events: M)` der aktuellen Seite.
 - **Version prüfen:** Erste Overlay-Zeile muss zur `APP_VERSION` in `js/app.js` passen. Der Service Worker liefert HTML und `js/` network-first.
 - **Abnahmetest Sync** (zwei isolierte Chromium-Instanzen, braucht `playwright-core`):
   ```bash
@@ -229,5 +233,6 @@ Imperative, lowercase, concise. Examples: "Add pen-only mode toggle", "Fix share
   NO_P2P=1 node tests/accept.cjs https://localhost:4444/app.html device
   NO_P2P=1 node tests/accept.cjs https://localhost:4444/app.html shared
   ```
+- **UI-Tests:** `node tests/ui.cjs <URL>` (Hauptansicht) und `node tests/ui-b.cjs <URL>` (Schublade, Einstellungen, Teilen, Erststart); Screenshots nach `/tmp/notes-ui/`.
 - **Drei-Peer-Test:** `node tests/three.cjs` baut ein Teilnetz (Handy und Tablet ohne direkte Verbindung) und prüft, dass der mittlere Peer Striche und Undo weiterreicht — auch zwischen Haupt-Room und Shared-Room (`forwardSyncEvent`).
 - **TURN-Test:** `node tests/turntest.cjs` prüft jeden TURN-Eintrag des ICE-Endpunkts mit erzwungenem Relay.

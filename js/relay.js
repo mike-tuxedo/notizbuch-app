@@ -25,15 +25,55 @@ function fromBase64(b64) {
 
 // ─── Relay URL ───────────────────────────────────────────────────────────────
 
+/** @type {string} Gerätelokal eingestellte Relay-Adresse ('' = Standard) */
+let _customRelayUrl = '';
+
 /**
- * WebSocket-URL für Relay-Verbindungen.
+ * Standard-URL für Relay-Verbindungen.
  * Lokal: wss://${location.host}, sonst Produktions-Relay.
  * @returns {string}
  */
-function relayUrl() {
+export function defaultRelayUrl() {
   const isLocal = typeof location !== 'undefined' &&
     (location.hostname === 'localhost' || location.hostname === '127.0.0.1');
   return isLocal ? `wss://${location.host}` : 'wss://notes.mike.fm-media-staging.at';
+}
+
+/**
+ * Prüfen, ob eine Eingabe eine brauchbare Relay-Adresse ist (nur ws:// oder wss://).
+ * @param {*} url
+ * @returns {boolean}
+ */
+export function isValidRelayUrl(url) {
+  if (typeof url !== 'string' || !url.trim() || /\s/.test(url.trim())) return false;
+  try {
+    const u = new URL(url.trim());
+    return (u.protocol === 'wss:' || u.protocol === 'ws:') && !!u.hostname;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Eigene Relay-Adresse setzen. Leer oder ungültig = Standard.
+ * Wirkt auf alle danach geöffneten Verbindungen; bestehende baut der Aufrufer neu auf.
+ * @param {string} url
+ */
+export function setRelayUrl(url) {
+  _customRelayUrl = isValidRelayUrl(url) ? url.trim() : '';
+}
+
+/** @returns {string} eigene Relay-Adresse oder '' wenn der Standard gilt */
+export function getCustomRelayUrl() {
+  return _customRelayUrl;
+}
+
+/**
+ * WebSocket-URL für Relay-Verbindungen: eigene Adresse, sonst Standard.
+ * @returns {string}
+ */
+function relayUrl() {
+  return _customRelayUrl || defaultRelayUrl();
 }
 
 // ─── Init ────────────────────────────────────────────────────────────────────
@@ -304,12 +344,15 @@ function _openSocket(roomKey, ch) {
 
   socket.onclose = () => {
     clearTimeout(joinTimeout);
+    // Ein bereits ersetzter Socket darf keinen weiteren Reconnect auslösen
+    if (ch.ws !== socket) return;
     _setChannelState(roomKey, 'getrennt');
     _scheduleReconnect(roomKey, ch);
   };
 
   socket.onerror = () => {
     clearTimeout(joinTimeout);
+    if (ch.ws !== socket) return;
     _setChannelState(roomKey, 'getrennt');
     _scheduleReconnect(roomKey, ch);
   };
