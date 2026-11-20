@@ -37,7 +37,7 @@ const PEN_SIZES = [
   { name: 'XL', label: 'Sehr dick', size: 16, dot: 24 }
 ];
 
-const APP_VERSION = '2026-11-20-redesign-v44';
+const APP_VERSION = '2026-11-20-redesign-v45';
 const PRESENCE_INTERVAL_MS = 5000;
 const PRESENCE_TIMEOUT_MS = 15000;
 
@@ -793,7 +793,20 @@ function getClientName() {
  * @param {string} notebookId
  * @returns {Promise<Uint8Array>}
  */
+/**
+ * Seiten, deren Plattenstand schon in den Speicher gemischt wurde. Beim Start wird nur die
+ * Meta geladen; die Events einer Seite kommen erst mit loadPage() dazu.
+ * @type {WeakSet<object>}
+ */
+const _pagesMergedFromDisk = new WeakSet();
+
 async function serializePageData(page, notebookId) {
+  // Nie einen unvollständigen Speicherstand schreiben: Erreicht ein Sync-Event eine Seite,
+  // die noch nicht von der Platte geladen wurde, würde sonst die Datei (und die Relay-Kopie)
+  // mit dem unvollständigen Event-Log überschrieben.
+  if (notebookId && page?.id && !_pagesMergedFromDisk.has(page)) {
+    await loadPage(notebookId, page.id, page);
+  }
   ensurePageEvents(page);
   const payload = {
     version: 2,
@@ -912,6 +925,7 @@ async function loadPage(notebookId, pageId, page) {
   const data = await loadPageData(notebookId, pageId);
   const disk = data ? await deserializePageData(data, notebookId) : { events: [] };
   mergePageEvents(page, disk.events || []);
+  _pagesMergedFromDisk.add(page);
 }
 
 // ─── Meta Persistence ───────────────────────────────────────────────────────
@@ -3389,7 +3403,11 @@ async function applyFullSync(payload) {
   // Alle Pages speichern (auch leere — damit Clear-Zustand persistiert wird)
   for (const nb of state.notebooks) {
     for (const p of nb.pages) {
-      await savePageData(nb.id, p.id, await serializePageData(p, nb.id));
+      try {
+        await savePageData(nb.id, p.id, await serializePageData(p, nb.id));
+      } catch (e) {
+        console.warn('[Sync] Seite konnte nicht gespeichert werden:', p.id, e);
+      }
     }
   }
 }

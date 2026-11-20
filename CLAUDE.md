@@ -110,6 +110,7 @@ Since version `v2` each page stores an encrypted event-log (`page.events`) inste
 - Storage blob: `{ version: 2, events: [...] }` (legacy stroke arrays are converted to `legacy:` events on read)
 - Merging is always a **union by `event.id`**. Remote data is never replaced; `mergePageEvents()` adds only unknown events.
 - Duplicate strokes are prevented at event-merge time (same `stroke.id`) and defensively in `materializePage()`.
+- **Schutz vor unvollständigem Schreiben:** Beim Start liegen nur Meta + aktuelle Seite im Speicher. `serializePageData()` mischt deshalb zuerst den Plattenstand ein (`loadPage`, einmal pro Seitenobjekt, `_pagesMergedFromDisk`), bevor eine Seite geschrieben wird — sonst überschreibt ein Sync-Event oder ein `full-sync` (`applyFullSync` speichert alle Seiten) die Datei einer nicht geladenen Seite mit einem unvollständigen Event-Log.
 - `undo()` appends an `undo` event with the `targetStrokeId`. Undo events work regardless of arrival order because `materializePage()` applies all undos after rendering strokes.
 - `redo()` appends a `redo` event; `materializePage()` ignoriert jedes `undo`, dessen ID Ziel eines `redo` ist — ebenfalls unabhängig von der Reihenfolge.
 - `clearedAt` still hides stroke events with `createdAt <= clearedAt`; undo events are not affected by the clearedAt check.
@@ -291,6 +292,7 @@ Imperative, lowercase, concise. Examples: "Add pen-only mode toggle", "Fix share
   - `node tests/ui-c.cjs <URL>` — Hinweise statt nativer Dialoge, Leeren/Löschen mit „Rückgängig“ über zwei Geräte
   - `node tests/ui-d.cjs <URL>` — Seitenübersicht, gelöschte Seiten, Wiederherstellen über zwei Geräte, 40 Seiten, 360 px
 - **Redo-Test:** `node tests/redo.cjs <URL>` (zwei Kontexte, Geräte-Sync).
+- **Nicht geladene Seite:** `node tests/unloaded-page.cjs <URL>` (echtes P2P, Relay für B per `routeWebSocket` blockiert). B hat Seite 2 nach dem Neuladen nur als Meta; Peer-Join-`full-sync`, `stroke` und Meta-`full-sync` dürfen deren Datei nicht verkleinern (OPFS-Dateigrößen) und die Strichzahl muss stimmen.
 - **Export/Import-Rundlauf:** `node tests/export-roundtrip.cjs <URL>` (nur Befund, kein Pass/Fail).
 - Die Tests prüfen `APP_VERSION` (ui.cjs, ui-b.cjs) — beim Hochzählen anpassen.
 - **Drei-Peer-Test:** `node tests/three.cjs` baut ein Teilnetz (Handy und Tablet ohne direkte Verbindung) und prüft, dass der mittlere Peer Striche und Undo weiterreicht — auch zwischen Haupt-Room und Shared-Room (`forwardSyncEvent`).
