@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Notizbuch – Redesign: Teilen</title>
+<style>
+/*@CSS*/
+.center{display:grid;place-items:start center}
+.tabbar{display:flex;width:100%}
+.tabbar button{flex:1;justify-content:center}
+.linkrow{display:flex;gap:var(--s2)}
+.linkrow .input{flex:1;min-width:0}
+.qr{margin:0 auto}
+</style>
+</head>
+<body>
+<!--@ICONS-->
+<!--@NAV-->
+<div class="page center">
+  <div class="dialog" role="dialog" aria-labelledby="dlg-h" data-tabs>
+    <div class="dialog-head">
+      <h2 id="dlg-h">Teilen</h2>
+      <a class="btn ghost icon" href="index.html" aria-label="Schließen">{{i:x}}</a>
+    </div>
+    <div class="seg tabbar" role="tablist" aria-label="Teilen">
+      <button role="tab" aria-selected="true" data-tab="invite">{{i:share}} Einladen</button>
+      <button role="tab" aria-selected="false" data-tab="join">{{i:camera}} Beitreten</button>
+    </div>
+
+    <div class="stack" data-panel="invite">
+      <p><strong>Projektskizzen</strong> <span class="muted">– wer den Code hat, kann mitlesen und mitzeichnen. Andere Notizbücher bleiben privat.</span></p>
+      <div class="qr"><span>QR · Einladung</span></div>
+      <div class="field"><label for="lnk">Einladungslink</label>
+        <div class="linkrow"><input class="input mono" id="lnk" readonly value="https://…/app.html#nb-4be1…&k=…&name=Projektskizzen">
+          <button class="btn primary" onclick="toast('Link kopiert')">{{i:copy}} Kopieren</button></div></div>
+    </div>
+
+    <div class="stack" data-panel="join" hidden>
+      <p class="muted">Code eines geteilten Notizbuchs scannen oder den Link einfügen.</p>
+      <div class="row">
+        <button class="btn" style="flex:1" onclick="toast('Kamera – im Prototyp ohne Funktion')">{{i:camera}} Kamera</button>
+        <button class="btn" style="flex:1" onclick="toast('Bild wählen …')">{{i:upload}} Bild mit QR-Code</button>
+      </div>
+      <div class="field"><label for="paste">Einladungslink</label>
+        <div class="linkrow"><input class="input" id="paste" placeholder="https://…#nb-…">
+          <button class="btn primary" id="join">Beitreten</button></div>
+        <span class="error-text" id="err" hidden>Das ist kein gültiger Einladungslink.</span></div>
+    </div>
+  </div>
+</div>
+
+<script>
+/*@JS*/
+document.getElementById('join').onclick = () => {
+  const inp = document.getElementById('paste'), ok = /#nb-/.test(inp.value);
+  inp.classList.toggle('error', !ok);
+  inp.setAttribute('aria-invalid', String(!ok));
+  document.getElementById('err').hidden = ok;
+  if (ok) toast('Notizbuch hinzugefügt');
+};
+</script>
+</body>
+</html>

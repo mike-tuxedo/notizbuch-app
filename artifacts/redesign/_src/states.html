@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Notizbuch – Redesign: States &amp; Tokens</title>
+<style>
+/*@CSS*/
+.duo{display:grid;grid-template-columns:1fr 1fr;gap:var(--s4)}
+.pane{background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:var(--r-lg);padding:var(--s4);display:grid;gap:var(--s4);align-content:start}
+.pane .toast{position:static;transform:none;width:fit-content}
+.sw{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:var(--s2)}
+.sw div{border-radius:var(--r-sm);border:1px solid var(--border);padding:var(--s2);font-size:12px;font-weight:600;min-height:64px;display:flex;align-items:flex-end}
+.focus-demo{outline:3px solid var(--accent);outline-offset:2px}
+@media (max-width:760px){.duo{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<!--@ICONS-->
+<!--@NAV-->
+<div class="page"><div class="inner">
+  <div><h1>States &amp; Tokens</h1><p class="muted">Jede Komponente links hell, rechts dunkel. Die Zeichenfläche ist in beiden gleich.</p></div>
+  <div class="duo" id="duo"></div>
+</div></div>
+
+<template id="tpl">
+  <h2></h2>
+  <div class="sw">
+    <div style="background:var(--bg)">--bg</div>
+    <div style="background:var(--surface)">--surface</div>
+    <div style="background:var(--surface-2)">--surface-2</div>
+    <div style="background:var(--accent);color:var(--on-accent)">--accent</div>
+    <div style="background:var(--accent-soft);color:var(--accent)">--accent-soft</div>
+    <div style="background:var(--danger-soft);color:var(--danger)">--danger</div>
+    <div style="background:var(--paper);color:#14171c">--paper</div>
+  </div>
+  <p>Fließtext in <code>--text</code>. <span class="muted">Nebentext in <code>--text-2</code> – die frühere dritte, zu dunkle Stufe entfällt.</span></p>
+
+  <h3>Buttons</h3>
+  <div class="row">
+    <button class="btn primary">Primär</button><button class="btn">Standard</button><button class="btn ghost">Ghost</button>
+    <button class="btn danger">Löschen</button><button class="btn" disabled>Inaktiv</button>
+  </div>
+  <div class="row">
+    <button class="btn focus-demo">Fokus</button><button class="btn" aria-pressed="true">Aktiv</button>
+    <button class="btn ghost icon" aria-label="Rückgängig">{{i:undo}}</button><button class="btn ghost icon" aria-label="Wiederholen" disabled>{{i:redo}}</button>
+  </div>
+
+  <h3>Sync-Status</h3>
+  <div class="row"><span class="status">Synchron · 2 Geräte</span><span class="status busy">Verbindet …</span><span class="status off">Offline – wird nachgeholt</span></div>
+
+  <h3>Eingaben</h3>
+  <div class="field"><label>Einladungslink</label><input class="input error" value="kein-link" aria-invalid="true"><span class="error-text">Das ist kein gültiger Einladungslink.</span></div>
+  <div class="row"><input class="switch" type="checkbox" checked aria-label="Beispiel an"><input class="switch" type="checkbox" aria-label="Beispiel aus">
+    <div class="seg"><button aria-pressed="true">Kariert</button><button aria-pressed="false">Liniert</button><button aria-pressed="false">Leer</button></div></div>
+
+  <h3>Rückmeldung statt Rückfrage</h3>
+  <div class="toast" role="status"><span>Seite 3 gelöscht</span><button class="btn">Rückgängig</button></div>
+
+  <h3>Erststart: Schlüssel sichern</h3>
+  <div class="dialog">
+    <div><span class="badge">Schritt 2 von 2</span></div>
+    <h2>Sichere deinen Schlüssel</h2>
+    <p class="muted">Er entsperrt deine Notizen auf weiteren Geräten. Es gibt keine „Passwort vergessen“-Funktion.</p>
+    <p class="mono card" style="padding:var(--s3)">cb788c69 8e45dfe4 970cf92a 376a5bf6 9f54ae51 797974a3 8405a0e6 2bb29036</p>
+    <div class="row"><button class="btn" style="flex:1">{{i:download}} Als Datei</button><button class="btn" style="flex:1">{{i:copy}} Kopieren</button></div>
+    <label class="row" style="flex-wrap:nowrap"><input class="switch" type="checkbox"> <span>Ich habe den Schlüssel gesichert</span></label>
+    <button class="btn primary block" disabled>Loslegen</button>
+  </div>
+
+  <h3>Notizbuch löschen (einzige echte Rückfrage)</h3>
+  <div class="dialog">
+    <h2>„Vorlesung Statik II“ löschen?</h2>
+    <p class="muted">12 Seiten werden auf allen deinen Geräten entfernt.</p>
+    <div class="row" style="justify-content:flex-end"><button class="btn">Abbrechen</button><button class="btn danger">Löschen</button></div>
+  </div>
+</template>
+
+<script>
+/*@JS*/
+for (const t of ['light', 'dark']) {
+  const pane = document.createElement('section');
+  pane.className = 'pane';
+  pane.dataset.theme = t;
+  pane.appendChild(document.getElementById('tpl').content.cloneNode(true));
+  pane.querySelector('h2').textContent = t === 'light' ? 'Hell' : 'Dunkel';
+  document.getElementById('duo').appendChild(pane);
+}
+</script>
+</body>
+</html>

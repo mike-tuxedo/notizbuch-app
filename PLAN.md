@@ -13,7 +13,37 @@ App ist produktiv deployed unter `notizbuch-app.vercel.app` (Version `2026-11-20
 - OPFS-Storage mit IndexedDB-Fallback
 - Abnahmetests in `dev-server/tests/`
 
-## Offene Punkte
+## Vorrang: Redesign und neue Werkzeuge
+
+Abgenommener Klickdummy: `artifacts/redesign/index.html` (Absichten, Token-Tabelle und Zuordnung alt → neu in `artifacts/redesign/README.md`). Zielgeräte in dieser Reihenfolge: großes Zeichen-Tablet mit Stift, Tablet, Handy.
+
+### Etappe 1 — Redesign, Redo, Seitenübersicht
+
+- [ ] Token-System, helles und dunkles Theme (Zeichenfläche immer weiß, Akzent hell Petrol `#0b7285`, dunkel `#74b8ff`), zwei Textstufen mit hohem Kontrast
+- [ ] Werkzeugleiste: Hand als Schalter, Farbe und Strichstärke als getrennte Knöpfe, Seiten-Menü „⋯“ für Seltenes
+- [ ] Redo
+- [ ] Seiten: `‹ 3 / 7 ›` mit „+“, Seitenübersicht mit Vorschaubildern
+- [ ] Zoom-Pille `− [Alles] +` und Hinweis auf Inhalt außerhalb des Bildschirms (richtungsabhängig, nie automatisch verschieben)
+- [ ] Notizbuch-Liste hinter dem Titel, nicht anheftbar; einheitliches „⋯“-Menü statt Hover/Longpress
+- [ ] Einstellungen an einem Ort, ein Teilen-Dialog (Einladen / Beitreten)
+- [ ] Hinweise mit „Rückgängig“ und eigene Dialoge statt `confirm()`/`prompt()`/`alert()`
+- [ ] Tastaturkürzel, Fokus-Ring, `aria-label`s, 44-px-Bedienflächen bei `pointer: coarse`
+
+### Etappe 2 — Füllen, Formen, Auswahl
+
+Braucht neue Event-Typen und greift in Sync und Rendering ein.
+
+- [ ] Füllwerkzeug als Vektorfläche (bleibt beim Zoomen scharf, liegt als Event im Log)
+- [ ] Formen: Rechteck, Ellipse, Linie, Pfeil
+- [ ] Auswahl-Werkzeug: Größe und Position ändern, Duplizieren, Löschen; Auswahlrahmen in Petrol
+
+### Im Klickdummy enthalten, aber nicht entschieden
+
+- Einstellung „Finger bewegen die Seite, Stift zeichnet“
+- Aufbewahrungsfrist für gelöschte Seiten („30 Tage“ ist nur Beispieltext)
+- Gerätenamen unter „Meine Geräte“ (heute gibt es nur Geräte-IDs)
+
+## Weitere offene Punkte (zweitrangig)
 
 ### Sync / Infrastruktur
 
@@ -25,7 +55,7 @@ App ist produktiv deployed unter `notizbuch-app.vercel.app` (Version `2026-11-20
 - [ ] Trystero-Migration auf 0.27 (großer API-Bruch)
 - [ ] Mischbetrieb/Regression testen: Radierer, Seite leeren, mehrere Seiten
 
-### Peer-Freigabe (Sicherheit, geplant)
+### Peer-Freigabe (Sicherheit, geplant — prüfen, ob veraltet: Freigaben gibt es schon pro Notizbuch)
 
 - [ ] Owner muss Peers für geteilte Notebooks freigeben
 - [ ] Peer sendet UserKey beim Beitreten

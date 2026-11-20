@@ -1,0 +1,549 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Notizbuch – Redesign: Hauptansicht</title>
+<style>
+/* ── Tokens ─────────────────────────────────────────── */
+:root,[data-theme="light"]{
+  --bg:#eef0f3; --surface:#ffffff; --surface-2:#f1f3f6;
+  --border:#d3d8e0; --border-strong:#7d8797;
+  --text:#14171c; --text-2:#3f4755;
+  --accent:#0b7285; --accent-soft:#dcf1f4; --on-accent:#ffffff;
+  --danger:#b3261e; --danger-soft:#fbe9e7; --ok:#17754a; --warn:#8a5800;
+  --shadow:0 2px 6px rgba(20,23,28,.10),0 12px 32px rgba(20,23,28,.16);
+  color-scheme:light;
+}
+[data-theme="dark"]{
+  --bg:#111317; --surface:#1b1e24; --surface-2:#262a32;
+  --border:#3b414c; --border-strong:#8791a1;
+  --text:#f3f5f8; --text-2:#c9cfd9;
+  --accent:#74b8ff; --accent-soft:#1c3554; --on-accent:#08182b;
+  --danger:#ff8f85; --danger-soft:#3d1f1d; --ok:#62d6a0; --warn:#f2c060;
+  --shadow:0 2px 6px rgba(0,0,0,.4),0 12px 32px rgba(0,0,0,.5);
+  color-scheme:dark;
+}
+:root{
+  /* Zeichenfläche: in beiden Themes identisch */
+  --paper:#ffffff; --paper-line:#dde3ec; --ink:#14171c; --select:#0b63c5;
+  --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px; --s6:32px;
+  --tap:44px; --bar-h:56px; --drawer-w:300px;
+  --r-sm:8px; --r-lg:14px; --r-pill:999px;
+  --font-ui:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --font-mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --fs-sm:13px; --fs-md:15px; --fs-lg:17px; --fs-xl:clamp(20px,2.4vw,26px);
+}
+
+/* ── Basis ──────────────────────────────────────────── */
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{font:400 var(--fs-md)/1.45 var(--font-ui);color:var(--text);background:var(--bg);display:flex;flex-direction:column}
+h1,h2,h3,p{margin:0}
+h1{font-size:var(--fs-xl);font-weight:700;line-height:1.2}
+h2{font-size:var(--fs-lg);font-weight:700}
+h3{font-size:var(--fs-md);font-weight:700}
+.muted{color:var(--text-2)}
+.small{font-size:var(--fs-sm)}
+.mono{font-family:var(--font-mono);font-size:var(--fs-sm);word-break:break-all}
+[hidden]{display:none!important}
+.i{width:22px;height:22px;flex:none;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+
+/* ── Buttons: eine Basis, drei Varianten ────────────── */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:var(--s2);min-height:var(--tap);padding:0 var(--s4);
+  border:1px solid var(--border-strong);border-radius:var(--r-sm);background:var(--surface);color:var(--text);
+  font:600 var(--fs-md)/1 var(--font-ui);text-decoration:none;cursor:pointer;transition:background .12s,border-color .12s}
+.btn:hover{background:var(--surface-2)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.btn.primary:hover{filter:brightness(1.08)}
+.btn.ghost{border-color:transparent;background:transparent}
+.btn.ghost:hover{background:var(--surface-2)}
+.btn.danger{color:var(--danger)}
+.btn.danger:hover{background:var(--danger-soft)}
+.btn.icon{width:var(--tap);padding:0}
+.btn.block{width:100%}
+.btn[aria-pressed="true"],.btn[aria-current="page"]{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+
+/* ── Formulare ──────────────────────────────────────── */
+.field{display:grid;gap:var(--s1)}
+.field label{font-weight:600}
+.input{min-height:var(--tap);padding:0 var(--s3);border:1px solid var(--border-strong);border-radius:var(--r-sm);
+  background:var(--surface);color:var(--text);font:400 var(--fs-md) var(--font-ui);width:100%}
+.input::placeholder{color:var(--text-2);opacity:.8}
+.input:hover{border-color:var(--text)}
+.input.error{border-color:var(--danger)}
+.error-text{color:var(--danger);font-size:var(--fs-sm);font-weight:600}
+.switch{appearance:none;width:52px;height:30px;border-radius:var(--r-pill);border:1px solid var(--border-strong);background:var(--surface-2);
+  position:relative;cursor:pointer;flex:none;margin:7px 0}
+.switch::after{content:"";position:absolute;top:3px;left:3px;width:22px;height:22px;border-radius:50%;background:var(--border-strong);transition:transform .15s}
+.switch:checked{background:var(--accent);border-color:var(--accent)}
+.switch:checked::after{transform:translateX(22px);background:var(--on-accent)}
+.seg{display:inline-flex;border:1px solid var(--border-strong);border-radius:var(--r-sm);overflow:hidden;background:var(--surface)}
+.seg button{min-height:calc(var(--tap) - 2px);padding:0 var(--s4);border:0;background:transparent;color:var(--text);font:600 var(--fs-md) var(--font-ui);cursor:pointer;display:inline-flex;align-items:center;gap:var(--s2)}
+.seg button+button{border-left:1px solid var(--border)}
+.seg button:hover{background:var(--surface-2)}
+.seg button[aria-pressed="true"],.seg button[aria-selected="true"]{background:var(--accent-soft);color:var(--accent)}
+
+/* ── Flächen ────────────────────────────────────────── */
+.popover{position:absolute;z-index:30;top:calc(100% + 8px);left:0;min-width:240px;padding:var(--s3);
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);box-shadow:var(--shadow)}
+.popover.right{left:auto;right:0}
+.pop-wrap{position:relative;display:inline-flex}
+.menu{display:grid;gap:2px}
+.menu-item{display:flex;align-items:center;gap:var(--s3);min-height:var(--tap);padding:0 var(--s3);border:0;border-radius:var(--r-sm);
+  background:transparent;color:var(--text);font:500 var(--fs-md) var(--font-ui);text-align:left;text-decoration:none;cursor:pointer;width:100%}
+.menu-item:hover{background:var(--surface-2)}
+.menu-item.danger{color:var(--danger)}
+.menu-item.danger:hover{background:var(--danger-soft)}
+.menu-label{font-size:var(--fs-sm);font-weight:700;color:var(--text-2);padding:var(--s2) var(--s3) var(--s1)}
+.sep{height:1px;background:var(--border);margin:var(--s2) 0}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);padding:var(--s5)}
+.dialog{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);box-shadow:var(--shadow);width:min(520px,100%);padding:var(--s5);display:grid;gap:var(--s4)}
+.dialog-head{display:flex;align-items:center;justify-content:space-between;gap:var(--s3)}
+.row{display:flex;align-items:center;gap:var(--s3);flex-wrap:wrap}
+.row.between{justify-content:space-between;flex-wrap:nowrap}
+.stack{display:grid;gap:var(--s4)}
+.badge{display:inline-flex;align-items:center;padding:2px 8px;border-radius:var(--r-pill);background:var(--accent-soft);color:var(--accent);font-size:12px;font-weight:700}
+.status{display:inline-flex;align-items:center;gap:var(--s2);font-size:var(--fs-sm);font-weight:600;color:var(--text)}
+.status::before{content:"";width:10px;height:10px;border-radius:50%;background:var(--ok)}
+.status.busy::before{background:var(--warn)}
+.status.off::before{background:var(--danger)}
+.note{padding:var(--s3) var(--s4);border-radius:var(--r-sm);background:var(--surface-2);border-left:4px solid var(--accent);font-size:var(--fs-sm)}
+.note.warn{border-left-color:var(--warn)}
+.note.danger{border-left-color:var(--danger);background:var(--danger-soft)}
+.toast{position:fixed;z-index:60;left:50%;bottom:88px;transform:translateX(-50%);display:flex;align-items:center;gap:var(--s3);
+  padding:var(--s2) var(--s2) var(--s2) var(--s4);background:var(--text);color:var(--surface);border-radius:var(--r-sm);box-shadow:var(--shadow);font-weight:600;max-width:calc(100vw - 24px)}
+.toast .btn{background:transparent;border-color:transparent;color:inherit;text-decoration:underline}
+.qr{width:200px;height:200px;border-radius:var(--r-sm);border:10px solid #fff;outline:1px solid var(--border);
+  background:repeating-conic-gradient(#14171c 0 25%,#fff 0 50%) 0 0/20px 20px,#fff;display:grid;place-items:center}
+.qr span{background:#fff;color:#14171c;font-size:12px;font-weight:700;padding:2px 6px;border-radius:4px}
+
+/* ── Prototyp-Leiste (nicht Teil der App) ───────────── */
+.proto{display:flex;align-items:center;gap:var(--s1);padding:4px var(--s3);background:var(--surface-2);border-bottom:2px dashed var(--border-strong);font-size:var(--fs-sm);overflow-x:auto;flex:none}
+.proto strong{margin-right:var(--s2);white-space:nowrap}
+.proto a,.proto button{min-height:36px;padding:0 var(--s3);display:inline-flex;align-items:center;gap:6px;border:0;border-radius:var(--r-sm);background:transparent;color:var(--text);font:600 var(--fs-sm) var(--font-ui);text-decoration:none;cursor:pointer;white-space:nowrap}
+.proto a:hover,.proto button:hover{background:var(--surface)}
+.proto a[aria-current="page"]{background:var(--accent);color:var(--on-accent)}
+.proto .push{margin-left:auto}
+.page{flex:1;min-height:0;overflow:auto;padding:var(--s5) var(--s4)}
+.page>.inner{max-width:920px;margin:0 auto;display:grid;gap:var(--s5)}
+
+
+/* ── Hauptansicht ───────────────────────────────────── */
+.stage{flex:1;min-height:0;display:flex;justify-content:center}
+.frame{width:100%;height:100%;container:app/inline-size}
+.stage.phone{padding:var(--s3)}
+.stage.phone .frame{width:390px;max-width:100%;border:2px solid var(--border-strong);border-radius:22px;overflow:hidden}
+
+.app{position:relative;height:100%;overflow:hidden;display:grid;background:var(--paper);
+  grid-template-columns:auto 1fr auto;grid-template-rows:auto 1fr;
+  grid-template-areas:"left tools right" "canvas canvas canvas"}
+.tb{display:flex;align-items:center;gap:var(--s2);min-height:var(--bar-h);padding:var(--s1) var(--s3);background:var(--surface);border-bottom:1px solid var(--border)}
+.tb-left{grid-area:left;min-width:0}
+.toolrow{grid-area:tools;justify-content:center;position:relative}
+.tb-right{grid-area:right}
+.divider{width:1px;height:28px;background:var(--border);margin:0 var(--s1);flex:none}
+
+.title-btn{max-width:260px;padding:0 var(--s3) 0 var(--s2);font-size:var(--fs-lg);font-weight:700}
+.title-btn span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+
+/* Ein Schalter: Hand an = bewegen, Hand aus = zurück zum letzten Werkzeug */
+.mode{display:inline-flex;align-items:center;justify-content:center;gap:var(--s2);height:var(--tap);min-width:var(--tap);padding:0 var(--s2);border-radius:var(--r-pill);
+  background:var(--surface-2);border:1px solid var(--border-strong);color:var(--text);font:600 var(--fs-sm)/1 var(--font-ui);cursor:pointer;flex:none}
+.mode .lbl{display:none}
+.mode:hover{border-color:var(--text)}
+.mode[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+
+.tools{display:flex;gap:2px}
+.tool,.opt{display:inline-flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;min-width:var(--tap);height:var(--tap);padding:0 6px;
+  border:1px solid transparent;border-radius:var(--r-sm);background:transparent;color:var(--text);font:600 12px/1 var(--font-ui);cursor:pointer}
+.tool .lbl,.opt .lbl{display:none}
+.tool:hover,.opt:hover{background:var(--surface-2)}
+.opt[aria-expanded="true"]{background:var(--surface-2);border-color:var(--border-strong)}
+.tool[aria-pressed="true"]{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+.app[data-mode="move"] .tool[aria-pressed="true"]{background:transparent;border-color:var(--border-strong);color:var(--text)}
+
+/* Farbe und Strichstärke: zwei getrennte Knöpfe, jeder zeigt den aktuellen Stand */
+.opt .dot{width:22px;height:22px;border-radius:50%;background:var(--ink);border:2px solid var(--paper);outline:1px solid var(--border-strong)}
+.opt .sizedot{width:22px;height:22px;display:grid;place-items:center}
+.opt .sizedot i{width:7px;height:7px;border-radius:50%;background:var(--text)}
+.swatches{display:grid;grid-template-columns:repeat(5,var(--tap));gap:var(--s1)}
+.swatch{width:var(--tap);height:var(--tap);border-radius:50%;border:0;background:transparent;cursor:pointer;display:grid;place-items:center}
+.swatch i{width:30px;height:30px;border-radius:50%;background:var(--c);outline:1px solid var(--border-strong)}
+.swatch:hover i{transform:scale(1.1)}
+.swatch[aria-pressed="true"] i{box-shadow:0 0 0 3px var(--surface),0 0 0 6px var(--accent)}
+.swatch.custom i{background:conic-gradient(#e03131,#f2c200,#2f9e44,#1971c2,#6741d9,#e03131)}
+.sizes{display:grid;grid-template-columns:repeat(5,var(--tap));gap:var(--s1)}
+.size{width:var(--tap);height:var(--tap);border-radius:var(--r-sm);border:1px solid transparent;background:transparent;cursor:pointer;display:grid;place-items:center}
+.size i{width:var(--d);height:var(--d);border-radius:50%;background:var(--text)}
+.size:hover{background:var(--surface-2)}
+.size[aria-pressed="true"]{background:var(--accent-soft);border-color:var(--accent)}
+
+/* Zeichenfläche: immer weiß */
+.canvas{grid-area:canvas;position:relative;overflow:hidden;cursor:crosshair;background-color:var(--paper);
+  background-image:linear-gradient(var(--paper-line) 1px,transparent 1px),linear-gradient(90deg,var(--paper-line) 1px,transparent 1px);background-size:28px 28px}
+.canvas[data-bg="lined"]{background-image:linear-gradient(var(--paper-line) 1px,transparent 1px)}
+.canvas[data-bg="blank"]{background-image:none}
+.app[data-mode="move"] .canvas{cursor:grab}
+.canvas svg.art{position:absolute;inset:0;width:100%;height:100%;transition:transform .15s;transform-origin:center}
+.sel{display:none}
+.app[data-tool="select"][data-mode="draw"] .sel{display:block}
+.float{position:absolute;display:flex;align-items:center;gap:2px;padding:3px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-pill);box-shadow:var(--shadow)}
+.float .btn{border-radius:var(--r-pill);flex:none}
+.float.selbar{left:50%;top:9%;transform:translateX(-50%);display:none}
+.app[data-tool="select"][data-mode="draw"] .float.selbar{display:flex}
+.pages{left:50%;bottom:var(--s4);transform:translateX(-50%)}
+.zoom{right:var(--s4);bottom:var(--s4)}
+/* Liegt Gezeichnetes außerhalb des Bildschirms, meldet sich „Alles zeigen“ */
+#fit{position:relative}
+.app[data-off="true"] #fit{background:var(--accent-soft);color:var(--accent)}
+.app[data-off="true"] #fit::after{content:"";position:absolute;top:6px;right:6px;width:10px;height:10px;border-radius:50%;background:var(--accent);border:2px solid var(--surface)}
+.edge{right:var(--s4);top:50%;transform:translateY(-50%);padding:0 var(--s2) 0 var(--s4);min-height:var(--tap);gap:var(--s1);background:var(--accent);border-color:var(--accent);color:var(--on-accent);font:600 var(--fs-sm) var(--font-ui);cursor:pointer}
+.edge:hover{filter:brightness(1.08)}
+.hint{position:absolute;left:50%;top:var(--s3);transform:translateX(-50%);padding:6px var(--s3);border-radius:var(--r-pill);background:var(--text);color:var(--surface);font-size:var(--fs-sm);font-weight:600;white-space:nowrap;display:none}
+.app[data-mode="move"] .hint{display:block}
+
+/* Notizbuch-Schublade */
+.drawer{position:absolute;z-index:40;inset:0 auto 0 0;width:min(var(--drawer-w),86%);display:flex;flex-direction:column;background:var(--surface);border-right:1px solid var(--border);box-shadow:var(--shadow)}
+.drawer header{display:flex;align-items:center;justify-content:space-between;padding:var(--s3) var(--s3) var(--s3) var(--s4);border-bottom:1px solid var(--border)}
+.drawer .list{flex:1;overflow:auto;padding:var(--s2)}
+.drawer footer{padding:var(--s2);border-top:1px solid var(--border);display:grid;gap:2px}
+.nb{display:flex;align-items:center;border-radius:var(--r-sm)}
+.nb .menu-item{flex:1;min-width:0;font-weight:600}
+.nb .menu-item span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.nb.current{background:var(--accent-soft)}
+.nb.current .menu-item{color:var(--accent)}
+.backdrop{display:none;position:absolute;inset:0;z-index:35;background:rgba(10,12,16,.45)}
+.app:has(.drawer:not([hidden])) .backdrop{display:block}
+
+/* Großes Zeichen-Tablet: Beschriftungen einblenden */
+@container app (min-width:1180px){
+  .tool,.opt{min-width:68px;height:48px}
+  .tool .lbl,.opt .lbl{display:block}
+  .mode .lbl{display:inline}
+  .mode{padding:0 var(--s4) 0 var(--s3)}
+}
+@container app (max-width:1000px){ .sync-text{display:none} .title-btn{max-width:160px} }
+/* Handy: Werkzeuge nach unten (Daumen), oben nur Titel + Verlauf */
+@container app (max-width:760px){
+  .app{grid-template-columns:1fr auto;grid-template-rows:auto 1fr auto;grid-template-areas:"left right" "canvas canvas" "tools tools"}
+  .toolrow{justify-content:space-between;gap:var(--s1);padding:var(--s1) var(--s2) max(var(--s1),env(safe-area-inset-bottom));border-bottom:0;border-top:1px solid var(--border)}
+  .toolrow .divider,.zoom .zstep,.zoom .fitlbl{display:none}
+  .toolrow,.tools{gap:0}
+  .tool,.opt,.mode{min-width:40px;padding:0}
+  .zoom{right:var(--s2);bottom:var(--s3)}
+  .zoom #fit{width:var(--tap);padding:0}
+  .pages{left:var(--s2);bottom:var(--s3);transform:none}
+  .pages .btn:not(.icon){padding:0 var(--s2)}
+  .toolrow .pop-wrap{position:static}
+  .toolrow .popover{top:auto;bottom:calc(100% + 8px);left:var(--s2);right:var(--s2)}
+  .swatches,.sizes{grid-template-columns:repeat(5,1fr);justify-items:center}
+  .tb{padding:var(--s1) var(--s2)}
+  .tb-right{gap:0}
+}
+</style>
+</head>
+<body>
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
+<symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></symbol>
+<symbol id="i-pen" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></symbol>
+<symbol id="i-eraser" viewBox="0 0 24 24"><path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/></symbol>
+<symbol id="i-fill" viewBox="0 0 24 24"><path d="m19 11-8-8-8.6 8.6a2 2 0 0 0 0 2.8l5.2 5.2c.8.8 2 .8 2.8 0L19 11Z"/><path d="m5 2 5 5"/><path d="M2 13h15"/><path d="M22 20a2 2 0 1 1-4 0c0-1.6 1.7-2.4 2-4 .3 1.6 2 2.4 2 4Z"/></symbol>
+<symbol id="i-shapes" viewBox="0 0 24 24"><rect x="3" y="12" width="9" height="9" rx="1"/><circle cx="16" cy="8" r="5"/></symbol>
+<symbol id="i-select" viewBox="0 0 24 24"><path d="m3 3 7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/></symbol>
+<symbol id="i-hand" viewBox="0 0 24 24"><path d="M18 11V6a2 2 0 0 0-4 0v5"/><path d="M14 10V4a2 2 0 0 0-4 0v2"/><path d="M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/></symbol>
+<symbol id="i-undo" viewBox="0 0 24 24"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/></symbol>
+<symbol id="i-redo" viewBox="0 0 24 24"><path d="M21 7v6h-6"/><path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3l3 2.7"/></symbol>
+<symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
+<symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+<symbol id="i-minus" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+<symbol id="i-left" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
+<symbol id="i-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+<symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+<symbol id="i-pages" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></symbol>
+<symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></symbol>
+<symbol id="i-share" viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.59 13.51 6.83 3.98M15.41 6.51l-6.82 3.98"/></symbol>
+<symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+<symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+<symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></symbol>
+<symbol id="i-theme" viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></symbol>
+<symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5M12 15V3"/></symbol>
+<symbol id="i-upload" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m17 8-5-5-5 5M12 3v12"/></symbol>
+<symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
+<symbol id="i-camera" viewBox="0 0 24 24"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></symbol>
+<symbol id="i-book" viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></symbol>
+<symbol id="i-rect" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="1"/></symbol>
+<symbol id="i-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/></symbol>
+<symbol id="i-line" viewBox="0 0 24 24"><path d="M5 19 19 5"/></symbol>
+<symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></symbol>
+<symbol id="i-device" viewBox="0 0 24 24"><rect x="5" y="2" width="14" height="20" rx="2"/><path d="M12 18h.01"/></symbol>
+<symbol id="i-zen" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></symbol>
+<symbol id="i-fit" viewBox="0 0 24 24"><path d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"/><rect x="8" y="8" width="8" height="8" rx="1"/></symbol>
+<symbol id="i-edit" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></symbol>
+</svg>
+
+
+<nav class="proto" aria-label="Prototyp-Navigation"><strong>Prototyp</strong><a href="index.html" aria-current=page>Hauptansicht</a><a href="seiten.html">Seitenübersicht</a><a href="einstellungen.html">Einstellungen</a><a href="teilen.html">Teilen</a><a href="states.html">States & Tokens</a><span class="push"></span><button id="phone-toggle" aria-pressed="false"><svg class="i" aria-hidden="true"><use href="#i-device"/></svg> Handy-Vorschau</button><button data-theme-toggle><svg class="i" aria-hidden="true"><use href="#i-theme"/></svg> Hell / Dunkel</button></nav>
+
+<div class="stage" id="stage"><div class="frame">
+<div class="app" data-mode="draw" data-tool="pen">
+
+  <div class="tb tb-left">
+    <button class="btn ghost title-btn" data-toggle="#drawer" aria-expanded="false" aria-label="Notizbücher öffnen – aktuell: Projektskizzen"><svg class="i" aria-hidden="true"><use href="#i-menu"/></svg><span>Projektskizzen</span></button>
+  </div>
+
+  <div class="tb toolrow" role="toolbar" aria-label="Werkzeuge">
+    <button class="mode" id="mode" aria-pressed="false" aria-label="Bewegen und Zoomen" title="Bewegen an/aus (H · Leertaste halten)"><svg class="i" aria-hidden="true"><use href="#i-hand"/></svg><span class="lbl">Bewegen</span></button>
+    <span class="divider"></span>
+    <div class="tools">
+      <button class="tool" data-tool="pen" aria-pressed="true" aria-label="Stift" title="Stift (P)"><svg class="i" aria-hidden="true"><use href="#i-pen"/></svg><span class="lbl">Stift</span></button>
+      <button class="tool" data-tool="eraser" aria-pressed="false" aria-label="Radierer" title="Radierer (E)"><svg class="i" aria-hidden="true"><use href="#i-eraser"/></svg><span class="lbl">Radierer</span></button>
+      <button class="tool" data-tool="fill" aria-pressed="false" aria-label="Füllen" title="Füllen (F)"><svg class="i" aria-hidden="true"><use href="#i-fill"/></svg><span class="lbl">Füllen</span></button>
+      <span class="pop-wrap">
+        <button class="tool" data-tool="shape" data-toggle="#pop-shapes" aria-pressed="false" aria-expanded="false" aria-label="Formen" title="Formen (S)"><svg class="i" aria-hidden="true"><use id="shape-icon" href="#i-shapes"/></svg><span class="lbl">Formen</span></button>
+        <div class="popover" id="pop-shapes" data-pop hidden>
+          <div class="menu">
+            <button class="menu-item" data-shape="rect"><svg class="i" aria-hidden="true"><use href="#i-rect"/></svg> Rechteck</button>
+            <button class="menu-item" data-shape="circle"><svg class="i" aria-hidden="true"><use href="#i-circle"/></svg> Ellipse</button>
+            <button class="menu-item" data-shape="line"><svg class="i" aria-hidden="true"><use href="#i-line"/></svg> Linie</button>
+            <button class="menu-item" data-shape="arrow"><svg class="i" aria-hidden="true"><use href="#i-arrow"/></svg> Pfeil</button>
+          </div>
+        </div>
+      </span>
+      <button class="tool" data-tool="select" aria-pressed="false" aria-label="Auswählen" title="Auswählen (V)"><svg class="i" aria-hidden="true"><use href="#i-select"/></svg><span class="lbl">Auswahl</span></button>
+    </div>
+    <span class="divider"></span>
+    <span class="pop-wrap">
+      <button class="opt" data-toggle="#pop-color" aria-expanded="false" aria-label="Farbe" title="Farbe"><span class="dot" id="chip-dot"></span><span class="lbl">Farbe</span></button>
+      <div class="popover" id="pop-color" data-pop hidden><div class="swatches" id="swatches"></div></div>
+    </span>
+    <span class="pop-wrap">
+      <button class="opt" data-toggle="#pop-size" aria-expanded="false" aria-label="Strichstärke" title="Strichstärke"><span class="sizedot"><i id="chip-size"></i></span><span class="lbl">Stärke</span></button>
+      <div class="popover" id="pop-size" data-pop hidden><div class="sizes" id="sizes"></div></div>
+    </span>
+  </div>
+
+  <div class="tb tb-right">
+    <button class="btn ghost icon" id="undo" aria-label="Rückgängig" title="Rückgängig (Strg+Z)"><svg class="i" aria-hidden="true"><use href="#i-undo"/></svg></button>
+    <button class="btn ghost icon" id="redo" aria-label="Wiederholen" title="Wiederholen (Strg+Umschalt+Z)" disabled><svg class="i" aria-hidden="true"><use href="#i-redo"/></svg></button>
+    <span class="divider"></span>
+    <a class="status btn ghost" href="einstellungen.html" aria-label="Synchron, 2 Geräte verbunden – Geräte öffnen"><span class="sync-text">Synchron · 2 Geräte</span></a>
+    <span class="pop-wrap">
+      <button class="btn ghost icon" data-toggle="#pop-page" aria-expanded="false" aria-label="Seiten-Menü"><svg class="i" aria-hidden="true"><use href="#i-more"/></svg></button>
+      <div class="popover right" id="pop-page" data-pop hidden>
+        <div class="menu-label">Papier</div>
+        <div class="seg" id="bg-seg" style="margin:0 var(--s3) var(--s2)">
+          <button aria-pressed="true" data-bg="grid">Kariert</button>
+          <button aria-pressed="false" data-bg="lined">Liniert</button>
+          <button aria-pressed="false" data-bg="blank">Leer</button>
+        </div>
+        <div class="sep"></div>
+        <div class="menu">
+          <a class="menu-item" href="teilen.html"><svg class="i" aria-hidden="true"><use href="#i-share"/></svg> Notizbuch teilen</a>
+          <button class="menu-item" data-close onclick="toast('Seite als PNG gespeichert')"><svg class="i" aria-hidden="true"><use href="#i-download"/></svg> Seite als PNG</button>
+          <button class="menu-item" data-close onclick="toast('Seite als SVG gespeichert')"><svg class="i" aria-hidden="true"><use href="#i-download"/></svg> Seite als SVG</button>
+          <button class="menu-item" data-close onclick="toast('Vollbild – im Prototyp ohne Funktion')"><svg class="i" aria-hidden="true"><use href="#i-zen"/></svg> Vollbild</button>
+          <div class="sep"></div>
+          <button class="menu-item danger" data-close onclick="toast('Seite geleert','Rückgängig')"><svg class="i" aria-hidden="true"><use href="#i-eraser"/></svg> Seite leeren</button>
+          <button class="menu-item danger" data-close onclick="toast('Seite 3 gelöscht','Rückgängig')"><svg class="i" aria-hidden="true"><use href="#i-trash"/></svg> Seite löschen</button>
+        </div>
+      </div>
+    </span>
+  </div>
+
+  <main class="canvas" id="canvas" data-bg="grid" aria-label="Zeichenfläche">
+    <svg class="art" viewBox="0 0 1200 700" preserveAspectRatio="xMidYMid meet" fill="none" stroke="#14171c" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M210 120c20-30 38 28 58-2s36 30 56 0 34 26 54 2 40 24 60-4"/>
+      <path d="M210 150h250" stroke="#e03131" stroke-width="4"/>
+      <rect x="430" y="230" width="360" height="250" rx="2"/>
+      <ellipse cx="610" cy="355" rx="62" ry="46" fill="#ffe8a3" stroke="#f08c00"/>
+      <path d="M880 300c-30 8-52 26-78 46m0 0 6-26m-6 26 26 4" stroke="#1971c2"/>
+      <path d="M900 280c14-20 26 18 40 0s24 16 38-2 26 18 42 0M900 312c16-16 30 14 46-2s26 14 44 0"/>
+      <path d="M230 540c18-22 30 20 48-4s30 20 50-2 30 18 48 0M230 575c22-18 38 16 60-2s34 14 54 0"/>
+      <g class="sel" stroke="#0b63c5" stroke-width="2">
+        <rect x="420" y="220" width="380" height="270" stroke-dasharray="7 6"/>
+        <g fill="#fff"><rect x="412" y="212" width="16" height="16"/><rect x="602" y="212" width="16" height="16"/><rect x="792" y="212" width="16" height="16"/><rect x="412" y="347" width="16" height="16"/><rect x="792" y="347" width="16" height="16"/><rect x="412" y="482" width="16" height="16"/><rect x="602" y="482" width="16" height="16"/><rect x="792" y="482" width="16" height="16"/></g>
+      </g>
+    </svg>
+    <div class="hint" role="status">Bewegen: ziehen verschiebt · zwei Finger oder Mausrad zoomen</div>
+    <div class="float selbar" role="toolbar" aria-label="Auswahl bearbeiten">
+      <button class="btn ghost icon" aria-label="Farbe der Form" onclick="toast('Farbe: öffnet Farbwahl')"><svg class="i" aria-hidden="true"><use href="#i-edit"/></svg></button>
+      <button class="btn ghost icon" aria-label="Form füllen" onclick="toast('Füllung gesetzt')"><svg class="i" aria-hidden="true"><use href="#i-fill"/></svg></button>
+      <button class="btn ghost icon" aria-label="Duplizieren" onclick="toast('Dupliziert')"><svg class="i" aria-hidden="true"><use href="#i-copy"/></svg></button>
+      <button class="btn ghost icon danger" aria-label="Form löschen" onclick="toast('Form gelöscht','Rückgängig')"><svg class="i" aria-hidden="true"><use href="#i-trash"/></svg></button>
+    </div>
+    <div class="float pages" role="group" aria-label="Seiten">
+      <button class="btn ghost icon" id="prev" aria-label="Vorherige Seite"><svg class="i" aria-hidden="true"><use href="#i-left"/></svg></button>
+      <a class="btn ghost" href="seiten.html" id="counter" aria-label="Seitenübersicht öffnen"><svg class="i" aria-hidden="true"><use href="#i-pages"/></svg> <span id="pg">3 / 7</span></a>
+      <button class="btn ghost icon" id="next" aria-label="Nächste Seite"><svg class="i" aria-hidden="true"><use href="#i-right"/></svg></button>
+      <button class="btn ghost icon" id="add" aria-label="Neue Seite"><svg class="i" aria-hidden="true"><use href="#i-plus"/></svg></button>
+    </div>
+    <button class="float edge" id="edge" hidden aria-label="Weiterer Inhalt außerhalb des Bildschirms – alles zeigen">Weiterer Inhalt <svg class="i" aria-hidden="true"><use href="#i-right"/></svg></button>
+    <div class="float zoom" role="group" aria-label="Ansicht">
+      <button class="btn ghost icon zstep" aria-label="Verkleinern" data-z="-1"><svg class="i" aria-hidden="true"><use href="#i-minus"/></svg></button>
+      <button class="btn ghost" id="fit" aria-label="Alles zeigen: gesamten gezeichneten Bereich einpassen" title="Alles zeigen (0)"><svg class="i" aria-hidden="true"><use href="#i-fit"/></svg><span class="fitlbl">Alles</span></button>
+      <button class="btn ghost icon zstep" aria-label="Vergrößern" data-z="1"><svg class="i" aria-hidden="true"><use href="#i-plus"/></svg></button>
+    </div>
+  </main>
+
+  <div class="backdrop"></div>
+  <aside class="drawer" id="drawer" data-pop hidden aria-label="Notizbücher">
+    <header><h2>Notizbücher</h2><button class="btn ghost icon" data-close aria-label="Schließen"><svg class="i" aria-hidden="true"><use href="#i-x"/></svg></button></header>
+    <div class="list">
+      <div class="nb"><button class="menu-item" data-close><svg class="i" aria-hidden="true"><use href="#i-book"/></svg><span>Einkauf &amp; Haushalt</span></button><button class="btn ghost icon" aria-label="Einkauf &amp; Haushalt: Umbenennen, Teilen, Löschen" onclick="toast('Menü: Umbenennen · Teilen · Löschen')"><svg class="i" aria-hidden="true"><use href="#i-more"/></svg></button></div>
+      <div class="nb current"><button class="menu-item" data-close aria-current="true"><svg class="i" aria-hidden="true"><use href="#i-book"/></svg><span>Projektskizzen</span><span class="badge">geteilt</span></button><button class="btn ghost icon" aria-label="Projektskizzen: Umbenennen, Teilen, Löschen" onclick="toast('Menü: Umbenennen · Teilen · Löschen')"><svg class="i" aria-hidden="true"><use href="#i-more"/></svg></button></div>
+      <div class="nb"><button class="menu-item" data-close><svg class="i" aria-hidden="true"><use href="#i-book"/></svg><span>Vorlesung Statik II</span></button><button class="btn ghost icon" aria-label="Vorlesung Statik II: Umbenennen, Teilen, Löschen" onclick="toast('Menü: Umbenennen · Teilen · Löschen')"><svg class="i" aria-hidden="true"><use href="#i-more"/></svg></button></div>
+      <button class="menu-item" style="color:var(--accent);font-weight:600" onclick="toast('Neues Notizbuch angelegt')"><svg class="i" aria-hidden="true"><use href="#i-plus"/></svg> Neues Notizbuch</button>
+    </div>
+    <footer>
+      <a class="menu-item" href="teilen.html"><svg class="i" aria-hidden="true"><use href="#i-share"/></svg> Teilen / Beitreten</a>
+      <a class="menu-item" href="einstellungen.html"><svg class="i" aria-hidden="true"><use href="#i-settings"/></svg> Einstellungen</a>
+    </footer>
+  </aside>
+</div>
+</div></div>
+
+<script>
+(function () {
+  const root = document.documentElement;
+  const KEY = 'nb-proto-theme';
+  root.dataset.theme = localStorage.getItem(KEY) ||
+    (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+
+  const close = (el) => {
+    el.hidden = true;
+    document.querySelectorAll('[data-toggle="#' + el.id + '"]').forEach((b) => b.setAttribute('aria-expanded', 'false'));
+  };
+  const closeAll = () => document.querySelectorAll('[data-pop]:not([hidden])').forEach(close);
+
+  document.addEventListener('click', (e) => {
+    if (e.target.closest('[data-theme-toggle]')) {
+      root.dataset.theme = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      localStorage.setItem(KEY, root.dataset.theme);
+      return;
+    }
+    const tab = e.target.closest('[role="tab"]');
+    if (tab) {
+      const box = tab.closest('[data-tabs]');
+      box.querySelectorAll('[role="tab"]').forEach((t) => t.setAttribute('aria-selected', String(t === tab)));
+      box.querySelectorAll('[data-panel]').forEach((p) => { p.hidden = p.dataset.panel !== tab.dataset.tab; });
+      return;
+    }
+    const tg = e.target.closest('[data-toggle]');
+    if (tg) {
+      const el = document.querySelector(tg.dataset.toggle);
+      const wasOpen = !el.hidden;
+      closeAll();
+      if (!wasOpen) { el.hidden = false; tg.setAttribute('aria-expanded', 'true'); }
+      return;
+    }
+    if (!e.target.closest('[data-pop]') || e.target.closest('[data-close]')) closeAll();
+  });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeAll(); });
+
+  let timer;
+  window.toast = (msg, action) => {
+    document.querySelector('.toast')?.remove();
+    const t = document.createElement('div');
+    t.className = 'toast';
+    t.setAttribute('role', 'status');
+    t.innerHTML = '<span></span>';
+    t.firstChild.textContent = msg;
+    if (action) {
+      const b = document.createElement('button');
+      b.className = 'btn';
+      b.textContent = action;
+      b.onclick = () => { t.remove(); window.toast('Wiederhergestellt'); };
+      t.appendChild(b);
+    }
+    document.body.appendChild(t);
+    clearTimeout(timer);
+    timer = setTimeout(() => t.remove(), action ? 6000 : 2500);
+  };
+})();
+
+(function () {
+  const $ = (s) => document.querySelector(s), $$ = (s) => [...document.querySelectorAll(s)];
+  const app = $('.app');
+  const setMode = (m) => { app.dataset.mode = m; $('#mode').setAttribute('aria-pressed', String(m === 'move')); };
+  $('#mode').onclick = () => setMode(app.dataset.mode === 'draw' ? 'move' : 'draw');
+
+  const setTool = (t) => {
+    app.dataset.tool = t;
+    $$('.tool').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.tool === t)));
+    setMode('draw');
+  };
+  $$('.tool').forEach((b) => b.addEventListener('click', () => setTool(b.dataset.tool)));
+  $$('[data-shape]').forEach((b) => b.addEventListener('click', () => {
+    $('#shape-icon').setAttribute('href', '#i-' + b.dataset.shape);
+    $('#pop-shapes').hidden = true;
+    setTool('shape');
+  }));
+
+  const colors = [['#14171c', 'Schwarz'], ['#868e96', 'Grau'], ['#e03131', 'Rot'], ['#f08c00', 'Orange'], ['#f2c200', 'Gelb'],
+    ['#2f9e44', 'Grün'], ['#0c8599', 'Türkis'], ['#1971c2', 'Blau'], ['#6741d9', 'Violett']];
+  $('#swatches').innerHTML = colors.map(([c, n], i) =>
+    `<button class="swatch" style="--c:${c}" data-c="${c}" aria-label="${n}" aria-pressed="${i === 0}"><i></i></button>`).join('') +
+    '<button class="swatch custom" aria-label="Eigene Farbe wählen" aria-pressed="false"><i></i></button>';
+  const sizes = [[4, 'Fein'], [7, 'Dünn'], [11, 'Mittel'], [16, 'Dick'], [24, 'Sehr dick']];
+  $('#sizes').innerHTML = sizes.map(([d, n], i) =>
+    `<button class="size" style="--d:${d}px" data-d="${d}" aria-label="${n}" aria-pressed="${i === 1}"><i></i></button>`).join('');
+  const pick = (box, el) => $$(box + ' button').forEach((b) => b.setAttribute('aria-pressed', String(b === el)));
+  $('#swatches').onclick = (e) => {
+    const b = e.target.closest('.swatch'); if (!b) return;
+    pick('#swatches', b);
+    if (b.dataset.c) $('#chip-dot').style.background = b.dataset.c; else toast('Farbwähler – im Prototyp ohne Funktion');
+  };
+  $('#sizes').onclick = (e) => {
+    const b = e.target.closest('.size'); if (!b) return;
+    pick('#sizes', b);
+    $('#chip-size').style.width = $('#chip-size').style.height = Math.min(20, b.dataset.d) + 'px';
+  };
+  $('#bg-seg').onclick = (e) => {
+    const b = e.target.closest('button'); if (!b) return;
+    pick('#bg-seg', b); $('#canvas').dataset.bg = b.dataset.bg;
+  };
+
+  let page = 3, total = 7, zoom = 0;
+  const show = () => { $('#pg').textContent = page + ' / ' + total; $('#prev').disabled = page === 1; $('#next').disabled = page === total; };
+  $('#prev').onclick = () => { page--; show(); };
+  $('#next').onclick = () => { page++; show(); };
+  $('#add').onclick = () => { total++; page = total; show(); toast('Seite ' + total + ' angelegt'); };
+  // Zoom ohne Prozentzahl: Bezugspunkt ist „alles Gezeichnete passt auf den Bildschirm“, nicht 100 %
+  const view = () => {
+    $('.art').style.transform = 'scale(' + Math.pow(1.35, zoom) + ')';
+    const off = zoom > 0;               // im Prototyp: hineingezoomt = etwas liegt außerhalb
+    app.dataset.off = String(off);
+    $('#edge').hidden = !off;
+  };
+  const fit = () => { const was = zoom !== 0; zoom = 0; view(); if (was) toast('Alles im Blick'); };
+  $$('[data-z]').forEach((b) => b.onclick = () => { zoom = Math.min(4, Math.max(-3, zoom + +b.dataset.z)); view(); });
+  $('#fit').onclick = fit;
+  $('#edge').onclick = fit;
+
+  $('#undo').onclick = () => { $('#redo').disabled = false; };
+  $('#redo').onclick = () => { $('#redo').disabled = true; };
+
+  $('#phone-toggle').onclick = (e) => {
+    const on = $('#stage').classList.toggle('phone');
+    e.currentTarget.setAttribute('aria-pressed', String(on));
+  };
+
+  // Leertaste halten = vorübergehend Bewegen; Buchstaben wählen Werkzeuge
+  let held = false;
+  const keys = { p: 'pen', e: 'eraser', f: 'fill', s: 'shape', v: 'select' };
+  document.addEventListener('keydown', (e) => {
+    if (e.target.matches('input,textarea')) return;
+    if (e.code === 'Space' && !held && app.dataset.mode === 'draw') { held = true; setMode('move'); e.preventDefault(); }
+    else if (keys[e.key]) setTool(keys[e.key]);
+    else if (e.key === 'h') $('#mode').click();
+    else if (e.key === '0') fit();
+  });
+  document.addEventListener('keyup', (e) => { if (e.code === 'Space' && held) { held = false; setMode('draw'); } });
+})();
+</script>
+</body>
+</html>

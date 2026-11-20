@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Notizbuch – Redesign: Seitenübersicht</title>
+<style>
+/*@CSS*/
+.head{display:flex;align-items:center;gap:var(--s3);flex-wrap:wrap}
+.head .grow{flex:1;min-width:180px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:var(--s4);list-style:none;margin:0;padding:0}
+.thumb{position:relative;display:grid;gap:var(--s2)}
+.thumb a,.thumb .new{display:block;aspect-ratio:4/3;border-radius:var(--r-sm);border:2px solid var(--border-strong);background:var(--paper);overflow:hidden;cursor:pointer}
+.thumb a:hover{border-color:var(--accent)}
+.thumb.current a{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.thumb svg.art{width:100%;height:100%;display:block}
+.thumb .cap{display:flex;flex-wrap:wrap;gap:var(--s1);align-items:center;justify-content:space-between;font-weight:600;min-height:var(--tap)}
+.thumb .new{display:grid;place-items:center;background:transparent;border-style:dashed;color:var(--accent);font:600 var(--fs-md) var(--font-ui);width:100%}
+.thumb .new:hover{background:var(--accent-soft)}
+.thumb.gone a{opacity:.55;border-style:dashed}
+</style>
+</head>
+<body>
+<!--@ICONS-->
+<!--@NAV-->
+<div class="page"><div class="inner">
+  <div class="head">
+    <a class="btn ghost icon" href="index.html" aria-label="Zurück zur Zeichenfläche">{{i:left}}</a>
+    <div class="grow"><h1>Projektskizzen</h1><p class="muted">7 Seiten · zuletzt geändert heute, 14:32</p></div>
+    <button class="btn primary" id="add">{{i:plus}} Neue Seite</button>
+  </div>
+
+  <ul class="grid" id="grid" aria-label="Seiten"></ul>
+
+  <section class="stack" aria-labelledby="trash-h">
+    <div class="row between"><h2 id="trash-h">Gelöschte Seiten</h2><span class="muted small">bleiben 30 Tage wiederherstellbar</span></div>
+    <ul class="grid" id="trash"></ul>
+  </section>
+</div></div>
+
+<script>
+/*@JS*/
+(function () {
+  const art = [
+    '<path d="M20 30c10-12 18 10 28 0s16 10 26 0M20 50h70M20 66h50"/>',
+    '<rect x="30" y="26" width="60" height="44"/><path d="M100 40l20 14-20 14"/>',
+    '<path d="M18 28c8-10 14 8 22 0s14 8 22 0"/><rect x="52" y="40" width="50" height="34"/><ellipse cx="77" cy="57" rx="10" ry="7" fill="#ffe8a3" stroke="#f08c00"/>',
+    '<path d="M20 30h90M20 44h80M20 58h86M20 72h40"/>',
+    '<circle cx="50" cy="52" r="22"/><path d="M80 34l30 36M110 34 80 70" stroke="#e03131"/>',
+    '<path d="M20 70c20-40 40-40 50-10s30 10 50-30" stroke="#1971c2"/>',
+    '<path d="M22 30c10-8 16 8 26 0M22 48h60"/>',
+  ];
+  const svg = (i) => `<svg class="art" viewBox="0 0 140 105" fill="none" stroke="#14171c" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${art[i % art.length]}</svg>`;
+  const use = (n) => `<svg class="i" aria-hidden="true"><use href="#i-${n}"/></svg>`;
+  let n = 7;
+  const grid = document.getElementById('grid');
+  const tile = (i) => `<li class="thumb${i === 3 ? ' current' : ''}"><a href="index.html" aria-label="Seite ${i} öffnen"${i === 3 ? ' aria-current="page"' : ''}>${svg(i - 1)}</a>
+    <div class="cap"><span>Seite ${i}${i === 3 ? ' · aktuell' : ''}</span><button class="btn ghost icon" aria-label="Seite ${i}: Verschieben, Duplizieren, Löschen" onclick="toast('Menü: Verschieben · Duplizieren · Löschen')">${use('more')}</button></div></li>`;
+  const render = () => {
+    grid.innerHTML = Array.from({ length: n }, (_, k) => tile(k + 1)).join('') +
+      `<li class="thumb"><button class="new" id="new">${use('plus')}</button><div class="cap"><span class="muted">Neue Seite</span></div></li>`;
+    document.getElementById('new').setAttribute('aria-label', 'Neue Seite');
+    document.getElementById('new').onclick = add;
+  };
+  const add = () => { n++; render(); toast('Seite ' + n + ' angelegt'); };
+  document.getElementById('add').onclick = add;
+  render();
+  document.getElementById('trash').innerHTML = `<li class="thumb gone"><a href="#" aria-label="Gelöschte Seite ansehen">${svg(3)}</a>
+    <div class="cap"><span>vor 2 Tagen</span><button class="btn" onclick="toast('Seite wiederhergestellt')">Wiederherstellen</button></div></li>`;
+})();
+</script>
+</body>
+</html>

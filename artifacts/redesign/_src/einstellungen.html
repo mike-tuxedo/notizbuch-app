@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Notizbuch – Redesign: Einstellungen</title>
+<style>
+/*@CSS*/
+.sheet{display:grid;grid-template-columns:220px 1fr;gap:var(--s5);align-items:start}
+.tabs{display:grid;gap:2px;position:sticky;top:0}
+.tabs [role="tab"]{justify-content:flex-start}
+.tabs [role="tab"][aria-selected="true"]{background:var(--accent-soft);color:var(--accent);font-weight:700}
+.set{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--s4);padding:var(--s3) 0;border-bottom:1px solid var(--border)}
+.set:last-child{border-bottom:0}
+.set p{color:var(--text-2);font-size:var(--fs-sm);max-width:52ch}
+.devs{list-style:none;margin:0;padding:0}
+.devs li{display:flex;align-items:center;gap:var(--s3);min-height:var(--tap);padding:var(--s2) 0;border-bottom:1px solid var(--border)}
+.devs li span:first-of-type{flex:1}
+@media (max-width:700px){
+  .sheet{grid-template-columns:1fr}
+  .tabs{display:flex;overflow-x:auto;position:static}
+  .tabs [role="tab"]{white-space:nowrap;width:auto}
+  .set{flex-wrap:wrap}
+}
+</style>
+</head>
+<body>
+<!--@ICONS-->
+<!--@NAV-->
+<div class="page"><div class="inner">
+  <div class="row">
+    <a class="btn ghost icon" href="index.html" aria-label="Zurück zur Zeichenfläche">{{i:left}}</a>
+    <h1>Einstellungen</h1>
+  </div>
+
+  <div class="sheet" data-tabs>
+    <div class="tabs" role="tablist" aria-label="Bereiche">
+      <button class="menu-item" role="tab" aria-selected="true" data-tab="allg">{{i:settings}} Allgemein</button>
+      <button class="menu-item" role="tab" aria-selected="false" data-tab="dev">{{i:device}} Geräte</button>
+      <button class="menu-item" role="tab" aria-selected="false" data-tab="conn">{{i:share}} Verbindung</button>
+      <button class="menu-item" role="tab" aria-selected="false" data-tab="data">{{i:download}} Daten &amp; Schlüssel</button>
+    </div>
+
+    <div>
+      <section class="card stack" data-panel="allg">
+        <h2>Darstellung</h2>
+        <div class="set">
+          <div><h3>Erscheinungsbild</h3><p>Betrifft nur Leisten und Dialoge. Die Zeichenfläche bleibt immer weiß.</p></div>
+          <div class="seg" role="group" aria-label="Erscheinungsbild" id="theme-seg">
+            <button aria-pressed="true">System</button><button aria-pressed="false" data-t="light">Hell</button><button aria-pressed="false" data-t="dark">Dunkel</button>
+          </div>
+        </div>
+        <h2>Eingabe</h2>
+        <div class="set">
+          <div><h3><label for="s-pen">Nur der Stift zeichnet</label></h3><p>Finger zeichnen nicht. Schützt vor Strichen durch die aufliegende Hand.</p></div>
+          <input class="switch" type="checkbox" id="s-pen" checked>
+        </div>
+        <div class="set">
+          <div><h3><label for="s-finger">Finger bewegen die Seite</label> <span class="badge">Neu</span></h3><p>Ein Finger verschiebt, zwei Finger zoomen – während der Stift weiter zeichnet. Der Wechsel zu „Bewegen“ wird damit fast überflüssig.</p></div>
+          <input class="switch" type="checkbox" id="s-finger" checked>
+        </div>
+        <div class="set">
+          <div><h3><label for="s-space">Halten zum Bewegen</label> <span class="badge">Neu</span></h3><p>Leertaste oder Stifttaste gedrückt halten wechselt vorübergehend zu „Bewegen“.</p></div>
+          <input class="switch" type="checkbox" id="s-space" checked>
+        </div>
+      </section>
+
+      <section class="card stack" data-panel="dev" hidden>
+        <div class="row between"><h2>Meine Geräte</h2><span class="status">Synchron</span></div>
+        <ul class="devs">
+          <li>{{i:device}}<span><strong>Dieses Gerät</strong></span><span class="muted small">Zeichen-Tablet</span></li>
+          <li>{{i:device}}<span>Gerät a3f1</span><span class="muted small">direkt verbunden</span></li>
+          <li>{{i:device}}<span>Gerät 9c02</span><span class="muted small">über Relay</span></li>
+        </ul>
+        <button class="btn primary" data-toggle="#pair" aria-expanded="false">{{i:plus}} Gerät hinzufügen</button>
+        <div class="stack" id="pair" data-pop hidden>
+          <div class="note warn"><strong>Dieser Code enthält deinen Schlüssel.</strong> Nur auf eigenen Geräten scannen – wer ihn hat, liest alle Notizbücher mit.</div>
+          <div class="row"><div class="qr"><span>QR · Geräte-Sync</span></div>
+            <div class="stack" style="flex:1;min-width:220px">
+              <p class="mono">https://…/app.html#cb788c69…2bb29036</p>
+              <button class="btn" onclick="toast('Link kopiert')">{{i:copy}} Link kopieren</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card stack" data-panel="conn" hidden>
+        <h2>Verbindung</h2>
+        <p class="muted">Gilt nur für dieses Gerät und wird nicht synchronisiert.</p>
+        <div class="field"><label for="turn">TURN-Server oder ICE-Endpunkt</label>
+          <input class="input" id="turn" placeholder="turn:turn.example.org:3478 oder https://…"><span class="small muted">Leer lassen: nur STUN. Nötig hinter strengem NAT.</span></div>
+        <div class="row">
+          <div class="field" style="flex:1;min-width:180px"><label for="tu">Benutzername</label><input class="input" id="tu" autocomplete="off"></div>
+          <div class="field" style="flex:1;min-width:180px"><label for="tp">Passwort</label><input class="input" id="tp" type="password" autocomplete="off"></div>
+        </div>
+        <div class="field"><label for="relay">Relay-Server <span class="badge">Neu</span></label>
+          <input class="input" id="relay" value="wss://notes.mike.fm-media-staging.at"></div>
+        <div class="set">
+          <div><h3><label for="s-diag">Sync-Diagnose anzeigen</label></h3><p>Blendet Version, Verbindungsweg und Strichzahl unten rechts ein.</p></div>
+          <input class="switch" type="checkbox" id="s-diag">
+        </div>
+        <div class="row"><button class="btn primary" onclick="toast('Gespeichert – Verbindungen werden neu aufgebaut')">Speichern</button><span class="status">Standard (nur STUN)</span></div>
+      </section>
+
+      <section class="card stack" data-panel="data" hidden>
+        <h2>Schlüssel</h2>
+        <div class="note danger"><strong>Ohne Schlüssel keine Wiederherstellung.</strong> Geht er verloren, sind die Notizen auf neuen Geräten nicht mehr lesbar.</div>
+        <div class="row"><button class="btn" onclick="toast('Schlüsseldatei gespeichert')">{{i:download}} Als Datei sichern</button><button class="btn" onclick="toast('Schlüssel kopiert')">{{i:copy}} Kopieren</button></div>
+        <h2>Sicherung</h2>
+        <div class="field"><label for="pp">Passwort für die Sicherungsdatei</label>
+          <input class="input" id="pp" type="password" placeholder="mindestens 8 Zeichen"></div>
+        <div class="row"><button class="btn" onclick="toast('Sicherung exportiert (.enc)')">{{i:download}} Alle Notizbücher exportieren</button><button class="btn" onclick="toast('Datei wählen …')">{{i:upload}} Sicherung importieren</button></div>
+        <p class="muted small">Version 2026-11-20 · relaylive-v39</p>
+      </section>
+    </div>
+  </div>
+</div></div>
+
+<script>
+/*@JS*/
+document.getElementById('theme-seg').onclick = (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  [...b.parentNode.children].forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+  document.documentElement.dataset.theme = b.dataset.t || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+};
+</script>
+</body>
+</html>

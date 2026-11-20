@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Notizbuch – Redesign: Hauptansicht</title>
+<style>
+/*@CSS*/
+
+/* ── Hauptansicht ───────────────────────────────────── */
+.stage{flex:1;min-height:0;display:flex;justify-content:center}
+.frame{width:100%;height:100%;container:app/inline-size}
+.stage.phone{padding:var(--s3)}
+.stage.phone .frame{width:390px;max-width:100%;border:2px solid var(--border-strong);border-radius:22px;overflow:hidden}
+
+.app{position:relative;height:100%;overflow:hidden;display:grid;background:var(--paper);
+  grid-template-columns:auto 1fr auto;grid-template-rows:auto 1fr;
+  grid-template-areas:"left tools right" "canvas canvas canvas"}
+.tb{display:flex;align-items:center;gap:var(--s2);min-height:var(--bar-h);padding:var(--s1) var(--s3);background:var(--surface);border-bottom:1px solid var(--border)}
+.tb-left{grid-area:left;min-width:0}
+.toolrow{grid-area:tools;justify-content:center;position:relative}
+.tb-right{grid-area:right}
+.divider{width:1px;height:28px;background:var(--border);margin:0 var(--s1);flex:none}
+
+.title-btn{max-width:260px;padding:0 var(--s3) 0 var(--s2);font-size:var(--fs-lg);font-weight:700}
+.title-btn span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+
+/* Ein Schalter: Hand an = bewegen, Hand aus = zurück zum letzten Werkzeug */
+.mode{display:inline-flex;align-items:center;justify-content:center;gap:var(--s2);height:var(--tap);min-width:var(--tap);padding:0 var(--s2);border-radius:var(--r-pill);
+  background:var(--surface-2);border:1px solid var(--border-strong);color:var(--text);font:600 var(--fs-sm)/1 var(--font-ui);cursor:pointer;flex:none}
+.mode .lbl{display:none}
+.mode:hover{border-color:var(--text)}
+.mode[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+
+.tools{display:flex;gap:2px}
+.tool,.opt{display:inline-flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;min-width:var(--tap);height:var(--tap);padding:0 6px;
+  border:1px solid transparent;border-radius:var(--r-sm);background:transparent;color:var(--text);font:600 12px/1 var(--font-ui);cursor:pointer}
+.tool .lbl,.opt .lbl{display:none}
+.tool:hover,.opt:hover{background:var(--surface-2)}
+.opt[aria-expanded="true"]{background:var(--surface-2);border-color:var(--border-strong)}
+.tool[aria-pressed="true"]{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+.app[data-mode="move"] .tool[aria-pressed="true"]{background:transparent;border-color:var(--border-strong);color:var(--text)}
+
+/* Farbe und Strichstärke: zwei getrennte Knöpfe, jeder zeigt den aktuellen Stand */
+.opt .dot{width:22px;height:22px;border-radius:50%;background:var(--ink);border:2px solid var(--paper);outline:1px solid var(--border-strong)}
+.opt .sizedot{width:22px;height:22px;display:grid;place-items:center}
+.opt .sizedot i{width:7px;height:7px;border-radius:50%;background:var(--text)}
+.swatches{display:grid;grid-template-columns:repeat(5,var(--tap));gap:var(--s1)}
+.swatch{width:var(--tap);height:var(--tap);border-radius:50%;border:0;background:transparent;cursor:pointer;display:grid;place-items:center}
+.swatch i{width:30px;height:30px;border-radius:50%;background:var(--c);outline:1px solid var(--border-strong)}
+.swatch:hover i{transform:scale(1.1)}
+.swatch[aria-pressed="true"] i{box-shadow:0 0 0 3px var(--surface),0 0 0 6px var(--accent)}
+.swatch.custom i{background:conic-gradient(#e03131,#f2c200,#2f9e44,#1971c2,#6741d9,#e03131)}
+.sizes{display:grid;grid-template-columns:repeat(5,var(--tap));gap:var(--s1)}
+.size{width:var(--tap);height:var(--tap);border-radius:var(--r-sm);border:1px solid transparent;background:transparent;cursor:pointer;display:grid;place-items:center}
+.size i{width:var(--d);height:var(--d);border-radius:50%;background:var(--text)}
+.size:hover{background:var(--surface-2)}
+.size[aria-pressed="true"]{background:var(--accent-soft);border-color:var(--accent)}
+
+/* Zeichenfläche: immer weiß */
+.canvas{grid-area:canvas;position:relative;overflow:hidden;cursor:crosshair;background-color:var(--paper);
+  background-image:linear-gradient(var(--paper-line) 1px,transparent 1px),linear-gradient(90deg,var(--paper-line) 1px,transparent 1px);background-size:28px 28px}
+.canvas[data-bg="lined"]{background-image:linear-gradient(var(--paper-line) 1px,transparent 1px)}
+.canvas[data-bg="blank"]{background-image:none}
+.app[data-mode="move"] .canvas{cursor:grab}
+.canvas svg.art{position:absolute;inset:0;width:100%;height:100%;transition:transform .15s;transform-origin:center}
+.sel{display:none}
+.app[data-tool="select"][data-mode="draw"] .sel{display:block}
+.float{position:absolute;display:flex;align-items:center;gap:2px;padding:3px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-pill);box-shadow:var(--shadow)}
+.float .btn{border-radius:var(--r-pill);flex:none}
+.float.selbar{left:50%;top:9%;transform:translateX(-50%);display:none}
+.app[data-tool="select"][data-mode="draw"] .float.selbar{display:flex}
+.pages{left:50%;bottom:var(--s4);transform:translateX(-50%)}
+.zoom{right:var(--s4);bottom:var(--s4)}
+/* Liegt Gezeichnetes außerhalb des Bildschirms, meldet sich „Alles zeigen“ */
+#fit{position:relative}
+.app[data-off="true"] #fit{background:var(--accent-soft);color:var(--accent)}
+.app[data-off="true"] #fit::after{content:"";position:absolute;top:6px;right:6px;width:10px;height:10px;border-radius:50%;background:var(--accent);border:2px solid var(--surface)}
+.edge{right:var(--s4);top:50%;transform:translateY(-50%);padding:0 var(--s2) 0 var(--s4);min-height:var(--tap);gap:var(--s1);background:var(--accent);border-color:var(--accent);color:var(--on-accent);font:600 var(--fs-sm) var(--font-ui);cursor:pointer}
+.edge:hover{filter:brightness(1.08)}
+.hint{position:absolute;left:50%;top:var(--s3);transform:translateX(-50%);padding:6px var(--s3);border-radius:var(--r-pill);background:var(--text);color:var(--surface);font-size:var(--fs-sm);font-weight:600;white-space:nowrap;display:none}
+.app[data-mode="move"] .hint{display:block}
+
+/* Notizbuch-Schublade */
+.drawer{position:absolute;z-index:40;inset:0 auto 0 0;width:min(var(--drawer-w),86%);display:flex;flex-direction:column;background:var(--surface);border-right:1px solid var(--border);box-shadow:var(--shadow)}
+.drawer header{display:flex;align-items:center;justify-content:space-between;padding:var(--s3) var(--s3) var(--s3) var(--s4);border-bottom:1px solid var(--border)}
+.drawer .list{flex:1;overflow:auto;padding:var(--s2)}
+.drawer footer{padding:var(--s2);border-top:1px solid var(--border);display:grid;gap:2px}
+.nb{display:flex;align-items:center;border-radius:var(--r-sm)}
+.nb .menu-item{flex:1;min-width:0;font-weight:600}
+.nb .menu-item span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.nb.current{background:var(--accent-soft)}
+.nb.current .menu-item{color:var(--accent)}
+.backdrop{display:none;position:absolute;inset:0;z-index:35;background:rgba(10,12,16,.45)}
+.app:has(.drawer:not([hidden])) .backdrop{display:block}
+
+/* Großes Zeichen-Tablet: Beschriftungen einblenden */
+@container app (min-width:1180px){
+  .tool,.opt{min-width:68px;height:48px}
+  .tool .lbl,.opt .lbl{display:block}
+  .mode .lbl{display:inline}
+  .mode{padding:0 var(--s4) 0 var(--s3)}
+}
+@container app (max-width:1000px){ .sync-text{display:none} .title-btn{max-width:160px} }
+/* Handy: Werkzeuge nach unten (Daumen), oben nur Titel + Verlauf */
+@container app (max-width:760px){
+  .app{grid-template-columns:1fr auto;grid-template-rows:auto 1fr auto;grid-template-areas:"left right" "canvas canvas" "tools tools"}
+  .toolrow{justify-content:space-between;gap:var(--s1);padding:var(--s1) var(--s2) max(var(--s1),env(safe-area-inset-bottom));border-bottom:0;border-top:1px solid var(--border)}
+  .toolrow .divider,.zoom .zstep,.zoom .fitlbl{display:none}
+  .toolrow,.tools{gap:0}
+  .tool,.opt,.mode{min-width:40px;padding:0}
+  .zoom{right:var(--s2);bottom:var(--s3)}
+  .zoom #fit{width:var(--tap);padding:0}
+  .pages{left:var(--s2);bottom:var(--s3);transform:none}
+  .pages .btn:not(.icon){padding:0 var(--s2)}
+  .toolrow .pop-wrap{position:static}
+  .toolrow .popover{top:auto;bottom:calc(100% + 8px);left:var(--s2);right:var(--s2)}
+  .swatches,.sizes{grid-template-columns:repeat(5,1fr);justify-items:center}
+  .tb{padding:var(--s1) var(--s2)}
+  .tb-right{gap:0}
+}
+</style>
+</head>
+<body>
+<!--@ICONS-->
+<!--@NAVEXTRA <button id="phone-toggle" aria-pressed="false">{{i:device}} Handy-Vorschau</button> -->
+<!--@NAV-->
+
+<div class="stage" id="stage"><div class="frame">
+<div class="app" data-mode="draw" data-tool="pen">
+
+  <div class="tb tb-left">
+    <button class="btn ghost title-btn" data-toggle="#drawer" aria-expanded="false" aria-label="Notizbücher öffnen – aktuell: Projektskizzen">{{i:menu}}<span>Projektskizzen</span></button>
+  </div>
+
+  <div class="tb toolrow" role="toolbar" aria-label="Werkzeuge">
+    <button class="mode" id="mode" aria-pressed="false" aria-label="Bewegen und Zoomen" title="Bewegen an/aus (H · Leertaste halten)">{{i:hand}}<span class="lbl">Bewegen</span></button>
+    <span class="divider"></span>
+    <div class="tools">
+      <button class="tool" data-tool="pen" aria-pressed="true" aria-label="Stift" title="Stift (P)">{{i:pen}}<span class="lbl">Stift</span></button>
+      <button class="tool" data-tool="eraser" aria-pressed="false" aria-label="Radierer" title="Radierer (E)">{{i:eraser}}<span class="lbl">Radierer</span></button>
+      <button class="tool" data-tool="fill" aria-pressed="false" aria-label="Füllen" title="Füllen (F)">{{i:fill}}<span class="lbl">Füllen</span></button>
+      <span class="pop-wrap">
+        <button class="tool" data-tool="shape" data-toggle="#pop-shapes" aria-pressed="false" aria-expanded="false" aria-label="Formen" title="Formen (S)"><svg class="i" aria-hidden="true"><use id="shape-icon" href="#i-shapes"/></svg><span class="lbl">Formen</span></button>
+        <div class="popover" id="pop-shapes" data-pop hidden>
+          <div class="menu">
+            <button class="menu-item" data-shape="rect">{{i:rect}} Rechteck</button>
+            <button class="menu-item" data-shape="circle">{{i:circle}} Ellipse</button>
+            <button class="menu-item" data-shape="line">{{i:line}} Linie</button>
+            <button class="menu-item" data-shape="arrow">{{i:arrow}} Pfeil</button>
+          </div>
+        </div>
+      </span>
+      <button class="tool" data-tool="select" aria-pressed="false" aria-label="Auswählen" title="Auswählen (V)">{{i:select}}<span class="lbl">Auswahl</span></button>
+    </div>
+    <span class="divider"></span>
+    <span class="pop-wrap">
+      <button class="opt" data-toggle="#pop-color" aria-expanded="false" aria-label="Farbe" title="Farbe"><span class="dot" id="chip-dot"></span><span class="lbl">Farbe</span></button>
+      <div class="popover" id="pop-color" data-pop hidden><div class="swatches" id="swatches"></div></div>
+    </span>
+    <span class="pop-wrap">
+      <button class="opt" data-toggle="#pop-size" aria-expanded="false" aria-label="Strichstärke" title="Strichstärke"><span class="sizedot"><i id="chip-size"></i></span><span class="lbl">Stärke</span></button>
+      <div class="popover" id="pop-size" data-pop hidden><div class="sizes" id="sizes"></div></div>
+    </span>
+  </div>
+
+  <div class="tb tb-right">
+    <button class="btn ghost icon" id="undo" aria-label="Rückgängig" title="Rückgängig (Strg+Z)">{{i:undo}}</button>
+    <button class="btn ghost icon" id="redo" aria-label="Wiederholen" title="Wiederholen (Strg+Umschalt+Z)" disabled>{{i:redo}}</button>
+    <span class="divider"></span>
+    <a class="status btn ghost" href="einstellungen.html" aria-label="Synchron, 2 Geräte verbunden – Geräte öffnen"><span class="sync-text">Synchron · 2 Geräte</span></a>
+    <span class="pop-wrap">
+      <button class="btn ghost icon" data-toggle="#pop-page" aria-expanded="false" aria-label="Seiten-Menü">{{i:more}}</button>
+      <div class="popover right" id="pop-page" data-pop hidden>
+        <div class="menu-label">Papier</div>
+        <div class="seg" id="bg-seg" style="margin:0 var(--s3) var(--s2)">
+          <button aria-pressed="true" data-bg="grid">Kariert</button>
+          <button aria-pressed="false" data-bg="lined">Liniert</button>
+          <button aria-pressed="false" data-bg="blank">Leer</button>
+        </div>
+        <div class="sep"></div>
+        <div class="menu">
+          <a class="menu-item" href="teilen.html">{{i:share}} Notizbuch teilen</a>
+          <button class="menu-item" data-close onclick="toast('Seite als PNG gespeichert')">{{i:download}} Seite als PNG</button>
+          <button class="menu-item" data-close onclick="toast('Seite als SVG gespeichert')">{{i:download}} Seite als SVG</button>
+          <button class="menu-item" data-close onclick="toast('Vollbild – im Prototyp ohne Funktion')">{{i:zen}} Vollbild</button>
+          <div class="sep"></div>
+          <button class="menu-item danger" data-close onclick="toast('Seite geleert','Rückgängig')">{{i:eraser}} Seite leeren</button>
+          <button class="menu-item danger" data-close onclick="toast('Seite 3 gelöscht','Rückgängig')">{{i:trash}} Seite löschen</button>
+        </div>
+      </div>
+    </span>
+  </div>
+
+  <main class="canvas" id="canvas" data-bg="grid" aria-label="Zeichenfläche">
+    <svg class="art" viewBox="0 0 1200 700" preserveAspectRatio="xMidYMid meet" fill="none" stroke="#14171c" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M210 120c20-30 38 28 58-2s36 30 56 0 34 26 54 2 40 24 60-4"/>
+      <path d="M210 150h250" stroke="#e03131" stroke-width="4"/>
+      <rect x="430" y="230" width="360" height="250" rx="2"/>
+      <ellipse cx="610" cy="355" rx="62" ry="46" fill="#ffe8a3" stroke="#f08c00"/>
+      <path d="M880 300c-30 8-52 26-78 46m0 0 6-26m-6 26 26 4" stroke="#1971c2"/>
+      <path d="M900 280c14-20 26 18 40 0s24 16 38-2 26 18 42 0M900 312c16-16 30 14 46-2s26 14 44 0"/>
+      <path d="M230 540c18-22 30 20 48-4s30 20 50-2 30 18 48 0M230 575c22-18 38 16 60-2s34 14 54 0"/>
+      <g class="sel" stroke="#0b63c5" stroke-width="2">
+        <rect x="420" y="220" width="380" height="270" stroke-dasharray="7 6"/>
+        <g fill="#fff"><rect x="412" y="212" width="16" height="16"/><rect x="602" y="212" width="16" height="16"/><rect x="792" y="212" width="16" height="16"/><rect x="412" y="347" width="16" height="16"/><rect x="792" y="347" width="16" height="16"/><rect x="412" y="482" width="16" height="16"/><rect x="602" y="482" width="16" height="16"/><rect x="792" y="482" width="16" height="16"/></g>
+      </g>
+    </svg>
+    <div class="hint" role="status">Bewegen: ziehen verschiebt · zwei Finger oder Mausrad zoomen</div>
+    <div class="float selbar" role="toolbar" aria-label="Auswahl bearbeiten">
+      <button class="btn ghost icon" aria-label="Farbe der Form" onclick="toast('Farbe: öffnet Farbwahl')">{{i:edit}}</button>
+      <button class="btn ghost icon" aria-label="Form füllen" onclick="toast('Füllung gesetzt')">{{i:fill}}</button>
+      <button class="btn ghost icon" aria-label="Duplizieren" onclick="toast('Dupliziert')">{{i:copy}}</button>
+      <button class="btn ghost icon danger" aria-label="Form löschen" onclick="toast('Form gelöscht','Rückgängig')">{{i:trash}}</button>
+    </div>
+    <div class="float pages" role="group" aria-label="Seiten">
+      <button class="btn ghost icon" id="prev" aria-label="Vorherige Seite">{{i:left}}</button>
+      <a class="btn ghost" href="seiten.html" id="counter" aria-label="Seitenübersicht öffnen">{{i:pages}} <span id="pg">3 / 7</span></a>
+      <button class="btn ghost icon" id="next" aria-label="Nächste Seite">{{i:right}}</button>
+      <button class="btn ghost icon" id="add" aria-label="Neue Seite">{{i:plus}}</button>
+    </div>
+    <button class="float edge" id="edge" hidden aria-label="Weiterer Inhalt außerhalb des Bildschirms – alles zeigen">Weiterer Inhalt {{i:right}}</button>
+    <div class="float zoom" role="group" aria-label="Ansicht">
+      <button class="btn ghost icon zstep" aria-label="Verkleinern" data-z="-1">{{i:minus}}</button>
+      <button class="btn ghost" id="fit" aria-label="Alles zeigen: gesamten gezeichneten Bereich einpassen" title="Alles zeigen (0)">{{i:fit}}<span class="fitlbl">Alles</span></button>
+      <button class="btn ghost icon zstep" aria-label="Vergrößern" data-z="1">{{i:plus}}</button>
+    </div>
+  </main>
+
+  <div class="backdrop"></div>
+  <aside class="drawer" id="drawer" data-pop hidden aria-label="Notizbücher">
+    <header><h2>Notizbücher</h2><button class="btn ghost icon" data-close aria-label="Schließen">{{i:x}}</button></header>
+    <div class="list">
+      <div class="nb"><button class="menu-item" data-close>{{i:book}}<span>Einkauf &amp; Haushalt</span></button><button class="btn ghost icon" aria-label="Einkauf &amp; Haushalt: Umbenennen, Teilen, Löschen" onclick="toast('Menü: Umbenennen · Teilen · Löschen')">{{i:more}}</button></div>
+      <div class="nb current"><button class="menu-item" data-close aria-current="true">{{i:book}}<span>Projektskizzen</span><span class="badge">geteilt</span></button><button class="btn ghost icon" aria-label="Projektskizzen: Umbenennen, Teilen, Löschen" onclick="toast('Menü: Umbenennen · Teilen · Löschen')">{{i:more}}</button></div>
+      <div class="nb"><button class="menu-item" data-close>{{i:book}}<span>Vorlesung Statik II</span></button><button class="btn ghost icon" aria-label="Vorlesung Statik II: Umbenennen, Teilen, Löschen" onclick="toast('Menü: Umbenennen · Teilen · Löschen')">{{i:more}}</button></div>
+      <button class="menu-item" style="color:var(--accent);font-weight:600" onclick="toast('Neues Notizbuch angelegt')">{{i:plus}} Neues Notizbuch</button>
+    </div>
+    <footer>
+      <a class="menu-item" href="teilen.html">{{i:share}} Teilen / Beitreten</a>
+      <a class="menu-item" href="einstellungen.html">{{i:settings}} Einstellungen</a>
+    </footer>
+  </aside>
+</div>
+</div></div>
+
+<script>
+/*@JS*/
+(function () {
+  const $ = (s) => document.querySelector(s), $$ = (s) => [...document.querySelectorAll(s)];
+  const app = $('.app');
+  const setMode = (m) => { app.dataset.mode = m; $('#mode').setAttribute('aria-pressed', String(m === 'move')); };
+  $('#mode').onclick = () => setMode(app.dataset.mode === 'draw' ? 'move' : 'draw');
+
+  const setTool = (t) => {
+    app.dataset.tool = t;
+    $$('.tool').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.tool === t)));
+    setMode('draw');
+  };
+  $$('.tool').forEach((b) => b.addEventListener('click', () => setTool(b.dataset.tool)));
+  $$('[data-shape]').forEach((b) => b.addEventListener('click', () => {
+    $('#shape-icon').setAttribute('href', '#i-' + b.dataset.shape);
+    $('#pop-shapes').hidden = true;
+    setTool('shape');
+  }));
+
+  const colors = [['#14171c', 'Schwarz'], ['#868e96', 'Grau'], ['#e03131', 'Rot'], ['#f08c00', 'Orange'], ['#f2c200', 'Gelb'],
+    ['#2f9e44', 'Grün'], ['#0c8599', 'Türkis'], ['#1971c2', 'Blau'], ['#6741d9', 'Violett']];
+  $('#swatches').innerHTML = colors.map(([c, n], i) =>
+    `<button class="swatch" style="--c:${c}" data-c="${c}" aria-label="${n}" aria-pressed="${i === 0}"><i></i></button>`).join('') +
+    '<button class="swatch custom" aria-label="Eigene Farbe wählen" aria-pressed="false"><i></i></button>';
+  const sizes = [[4, 'Fein'], [7, 'Dünn'], [11, 'Mittel'], [16, 'Dick'], [24, 'Sehr dick']];
+  $('#sizes').innerHTML = sizes.map(([d, n], i) =>
+    `<button class="size" style="--d:${d}px" data-d="${d}" aria-label="${n}" aria-pressed="${i === 1}"><i></i></button>`).join('');
+  const pick = (box, el) => $$(box + ' button').forEach((b) => b.setAttribute('aria-pressed', String(b === el)));
+  $('#swatches').onclick = (e) => {
+    const b = e.target.closest('.swatch'); if (!b) return;
+    pick('#swatches', b);
+    if (b.dataset.c) $('#chip-dot').style.background = b.dataset.c; else toast('Farbwähler – im Prototyp ohne Funktion');
+  };
+  $('#sizes').onclick = (e) => {
+    const b = e.target.closest('.size'); if (!b) return;
+    pick('#sizes', b);
+    $('#chip-size').style.width = $('#chip-size').style.height = Math.min(20, b.dataset.d) + 'px';
+  };
+  $('#bg-seg').onclick = (e) => {
+    const b = e.target.closest('button'); if (!b) return;
+    pick('#bg-seg', b); $('#canvas').dataset.bg = b.dataset.bg;
+  };
+
+  let page = 3, total = 7, zoom = 0;
+  const show = () => { $('#pg').textContent = page + ' / ' + total; $('#prev').disabled = page === 1; $('#next').disabled = page === total; };
+  $('#prev').onclick = () => { page--; show(); };
+  $('#next').onclick = () => { page++; show(); };
+  $('#add').onclick = () => { total++; page = total; show(); toast('Seite ' + total + ' angelegt'); };
+  // Zoom ohne Prozentzahl: Bezugspunkt ist „alles Gezeichnete passt auf den Bildschirm“, nicht 100 %
+  const view = () => {
+    $('.art').style.transform = 'scale(' + Math.pow(1.35, zoom) + ')';
+    const off = zoom > 0;               // im Prototyp: hineingezoomt = etwas liegt außerhalb
+    app.dataset.off = String(off);
+    $('#edge').hidden = !off;
+  };
+  const fit = () => { const was = zoom !== 0; zoom = 0; view(); if (was) toast('Alles im Blick'); };
+  $$('[data-z]').forEach((b) => b.onclick = () => { zoom = Math.min(4, Math.max(-3, zoom + +b.dataset.z)); view(); });
+  $('#fit').onclick = fit;
+  $('#edge').onclick = fit;
+
+  $('#undo').onclick = () => { $('#redo').disabled = false; };
+  $('#redo').onclick = () => { $('#redo').disabled = true; };
+
+  $('#phone-toggle').onclick = (e) => {
+    const on = $('#stage').classList.toggle('phone');
+    e.currentTarget.setAttribute('aria-pressed', String(on));
+  };
+
+  // Leertaste halten = vorübergehend Bewegen; Buchstaben wählen Werkzeuge
+  let held = false;
+  const keys = { p: 'pen', e: 'eraser', f: 'fill', s: 'shape', v: 'select' };
+  document.addEventListener('keydown', (e) => {
+    if (e.target.matches('input,textarea')) return;
+    if (e.code === 'Space' && !held && app.dataset.mode === 'draw') { held = true; setMode('move'); e.preventDefault(); }
+    else if (keys[e.key]) setTool(keys[e.key]);
+    else if (e.key === 'h') $('#mode').click();
+    else if (e.key === '0') fit();
+  });
+  document.addEventListener('keyup', (e) => { if (e.code === 'Space' && held) { held = false; setMode('draw'); } });
+})();
+</script>
+</body>
+</html>
