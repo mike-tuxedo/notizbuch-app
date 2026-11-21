@@ -36,7 +36,10 @@ const ok = (cond, label, extra = '') => { if (!cond) fails++; console.log(`${con
   await page.click('#btn-new-start'); await page.click('#btn-key-confirmed'); await ready(); await sleep(1500);
   ok(await $(() => document.querySelectorAll('canvas')[2]?.id === 'active-canvas'), 'canvas[2] ist die aktive Zeichenfläche');
   ok(await $(() => !document.getElementById('btn-add-testbook')), 'Testbuch-Knopf entfernt');
-  ok(await $(() => !document.querySelector('[data-tool="fill"]') && !!document.querySelector('[data-tool="shape"]') && !!document.querySelector('[data-tool="select"]')), 'Werkzeuge Formen und Auswahl vorhanden, keine Attrappe „Füllen“');
+  ok(await $(() => ['pen', 'eraser', 'fill', 'shape', 'select'].every(t => !!document.querySelector(`.toolrow [data-tool="${t}"]`)) && document.querySelectorAll('.toolrow [data-tool]').length === 5), 'Werkzeuge Stift, Radierer, Füllen, Formen, Auswahl vorhanden');
+  await page.keyboard.press('f'); await sleep(150);
+  ok(await $(() => document.querySelector('[data-tool="fill"]').getAttribute('aria-pressed') === 'true' && /\(F\)/.test(document.querySelector('[data-tool="fill"]').title)), '„Füllen“ ist keine Attrappe: Taste F wählt das Werkzeug');
+  await page.keyboard.press('p'); await sleep(150);
   ok(await $(() => !document.querySelector('[data-color="#ffffff"]')), 'Weiß nicht in der Palette');
   ok(await $(() => [...document.querySelectorAll('.main button')].every(b => b.getAttribute('aria-label') || b.title || b.textContent.trim())), 'alle Knöpfe der Hauptansicht haben aria-label/title');
 
@@ -204,7 +207,7 @@ const ok = (cond, label, extra = '') => { if (!cond) fails++; console.log(`${con
   ok((await look()).theme === 'light', '„system“ reagiert live auf Änderung (hell)');
 
   // ── Breiten ────────────────────────────────────────────────────────────
-  const layout = () => $(() => { const r = s => document.querySelector(s).getBoundingClientRect(); const c = r('#canvas-container'); return { lbl: getComputedStyle(document.querySelector('.tool .lbl')).display !== 'none', toolsBelow: r('.toolrow').top >= c.bottom - 1, zstep: getComputedStyle(document.getElementById('btn-zoom-in')).display !== 'none', fit: getComputedStyle(document.getElementById('btn-fit')).display !== 'none', minTap: Math.min(...[...document.querySelectorAll('.main .tb button, .main .float button, .main button.float')].filter(e => !e.hidden && e.getClientRects().length).map(e => Math.min(e.getBoundingClientRect().width, e.getBoundingClientRect().height))) }; });
+  const layout = () => $(() => { const r = s => document.querySelector(s).getBoundingClientRect(); const c = r('#canvas-container'); return { lbl: getComputedStyle(document.querySelector('.tool .lbl')).display !== 'none', toolsBelow: r('.toolrow').top >= c.bottom - 1, zstep: getComputedStyle(document.getElementById('btn-zoom-in')).display !== 'none', fit: getComputedStyle(document.getElementById('btn-fit')).display !== 'none', minTap: Math.min(...[...document.querySelectorAll('.main .tb button, .main .float button, .main button.float')].filter(e => !e.hidden && e.getClientRects().length).map(e => Math.min(e.getBoundingClientRect().width, e.getBoundingClientRect().height))), minW: Math.min(...[...document.querySelectorAll('.main .tb button, .main .float button, .main button.float')].filter(e => !e.hidden && e.getClientRects().length).map(e => e.getBoundingClientRect().width)), minH: Math.min(...[...document.querySelectorAll('.main .tb button, .main .float button, .main button.float')].filter(e => !e.hidden && e.getClientRects().length).map(e => e.getBoundingClientRect().height)), rowButtons: document.querySelectorAll('.toolrow button.tool, .toolrow button.opt, .toolrow button.mode').length }; });
   await sleep(300); let ly = await layout();
   ok(ly.lbl && !ly.toolsBelow && ly.zstep, '1400: Werkzeuge mit Beschriftung, oben', JSON.stringify(ly));
   await noHScroll('1400×900 hell'); await shot('main-light-1400.png');
@@ -218,7 +221,7 @@ const ok = (cond, label, extra = '') => { if (!cond) fails++; console.log(`${con
   await noHScroll('1024×768'); await shot('main-light-1024.png');
 
   await page.setViewportSize({ width: 360, height: 740 }); await sleep(500); await page.click('#btn-fit'); await sleep(300); ly = await layout();
-  ok(!ly.lbl && ly.toolsBelow && !ly.zstep && ly.fit && ly.minTap >= 44, '360: Werkzeuge unten, Zoom-Pille nur „Alles“, Bedienflächen ≥ 44 px', JSON.stringify(ly));
+  ok(!ly.lbl && ly.toolsBelow && !ly.zstep && ly.fit && ly.rowButtons === 8 && ly.minW >= 40 && ly.minH >= 44, '360: Werkzeuge unten (8 Knöpfe), Zoom-Pille nur „Alles“, Bedienflächen mindestens 40×44 px', JSON.stringify(ly));
   await noHScroll('360×740 hell'); await shot('main-light-360.png');
   await page.click('#btn-color'); await sleep(200);
   ok(await $(() => { const r = document.getElementById('pop-color').getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= document.querySelector('.toolrow').getBoundingClientRect().top; }), '360: Farb-Popover liegt vollständig im Bild über der Werkzeugreihe');
@@ -237,7 +240,7 @@ const ok = (cond, label, extra = '') => { if (!cond) fails++; console.log(`${con
   await page.click('#sync-status'); await sleep(200);
   ok(await visible('#settings-modal') && await visible('#set-panel-connection') && await $(() => document.getElementById('console').classList.contains('debug-off')), 'Klick auf den Sync-Status öffnet Einstellungen → Verbindung (Diagnose bleibt aus)');
   await page.click('#set-diag'); await sleep(200);
-  ok(await $(() => !document.getElementById('console').classList.contains('debug-off')) && /shapes-v47/.test(await $(() => document.getElementById('console').innerText)), 'Schalter „Sync-Diagnose“ blendet das Overlay ein (Version v45)');
+  ok(await $(() => !document.getElementById('console').classList.contains('debug-off')) && /fill-v48/.test(await $(() => document.getElementById('console').innerText)), 'Schalter „Sync-Diagnose“ blendet das Overlay ein (Version v45)');
   await page.click('#set-diag'); await sleep(200);
   ok(await $(() => document.getElementById('console').classList.contains('debug-off')), 'Schalter aus blendet es wieder aus');
   await page.keyboard.press('Escape'); await sleep(200);

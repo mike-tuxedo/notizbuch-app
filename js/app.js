@@ -6,6 +6,7 @@ import { initStorage, savePageData, loadPageData, deletePageData, deleteNotebook
 import {
   roundPoints, drawStrokeToCanvas, drawBackground,
   SHAPE_TYPES, roundShape, shapeOutlinePoints, shapeToSvg,
+  isValidFill, fillOutlinePoints, fillToSvg, traceFillRegion, simplifyRing,
   isValidTransform, transformStroke, strokeGeomBounds, hitTestStroke
 } from './canvas.js';
 import {
@@ -41,7 +42,7 @@ const PEN_SIZES = [
   { name: 'XL', label: 'Sehr dick', size: 16, dot: 24 }
 ];
 
-const APP_VERSION = '2026-11-20-shapes-v47';
+const APP_VERSION = '2026-11-20-fill-v48';
 const PRESENCE_INTERVAL_MS = 5000;
 const PRESENCE_TIMEOUT_MS = 15000;
 
@@ -57,7 +58,7 @@ const state = {
   currentPageIds: {},
 
   // Tools
-  tool: 'pen',        // 'pen' | 'eraser' | 'shape' | 'select' | 'hand' (hand = Bewegen-Schalter an)
+  tool: 'pen',        // 'pen' | 'eraser' | 'fill' | 'shape' | 'select' | 'hand' (hand = Bewegen-Schalter an)
   shapeType: 'rect',  // Form des Werkzeugs „Formen“: 'rect' | 'ellipse' | 'line' | 'arrow'
   lastDrawTool: 'pen', // zuletzt benutztes Zeichenwerkzeug — kommt zurück, wenn die Hand ausgeht
   color: '#14171c',
@@ -271,7 +272,7 @@ function applyStrokePatch(base, patch) {
 
 /**
  * Seite aus dem Event-Log aufbauen — mit allem, was Auswahl und Rückgängig dazu wissen müssen.
- *  - stroke: Objekt (Stift, Radierer, Form), sichtbar ab clearedAt
+ *  - stroke: Objekt (Stift, Radierer, Form, Füllfläche), sichtbar ab clearedAt
  *  - undo mit targetStrokeId: blendet das Objekt aus (reason:'delete' = über die Auswahl gelöscht)
  *  - undo mit targetEventId: hebt ein edit-Event auf
  *  - redo mit targetEventId: hebt ein undo-Event auf (beide Arten)
@@ -600,7 +601,8 @@ function notebookMeta(notebook, opts = {}) {
         strokes: include
           ? (page.strokes || []).map(s => ({
               id: s.id, points: s.points, color: s.color, size: s.size, tool: s.tool, createdAt: strokeCreatedAt(s),
-              ...(s.shape ? { shape: s.shape, fill: s.fill ?? null } : {})
+              ...(s.shape ? { shape: s.shape, fill: s.fill ?? null } : {}),
+              ...(s.polys ? { polys: s.polys } : {})
             }))
           : [],
         events: include
@@ -2309,6 +2311,168 @@ function newShapeStroke(shape) {
   };
 }
 
+// ─── Füllen ─────────────────────────────────────────────────────────────────
+// Werkzeug „Füllen“: Ein Tipp füllt die geschlossene Fläche unter dem Zeiger. Das Ergebnis ist eine
+// Vektorfläche (stroke mit tool:'fill' und polys) — ein Objekt wie Strich und Form. Gesucht wird die
+// Fläche auf einem Hilfs-Canvas (nicht im DOM), das den Ausschnitt plus Rand zeigt.
+
+/** Pixelbudget des Hilfs-Canvas */
+const FILL_PIXEL_BUDGET = 6000000;
+/** Höchstzahl Punkte einer Füllfläche über alle Ringe — darüber wird gröber vereinfacht */
+const FILL_MAX_POINTS = 3000;
+/** Vereinfachung der Ränder: erlaubte Abweichung in Pixeln des Hilfs-Canvas */
+const FILL_SIMPLIFY_TOL = 0.75;
+const FILL_HINT_OPEN = 'Fläche ist nicht geschlossen – schon eine kleine Lücke in der Umrandung genügt. Bei sehr großen Flächen hilft Herauszoomen.';
+
+let _fillProbeCanvas = null;
+/** @type {{pointerId: number, pos: {x: number, y: number}}|null} begonnener Tipp im Werkzeug „Füllen“ */
+let _fillTap = null;
+/** Letzte Messung für das Diagnose-Overlay */
+let _lastFillInfo = '';
+
+/**
+ * Striche (ohne Papier/Raster) in das Hilfs-Canvas zeichnen und die Fläche unter world suchen.
+ * @param {number} scale - Pixel je Welteinheit
+ * @param {number} margin - Rand je Seite als Anteil der Ausschnittgröße
+ */
+function runFillProbe(strokes, world, scale, margin) {
+  const container = document.getElementById('canvas-container');
+  const k = state.viewScale;
+  const vw = container.clientWidth / k, vh = container.clientHeight / k;
+  const ox = -state.viewX / k - vw * margin, oy = -state.viewY / k - vh * margin;
+  const W = Math.max(3, Math.ceil(vw * (1 + 2 * margin) * scale));
+  const H = Math.max(3, Math.ceil(vh * (1 + 2 * margin) * scale));
+  if (!_fillProbeCanvas) _fillProbeCanvas = document.createElement('canvas');
+  const canvas = _fillProbeCanvas;
+  if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.clearRect(0, 0, W, H);
+  ctx.setTransform(scale, 0, 0, scale, -ox * scale, -oy * scale);
+  for (const s of strokes) drawStrokeToCanvas(ctx, s);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalCompositeOperation = 'source-over';
+  const t1 = performance.now();
+  const data = ctx.getImageData(0, 0, W, H).data;
+  const t2 = performance.now();
+  const res = traceFillRegion(data, W, H, Math.floor((world.x - ox) * scale), Math.floor((world.y - oy) * scale));
+  return { res, ox, oy, scale, W, H, readMs: t2 - t1, traceMs: performance.now() - t2 };
+}
+
+/** Liegt der Punkt im Inneren eines Rechtecks/einer Ellipse (ohne die Kontur)? */
+function insideShapeArea(stroke, world) {
+  const { type, x1, y1, x2, y2 } = stroke.shape;
+  const half = (stroke.size || 1) / 2;
+  if (type === 'rect') {
+    return world.x > Math.min(x1, x2) + half && world.x < Math.max(x1, x2) - half
+      && world.y > Math.min(y1, y2) + half && world.y < Math.max(y1, y2) - half;
+  }
+  const rx = Math.abs(x2 - x1) / 2 - half, ry = Math.abs(y2 - y1) / 2 - half;
+  if (!(rx > 0 && ry > 0)) return false;
+  const nx = (world.x - (x1 + x2) / 2) / rx, ny = (world.y - (y1 + y2) / 2) / ry;
+  return nx * nx + ny * ny < 1;
+}
+
+/**
+ * Füllen an einer Stelle der Zeichenfläche (Bildschirm-Koordinaten im Container).
+ *  - Pixel unter dem Zeiger belegt: Liegt dort oben eine Füllfläche bzw. das Innere einer gefüllten
+ *    Form, wird sie umgefärbt (edit-Event, kein neues Objekt); sonst Hinweis.
+ *  - Pixel frei: Flutfüllung. Erreicht sie den Rand des Hilfs-Canvas, gilt die Fläche als offen.
+ *    Sonst entsteht ein neues Objekt (stroke-Event) — verteilt wie jeder Strich.
+ */
+function fillAtPoint(pos) {
+  const page = currentPage();
+  const container = document.getElementById('canvas-container');
+  if (!page || !container || isPageGone(page)) return;
+  const t0 = performance.now();
+  const world = screenToWorld(pos.x, pos.y);
+  const strokes = materializePage(page);
+  if (!strokes.length) { showToast(FILL_HINT_OPEN, { key: 'fill', dauer: 4500 }); return; }
+
+  // Auflösung = Bildschirm (inkl. DPR); der Rand je Seite richtet sich nach dem Pixelbudget (höchstens 50 %)
+  const viewPx = container.clientWidth * DPR * container.clientHeight * DPR;
+  let scale = state.viewScale * DPR;
+  let margin = 0;
+  if (viewPx > FILL_PIXEL_BUDGET) scale *= Math.sqrt(FILL_PIXEL_BUDGET / viewPx);
+  else margin = Math.min(0.5, (Math.sqrt(FILL_PIXEL_BUDGET / viewPx) - 1) / 2);
+  let probe = runFillProbe(strokes, world, scale, margin);
+  let stage = 1;
+  if (probe.res.status === 'open' && margin < 0.4) {
+    // Zweiter Versuch mit vollem Rand, dafür gröber: die Fläche darf über den Ausschnitt hinausreichen
+    const coarse = scale * Math.sqrt(FILL_PIXEL_BUDGET / (4 * Math.min(viewPx, FILL_PIXEL_BUDGET)));
+    const second = runFillProbe(strokes, world, Math.min(scale, coarse), 0.5);
+    stage = 2;
+    if (second.res.status !== 'ok') second.res = { status: 'open' };
+    second.readMs += probe.readMs;
+    second.traceMs += probe.traceMs;
+    probe = second;
+  }
+  const { res } = probe;
+  const note = extra => {
+    _lastFillInfo = `${Math.round(performance.now() - t0)} ms (${res.status}, ${probe.W}×${probe.H}, stufe ${stage}, lesen ${Math.round(probe.readMs)}, suchen ${Math.round(probe.traceMs)}${extra || ''})`;
+    updateSyncDebug();
+  };
+
+  if (res.status === 'solid') {
+    const hit = hitTestObjects(world, 0);
+    const same = (a, b) => String(a || '').toLowerCase() === String(b || '').toLowerCase();
+    if (hit?.tool === 'fill') {
+      if (!same(hit.color, state.color)) commitEdit(state.currentNotebookId, page, hit.id, { color: state.color });
+    } else if (hit?.tool === 'shape' && hit.fill && (hit.shape?.type === 'rect' || hit.shape?.type === 'ellipse') && insideShapeArea(hit, world)) {
+      if (!same(hit.fill, state.color)) commitEdit(state.currentNotebookId, page, hit.id, { fill: state.color });
+    } else {
+      showToast('Zum Füllen in eine Fläche tippen', { key: 'fill' });
+    }
+    note();
+    return;
+  }
+  if (res.status === 'open') { showToast(FILL_HINT_OPEN, { key: 'fill', dauer: 4500 }); note(); return; }
+  if (res.status === 'tiny') { showToast('Fläche ist zu klein zum Füllen', { key: 'fill' }); note(); return; }
+
+  // Ränder vereinfachen; bei zu vielen Punkten gröber
+  let tol = FILL_SIMPLIFY_TOL, rings, total;
+  for (;;) {
+    rings = res.rings.map(r => simplifyRing(r, tol)).filter(r => r.length >= 6);
+    total = rings.reduce((n, r) => n + r.length / 2, 0);
+    if (total <= FILL_MAX_POINTS || tol > 6) break;
+    tol *= 1.5;
+  }
+  const r1 = v => Math.round(v * 10) / 10;
+  const polys = [];
+  for (const ring of rings) {
+    const pts = [];
+    for (let i = 0; i < ring.length; i += 2) {
+      const p = { x: r1(probe.ox + ring[i] / probe.scale), y: r1(probe.oy + ring[i + 1] / probe.scale) };
+      const last = pts[pts.length - 1];
+      if (!last || last.x !== p.x || last.y !== p.y) pts.push(p);
+    }
+    if (pts.length > 1 && pts[0].x === pts[pts.length - 1].x && pts[0].y === pts[pts.length - 1].y) pts.pop();
+    if (pts.length >= 3) polys.push(pts);
+    else if (!polys.length) break; // Außenkontur entartet
+  }
+  if (!polys.length) { showToast('Fläche ist zu klein zum Füllen', { key: 'fill' }); note(); return; }
+
+  // Ein neues Objekt schreibt ein vorgemerktes Leeren sofort fest (wie ein neuer Strich)
+  if (_pendingPageOp) commitPendingPageOp();
+  const newStroke = {
+    id: newId(),
+    createdAt: Date.now(),
+    points: fillOutlinePoints(polys),
+    color: state.color,
+    size: 1,
+    tool: 'fill',
+    polys
+  };
+  const pageEvent = newPageEvent('stroke', { stroke: newStroke });
+  applyPageEvent(page, pageEvent);
+  clearRedoStack(state.currentNotebookId, page.id);
+  redrawStrokes();
+  saveCurrentPage();
+  p2pSendForNotebook('stroke', { eventId: newEventId(), notebookId: state.currentNotebookId, pageId: page.id, stroke: newStroke, pageEvent });
+  note(`, ringe ${polys.length}, punkte ${polys.reduce((n, r) => n + r.length, 0)}, toleranz ${Math.round(tol * 100) / 100}`);
+}
+
 // ─── Auswahl ────────────────────────────────────────────────────────────────
 // Rein lokal (nicht synchronisiert). Der Rahmen liegt auf activeCanvas — dort wird im
 // Werkzeug „Auswahl“ nicht gezeichnet. Änderungen entstehen als EIN edit-Event beim Loslassen;
@@ -2498,10 +2662,18 @@ function placeSelPopover(pop) {
   pop.style.left = Math.round(shift) + 'px';
 }
 
-/** Oberstes sichtbares Objekt an einem Punkt (Weltkoordinaten); Radierer-Striche zählen nicht. */
+/**
+ * Oberstes sichtbares Objekt an einem Punkt (Weltkoordinaten); Radierer-Striche zählen nicht.
+ * Reihenfolge wie im Bild: Füllflächen liegen unter allen Strichen und Formen (auch unter älteren —
+ * 'destination-over'), und unter den Füllflächen liegt die ältere oben.
+ */
 function hitTestObjects(world, tol) {
   for (let i = _displayStrokes.length - 1; i >= 0; i--) {
-    if (hitTestStroke(_displayStrokes[i], world.x, world.y, tol)) return _displayStrokes[i];
+    const s = _displayStrokes[i];
+    if (s.tool !== 'fill' && hitTestStroke(s, world.x, world.y, tol)) return s;
+  }
+  for (const s of _displayStrokes) {
+    if (s.tool === 'fill' && hitTestStroke(s, world.x, world.y, tol)) return s;
   }
   return null;
 }
@@ -2736,7 +2908,7 @@ function restoreDeletedObject(notebookId, page, deleteEventId) {
 // ─── Tool Selection ─────────────────────────────────────────────────────────
 
 /**
- * @param {string} tool - 'pen' | 'eraser' | 'shape' | 'select' | 'hand'
+ * @param {string} tool - 'pen' | 'eraser' | 'fill' | 'shape' | 'select' | 'hand'
  * Ein Zeichenwerkzeug zu wählen schaltet die Hand aus und wird als „zuletzt benutzt“ gemerkt.
  */
 function setTool(tool) {
@@ -3866,6 +4038,7 @@ function updateSyncDebug(status = _syncDebugStatus) {
     `relay merge: ${relayIn}`,
     strokeLine,
     `ansicht: ${state.viewScale.toFixed(4)} ${state.viewX.toFixed(1)} ${state.viewY.toFixed(1)}`,
+    ...(_lastFillInfo ? [`füllen: ${_lastFillInfo}`] : []),
     `letzter shared resync: ${_lastSharedResyncAt ? Math.round((Date.now() - _lastSharedResyncAt) / 1000) + 's' : '-'}`
   ];
 
@@ -5349,16 +5522,24 @@ async function exportCurrentPageAsPng() {
   canvas.width = contentW;
   canvas.height = contentH;
   const ctx = canvas.getContext('2d');
+  drawBackground(ctx, contentW, contentH, page.background || 'grid', offsetX * exportScale, offsetY * exportScale, exportScale);
+  // Papier unter die Linien legen (drawBackground leert die Fläche zuerst)
+  ctx.globalCompositeOperation = 'destination-over';
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, contentW, contentH);
-  drawBackground(ctx, contentW, contentH, page.background || 'grid', offsetX * exportScale, offsetY * exportScale, exportScale);
-  ctx.save();
-  ctx.scale(exportScale, exportScale);
-  ctx.translate(offsetX, offsetY);
+  ctx.globalCompositeOperation = 'source-over';
+  // Striche auf eine eigene transparente Ebene: Füllflächen legen sich per 'destination-over'
+  // unter das schon Gezeichnete — direkt auf dem Papier lägen sie unsichtbar darunter.
+  const layerCanvas = document.createElement('canvas');
+  layerCanvas.width = contentW;
+  layerCanvas.height = contentH;
+  const layer = layerCanvas.getContext('2d');
+  layer.scale(exportScale, exportScale);
+  layer.translate(offsetX, offsetY);
   for (const stroke of materializePage(page)) {
-    drawStrokeToCanvas(ctx, stroke);
+    drawStrokeToCanvas(layer, stroke);
   }
-  ctx.restore();
+  ctx.drawImage(layerCanvas, 0, 0);
 
   const filename = `${(nb.name || 'notizbuch').replace(/[^a-z0-9-_]+/gi, '_')}-seite-${currentPageIndex() + 1}.png`;
   canvas.toBlob(blob => {
@@ -5417,7 +5598,14 @@ async function exportCurrentPageAsSvg() {
 
   const svgParts = [];
   const eraserMaskParts = ['<mask id="eraser-mask"><rect width="100%" height="100%" fill="white"/>'];
-  for (const stroke of visibleStrokes) {
+  const fills = [];   // { stroke, idx } in zeitlicher Folge
+  const erasers = []; // { idx, markup }
+  for (const [idx, stroke] of visibleStrokes.entries()) {
+    // Füllflächen liegen im Bild unter allem anderen — sie kommen gesammelt vor die übrigen Elemente
+    if (stroke.tool === 'fill') {
+      if (isValidFill(stroke)) fills.push({ stroke, idx });
+      continue;
+    }
     // Formen als echte SVG-Elemente
     if (stroke.tool === 'shape' && stroke.shape) {
       svgParts.push(shapeToSvg(stroke, escapeXml(stroke.color || '#000000'), stroke.fill ? escapeXml(stroke.fill) : null));
@@ -5428,19 +5616,38 @@ async function exportCurrentPageAsSvg() {
     const path = strokeToSvgPath(pts);
     const widthPx = stroke.tool === 'eraser' ? stroke.size * 3 : stroke.size;
     if (stroke.tool === 'eraser') {
-      eraserMaskParts.push(`<path d="${path}" fill="none" stroke="black" stroke-linecap="round" stroke-linejoin="round" stroke-width="${widthPx}"/>`);
+      const markup = `<path d="${path}" fill="none" stroke="black" stroke-linecap="round" stroke-linejoin="round" stroke-width="${widthPx}"/>`;
+      eraserMaskParts.push(markup);
+      erasers.push({ idx, markup });
     } else {
       svgParts.push(`<path d="${path}" fill="none" stroke="${escapeXml(stroke.color || '#000000')}" stroke-linecap="round" stroke-linejoin="round" stroke-width="${widthPx}"/>`);
     }
   }
   eraserMaskParts.push('</mask>');
   const hasEraser = visibleStrokes.some(s => s.tool === 'eraser');
+  // Füllflächen: die jüngste zuunterst (wie 'destination-over' im Bild). Auf eine Füllfläche wirken
+  // nur Radierer, die NACH ihr kamen — früher Wegradiertes füllt sie mit. Dafür je Stand eine eigene Maske.
+  const fillMasks = new Map(); // Anzahl späterer Radierer → Masken-ID
+  const fillParts = [];
+  for (const { stroke, idx } of [...fills].reverse()) {
+    const later = erasers.filter(e => e.idx > idx);
+    let attr = '';
+    if (later.length) {
+      if (!fillMasks.has(later.length)) fillMasks.set(later.length, { id: `fill-eraser-mask-${fillMasks.size + 1}`, later });
+      attr = ` mask="url(#${fillMasks.get(later.length).id})"`;
+    }
+    fillParts.push(`<g${attr}>${fillToSvg(stroke, escapeXml(stroke.color || '#000000'))}</g>`);
+  }
+  const fillMaskMarkup = [...fillMasks.values()].map(m =>
+    `<mask id="${m.id}" maskUnits="userSpaceOnUse" x="${minX}" y="${minY}" width="${width}" height="${height}"><rect x="${minX}" y="${minY}" width="${width}" height="${height}" fill="white"/>${m.later.map(e => e.markup).join('')}</mask>`
+  ).join('');
 
   const svg = `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="${minX} ${minY} ${width} ${height}" width="${width}" height="${height}">
   <title>${escapeXml(nb.name || 'Notizbuch')} – Seite ${currentPageIndex() + 1}</title>
-  <defs>${hasEraser ? eraserMaskParts.join('') : ''}</defs>
+  <defs>${hasEraser ? eraserMaskParts.join('') : ''}${fillMaskMarkup}</defs>
   ${bgMarkup}
+  ${fillParts.join('')}
   <g${hasEraser ? ' mask="url(#eraser-mask)"' : ''}>
     ${svgParts.join('')}
   </g>
@@ -5810,6 +6017,14 @@ function onPointerDown(e) {
     return;
   }
 
+  // Füllen: ein Tipp (ohne Ziehen) — ausgelöst beim Loslassen
+  if (state.tool === 'fill') {
+    _fillTap = _fillTap && _fillTap.pointerId !== e.pointerId ? null : { pointerId: e.pointerId, pos };
+    if (_fillTap) e.target?.setPointerCapture?.(e.pointerId);
+    e.preventDefault();
+    return;
+  }
+
   isDrawing = true;
   _shapeConstrain = false;
   activePointerId = e.pointerId;
@@ -5920,6 +6135,17 @@ function onPointerUp(e) {
 
   if (_selDrag && e.pointerId === _selDrag.pointerId) {
     selectPointerUp();
+    return;
+  }
+
+  if (_fillTap && e.pointerId === _fillTap.pointerId) {
+    const tap = _fillTap;
+    _fillTap = null;
+    if (e.type !== 'pointerup' || state.tool !== 'fill') return;
+    const pos = getCanvasPos(e);
+    // Weggezogen = kein Tipp
+    if (Math.hypot(pos.x - tap.pos.x, pos.y - tap.pos.y) > 12) return;
+    fillAtPoint(tap.pos);
     return;
   }
 
@@ -6503,6 +6729,7 @@ function setupEvents() {
     const key = String(e.key || '').toLowerCase();
     if (key === 'p') setTool('pen');
     else if (key === 'e') setTool('eraser');
+    else if (key === 'f') setTool('fill');
     else if (key === 's') setTool('shape');
     else if (key === 'v') setTool('select');
     else if (key === 'h') toggleHand();

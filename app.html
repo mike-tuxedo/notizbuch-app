@@ -1680,6 +1680,14 @@
         gap: 0;
       }
 
+      /* Acht Knöpfe in einer Reihe: 40 px breit, 44 px hoch (bei 360 px ohne Scrollen) */
+      .tool,
+      .opt,
+      .mode {
+        min-width: 40px;
+        padding: 0;
+      }
+
       .zoom {
         margin: 0 calc(var(--s2) + var(--safe-right)) var(--s3) 0;
       }
@@ -1853,6 +1861,9 @@
           </button>
           <button class="tool" data-tool="eraser" aria-pressed="false" aria-label="Radierer" title="Radierer (E)">
             <svg class="i" aria-hidden="true"><use href="#i-eraser" /></svg><span class="lbl">Radierer</span>
+          </button>
+          <button class="tool" data-tool="fill" aria-pressed="false" aria-label="Füllen" title="Füllen (F)">
+            <svg class="i" aria-hidden="true"><use href="#i-fill" /></svg><span class="lbl">Füllen</span>
           </button>
           <span class="pop-wrap">
             <button class="tool" data-tool="shape" data-toggle="pop-shapes" aria-pressed="false" aria-expanded="false"

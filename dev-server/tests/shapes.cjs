@@ -85,11 +85,10 @@ const unchecked = [];
   await sleep(8000);
   const a = A.page, b = B.page;
   if (process.env.NO_P2P) { const p2p = /↳[^;]*connected/.test(await a.evaluate(() => document.getElementById('console').innerText)); ok(!p2p, 'ohne P2P (nur Relay)'); }
-  ok(/shapes-v47/.test(await a.evaluate(() => document.getElementById('console').innerText)), 'Version shapes-v47');
+  ok(/fill-v48/.test(await a.evaluate(() => document.getElementById('console').innerText)), 'Version fill-v48');
   const v0 = [(await ovl(a)).view, (await ovl(b)).view];
   ok(v0.every(v => v && v.k === 1 && v.x === 0 && v.y === 0), 'Ausgangsansicht auf beiden 1:1', JSON.stringify(v0));
   ok(await a.evaluate(() => document.querySelectorAll('canvas')[2]?.id === 'active-canvas'), 'canvas[2] ist die aktive Zeichenfläche');
-  ok(await a.evaluate(() => !document.querySelector('[data-tool="fill"]')), 'kein Knopf für das Füllwerkzeug');
 
   // ── 1. Vier Formen ──────────────────────────────────────────────────────
   await a.click('[data-tool="shape"]'); await sleep(200);
@@ -362,7 +361,7 @@ const unchecked = [];
   await a.setViewportSize({ width: 360, height: 740 }); await sleep(800);
   await a.click('#btn-fit'); await sleep(400);
   const row = await a.evaluate(() => { const bs = [...document.querySelectorAll('.toolrow button.tool, .toolrow button.opt, .toolrow button.mode')].map(e => e.getBoundingClientRect()); const tr = document.querySelector('.toolrow').getBoundingClientRect(); return { n: bs.length, minW: Math.min(...bs.map(r => r.width)), minH: Math.min(...bs.map(r => r.height)), inside: bs.every(r => r.left >= 0 && r.right <= innerWidth), rowScroll: document.querySelector('.toolrow').scrollWidth <= Math.ceil(tr.width) }; });
-  ok(await noHScroll(a) && row.inside && row.rowScroll && row.n === 7 && row.minW >= 40 && row.minH >= 44, '14 360×740: 7 Knöpfe in der Werkzeugreihe, kein horizontaler Scroll, mindestens 40×44', JSON.stringify(row));
+  ok(await noHScroll(a) && row.inside && row.rowScroll && row.n === 8 && row.minW >= 40 && row.minH >= 44, '14 360×740: 8 Knöpfe in der Werkzeugreihe, kein horizontaler Scroll, mindestens 40×44', JSON.stringify(row));
   await a.click('[data-tool="shape"]'); await sleep(250);
   ok(await a.evaluate(() => { const r = document.getElementById('pop-shapes').getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= document.querySelector('.toolrow').getBoundingClientRect().top; }), '14 360: Formen-Auswahl ganz im Bild, über der Werkzeugreihe');
   await shot(a, 'formen-360.png');

@@ -104,6 +104,8 @@ export function buildStrokePolygon(points, width) {
 export function drawStrokeToCanvas(ctx, stroke) {
   // Formen werden als Vektor gezeichnet; stroke.points ist bei ihnen nur der Umriss für alte Versionen
   if (stroke.tool === 'shape' && isValidShape(stroke.shape)) { drawShapeToCanvas(ctx, stroke); return; }
+  // Füllflächen: Vektorfläche UNTER allem, was schon gezeichnet ist; stroke.points ist nur der Umriss für alte Versionen
+  if (stroke.tool === 'fill') { if (isValidFill(stroke)) drawFillToCanvas(ctx, stroke); return; }
   if (!stroke.points || stroke.points.length < 2) return;
 
   const pts = stroke.points.length >= 3 ? smoothPoints(stroke.points) : stroke.points;
@@ -263,6 +265,248 @@ export function shapeToSvg(stroke, color, fill) {
   return `<path d="M ${r1(x1)} ${r1(y1)} L ${r1(x2)} ${r1(y2)} M ${r1(a.x)} ${r1(a.y)} L ${r1(x2)} ${r1(y2)} L ${r1(b.x)} ${r1(b.y)}" fill="none" ${line} stroke-linecap="round" stroke-linejoin="round"/>`;
 }
 
+// ─── Füllflächen (Werkzeug „Füllen“) ────────────────────────────────────────
+// Eine Füllfläche ist ein Strich mit tool:'fill' und polys: Array von Ringen aus {x, y} in
+// Weltkoordinaten (erster Ring = Außenkontur, weitere = Löcher), gefüllt nach 'evenodd'.
+// points trägt die Außenkontur als Punktfolge — alte App-Versionen zeichnen damit den Umriss.
+
+/** @returns {boolean} stroke ist eine Füllfläche mit mindestens einem Ring aus ≥ 3 endlichen Punkten */
+export function isValidFill(stroke) {
+  return !!stroke && stroke.tool === 'fill' && Array.isArray(stroke.polys) && stroke.polys.length > 0
+    && stroke.polys.every(ring => Array.isArray(ring) && ring.length >= 3
+      && ring.every(p => p && Number.isFinite(p.x) && Number.isFinite(p.y)));
+}
+
+/**
+ * Außenkontur als geschlossene Punktfolge (Ersatzdarstellung für alte Versionen, die sie als
+ * Stiftstrich zeichnen). Lange Kanten werden unterteilt: Der alte Renderer glättet mit Catmull-Rom,
+ * und nur bei gleichmäßig dichten Punkten bleiben Geraden gerade (siehe shapeOutlinePoints).
+ */
+export function fillOutlinePoints(polys) {
+  const outer = polys?.[0] || [];
+  if (!outer.length) return [];
+  let perimeter = 0;
+  for (let i = 0; i < outer.length; i++) {
+    const a = outer[i], b = outer[(i + 1) % outer.length];
+    perimeter += Math.hypot(b.x - a.x, b.y - a.y);
+  }
+  const step = Math.max(6, perimeter / 240);
+  const out = [outer[0]];
+  for (let i = 0; i < outer.length; i++) sampleSegment(out, outer[i], outer[(i + 1) % outer.length], step);
+  return roundPoints(out);
+}
+
+/** Liegt der Punkt in der Fläche? (evenodd über alle Ringe) */
+export function pointInFill(polys, x, y) {
+  let inside = false;
+  for (const ring of polys) {
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const a = ring[i], b = ring[j];
+      if ((a.y > y) !== (b.y > y) && x < (b.x - a.x) * (y - a.y) / (b.y - a.y) + a.x) inside = !inside;
+    }
+  }
+  return inside;
+}
+
+/**
+ * Füllfläche zeichnen — mit 'destination-over': Sie legt sich UNTER alles, was zeitlich vor ihr
+ * gezeichnet wurde (Linien bleiben scharf, früher Wegradiertes wird mitgefüllt). Spätere Striche
+ * und Radierer wirken normal darüber. Das Ziel muss dafür eine transparente Ebene sein
+ * (kein Papier darunter gemalt) — sonst läge die Füllung unsichtbar unter dem Papier.
+ */
+export function drawFillToCanvas(ctx, stroke) {
+  ctx.save();
+  ctx.globalCompositeOperation = 'destination-over';
+  ctx.fillStyle = stroke.color || '#000000';
+  ctx.beginPath();
+  for (const ring of stroke.polys) {
+    ctx.moveTo(ring[0].x, ring[0].y);
+    for (let i = 1; i < ring.length; i++) ctx.lineTo(ring[i].x, ring[i].y);
+    ctx.closePath();
+  }
+  ctx.fill('evenodd');
+  ctx.restore(); // setzt globalCompositeOperation zurück
+}
+
+/** Füllfläche als SVG-<path> mit fill-rule="evenodd". Die Farbe muss schon maskiert sein. */
+export function fillToSvg(stroke, color) {
+  const d = stroke.polys.map(ring => ring.map((p, i) => `${i ? 'L' : 'M'} ${r1(p.x)} ${r1(p.y)}`).join(' ') + ' Z').join(' ');
+  return `<path d="${d}" fill="${color}" fill-rule="evenodd" stroke="none"/>`;
+}
+
+/**
+ * Flutfüllung auf einem RGBA-Pixelfeld und Nachzeichnen der gefüllten Maske als Ringe.
+ *  1. Scanline-Flutfüllung (Spannen-Stapel, 4er-Nachbarschaft, ohne Rekursion) über alle Pixel mit
+ *     Alpha < alphaThreshold. Erreicht sie den Bildrand, ist die Fläche offen ('open').
+ *  2. Maske erweitern — nur in belegte Pixel hinein (die Füllung liegt unter den Linien; so bleibt
+ *     kein heller Saum): erst alle belegten 4er-Nachbarn, dann (grow = 2) deren 8er-Nachbarn, sofern
+ *     sie deckend sind (Alpha ≥ solidAlpha) — so schaut die Fläche hinter dünnen Linien nicht heraus.
+ *  3. Kanten der Maske entlang der Pixelgrenzen verfolgen: ein Ring je Rand (außen + Löcher).
+ * Der Aufwand nach der Flutfüllung hängt nur vom Umfang der Fläche ab.
+ * @param {Uint8ClampedArray} rgba - Pixel (ImageData.data), Breite W, Höhe H
+ * @param {number} sx - Startpixel
+ * @param {number} sy
+ * @returns {{status: 'solid'|'open'|'tiny'}|{status: 'ok', area: number, rings: Array<number[]>}}
+ *   rings: je Ring flache Folge [x0, y0, x1, y1, …] der Eckpunkte in Pixel-Koordinaten
+ *   (Pixelecken, ganzzahlig); der Ring mit der größten Fläche steht vorn.
+ */
+export function traceFillRegion(rgba, W, H, sx, sy, opts = {}) {
+  const T = opts.alphaThreshold ?? 16;
+  const solidAlpha = opts.solidAlpha ?? 128;
+  const grow = opts.grow ?? 2;
+  const minArea = opts.minArea ?? 12;
+  const minRingArea = opts.minRingArea ?? 4;
+  if (!(sx >= 1 && sy >= 1 && sx < W - 1 && sy < H - 1)) return { status: 'open' };
+  // Alpha ist das oberste Byte (alle unterstützten Plattformen sind Little-Endian)
+  const px = new Uint32Array(rgba.buffer, rgba.byteOffset, W * H);
+  if ((px[sy * W + sx] >>> 24) >= T) return { status: 'solid' };
+
+  // Maske: 1 = geflutet, 2/3 = erweitert; Bits 16/32/64/128 = besuchte Kante (siehe 3.)
+  const mask = new Uint8Array(W * H);
+  const W1 = W - 1, H1 = H - 1;
+  const edge = []; // belegte 4er-Nachbarn der Fläche (Maske 2)
+  let area = 0;
+
+  // 1. Flutfüllung. Stapel aus Spannen (y, x1, x2, dy): Zeile y, x1..x2 ist gefüllt, als Nächstes y + dy.
+  let st = new Int32Array(4096), sp = 0;
+  const push = (y, x1, x2, dy) => {
+    if (sp + 4 > st.length) { const bigger = new Int32Array(st.length * 2); bigger.set(st); st = bigger; }
+    st[sp++] = y; st[sp++] = x1; st[sp++] = x2; st[sp++] = dy;
+  };
+  push(sy, sx, sx, 1);
+  push(sy + 1, sx, sx, -1);
+  while (sp) {
+    const dy = st[--sp], x2 = st[--sp], x1 = st[--sp], y = st[--sp] + dy;
+    const row = y * W;
+    const inner = y > 0 && y < H1; // nur dort wird erweitert
+    let x = x1, l = 0, i;
+    while (x >= 0 && !mask[i = row + x] && (px[i] >>> 24) < T) { mask[i] = 1; x--; }
+    let skip = x >= x1;
+    if (!skip) {
+      if (x < 0 || !inner) return { status: 'open' };
+      if (!mask[i = row + x] && x > 0) { mask[i] = 2; edge.push(i); }
+      l = x + 1;
+      if (l < x1) push(y, l, x1 - 1, -dy);
+      x = x1 + 1;
+    } else if (inner && !mask[i = row + x] && x > 0 && x < W1) { mask[i] = 2; edge.push(i); }
+    do {
+      if (!skip) {
+        while (x < W && !mask[i = row + x] && (px[i] >>> 24) < T) { mask[i] = 1; x++; }
+        if (x >= W) return { status: 'open' };
+        if (!mask[i = row + x] && x < W1) { mask[i] = 2; edge.push(i); }
+        area += x - l;
+        push(y, l, x - 1, dy);
+        if (x > x2 + 1) push(y, x2 + 1, x - 1, -dy);
+      }
+      skip = false;
+      x++;
+      while (x <= x2 && (mask[i = row + x] || (px[i] >>> 24) >= T)) {
+        if (!mask[i] && inner && x < W1) { mask[i] = 2; edge.push(i); }
+        x++;
+      }
+      // Am oberen/unteren Bildrand darf nichts mehr frei sein
+      if (!inner && x <= x2) return { status: 'open' };
+      l = x;
+    } while (x <= x2);
+  }
+  if (area < minArea) return { status: 'tiny' };
+
+  // 2. Zweiter Schritt der Erweiterung: deckende 8er-Nachbarn der Randpixel (nie in die Bildrand-Pixel)
+  const edge2 = [];
+  if (grow >= 2) {
+    const around = [-W - 1, -W, -W + 1, -1, 1, W - 1, W, W + 1];
+    for (let n = 0; n < edge.length; n++) {
+      for (let a = 0; a < 8; a++) {
+        const j = edge[n] + around[a];
+        if (mask[j] || (px[j] >>> 24) < solidAlpha) continue;
+        const jx = j % W;
+        if (jx === 0 || jx === W1 || j < W || j >= W * H1) continue;
+        mask[j] = 3;
+        edge2.push(j);
+      }
+    }
+  }
+
+  // 3. Ränder verfolgen. Jede Pixelkante zwischen „drin“ und „draußen“ gehört zu genau einem Ring;
+  //    das Innere liegt in Laufrichtung rechts. Besuchte Kanten: Bits 16/32/64/128 am inneren Pixel
+  //    (oben/rechts/unten/links). Jeder Ring enthält mindestens eine Oberkante, und geflutete Pixel
+  //    haben keine Außenkante (ihre Nachbarn sind geflutet oder erweitert) — gesucht wird also nur
+  //    an den erweiterten Pixeln.
+  const rings = [];
+  for (const list of [edge, edge2]) {
+    for (let n = 0; n < list.length; n++) {
+      const i0 = list[n];
+      if ((mask[i0] & 16) || mask[i0 - W]) continue;
+      const x0 = i0 % W, y0 = (i0 - x0) / W;
+      const pts = [];
+      let vx = x0, vy = y0, d = 0; // Ecke (vx, vy), Richtung 0 = rechts, 1 = unten, 2 = links, 3 = oben
+      do {
+        let right, left; // die beiden Pixel vor der nächsten Ecke: rechts und links der Laufrichtung
+        if (d === 0) { mask[vy * W + vx] |= 16; vx++; right = mask[vy * W + vx]; left = mask[(vy - 1) * W + vx]; }
+        else if (d === 1) { mask[vy * W + vx - 1] |= 32; vy++; right = mask[vy * W + vx - 1]; left = mask[vy * W + vx]; }
+        else if (d === 2) { mask[(vy - 1) * W + vx - 1] |= 64; vx--; right = mask[(vy - 1) * W + vx - 1]; left = mask[vy * W + vx - 1]; }
+        else { mask[(vy - 1) * W + vx] |= 128; vy--; right = mask[(vy - 1) * W + vx]; left = mask[(vy - 1) * W + vx - 1]; }
+        // Berühren sich zwei Pixel nur über Eck, biegt der Ring rechts ab (bleibt am eigenen Pixel)
+        const nd = !right ? (d + 1) & 3 : (left ? (d + 3) & 3 : d);
+        if (nd !== d) pts.push(vx, vy);
+        d = nd;
+      } while (vx !== x0 || vy !== y0 || d !== 0);
+      let a2 = 0;
+      for (let k = 0, n2 = pts.length; k < n2; k += 2) {
+        const j = (k + 2) % n2;
+        a2 += pts[k] * pts[j + 1] - pts[j] * pts[k + 1];
+      }
+      const ringArea = Math.abs(a2) / 2;
+      if (ringArea >= minRingArea) rings.push({ pts, area: ringArea });
+    }
+  }
+  if (!rings.length) return { status: 'tiny' };
+  rings.sort((p, q) => q.area - p.area);
+  return { status: 'ok', area, rings: rings.map(r => r.pts) };
+}
+
+/**
+ * Geschlossenen Ring vereinfachen (Ramer-Douglas-Peucker, ohne Rekursion).
+ * @param {number[]} pts - flache Folge [x0, y0, x1, y1, …]
+ * @param {number} tol - größte erlaubte Abweichung
+ * @returns {number[]} flache Folge der behaltenen Punkte
+ */
+export function simplifyRing(pts, tol) {
+  const n = pts.length / 2;
+  if (n <= 4) return pts.slice();
+  // Zwei feste Punkte: der erste und der von ihm am weitesten entfernte
+  let far = 0, farD = -1;
+  for (let i = 1; i < n; i++) {
+    const dx = pts[2 * i] - pts[0], dy = pts[2 * i + 1] - pts[1];
+    const dd = dx * dx + dy * dy;
+    if (dd > farD) { farD = dd; far = i; }
+  }
+  const keep = new Uint8Array(n);
+  keep[0] = keep[far] = 1;
+  const tol2 = tol * tol;
+  const todo = [0, far, far, n]; // Index n steht für den ersten Punkt (Ring geschlossen)
+  while (todo.length) {
+    const j = todo.pop(), i = todo.pop();
+    if (j - i < 2) continue;
+    const ax = pts[2 * i], ay = pts[2 * i + 1];
+    const jj = j === n ? 0 : j;
+    const dx = pts[2 * jj] - ax, dy = pts[2 * jj + 1] - ay;
+    const l2 = dx * dx + dy * dy;
+    let worst = -1, worstD = -1;
+    for (let k = i + 1; k < j; k++) {
+      const qx = pts[2 * k] - ax, qy = pts[2 * k + 1] - ay;
+      const t = l2 ? Math.max(0, Math.min(1, (qx * dx + qy * dy) / l2)) : 0;
+      const ex = qx - dx * t, ey = qy - dy * t;
+      const dd = ex * ex + ey * ey;
+      if (dd > worstD) { worstD = dd; worst = k; }
+    }
+    if (worstD > tol2) { keep[worst] = 1; todo.push(i, worst, worst, j); }
+  }
+  const out = [];
+  for (let i = 0; i < n; i++) if (keep[i]) out.push(pts[2 * i], pts[2 * i + 1]);
+  return out;
+}
+
 // ─── Objekte: Abbildung, Grenzen, Treffertest ───────────────────────────────
 
 /** @returns {boolean} t ist [sx, sy, tx, ty] mit endlichen Werten und ohne Null-Skalierung */
@@ -271,8 +515,9 @@ export function isValidTransform(t) {
 }
 
 /**
- * Objekt (Strich oder Form) mit [sx, sy, tx, ty] abbilden: x' = sx·x + tx, y' = sy·y + ty.
- * Liefert ein neues Objekt; die Strichstärke bleibt. Bei Formen wird der Umriss neu berechnet.
+ * Objekt (Strich, Form oder Füllfläche) mit [sx, sy, tx, ty] abbilden: x' = sx·x + tx, y' = sy·y + ty.
+ * Liefert ein neues Objekt; die Strichstärke bleibt. Bei Formen wird der Umriss neu berechnet,
+ * bei Füllflächen werden alle Ringe abgebildet.
  */
 export function transformStroke(stroke, t) {
   const [sx, sy, tx, ty] = t;
@@ -283,6 +528,10 @@ export function transformStroke(stroke, t) {
     const shape = roundShape({ type: stroke.shape.type, x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y });
     return { ...stroke, shape, points: shapeOutlinePoints(shape, stroke.size) };
   }
+  if (isValidFill(stroke)) {
+    const polys = stroke.polys.map(ring => roundPoints(ring.map(map)));
+    return { ...stroke, polys, points: fillOutlinePoints(polys) };
+  }
   return { ...stroke, points: roundPoints((stroke.points || []).map(map)) };
 }
 
@@ -290,7 +539,7 @@ export function transformStroke(stroke, t) {
 export function strokeGeomBounds(stroke) {
   const pts = stroke.tool === 'shape' && isValidShape(stroke.shape)
     ? [{ x: stroke.shape.x1, y: stroke.shape.y1 }, { x: stroke.shape.x2, y: stroke.shape.y2 }]
-    : (stroke.points || []);
+    : (isValidFill(stroke) ? stroke.polys[0] : (stroke.points || []));
   if (!pts.length) return null;
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   for (const p of pts) {
@@ -310,12 +559,24 @@ function distToSegment(px, py, a, b) {
 }
 
 /**
- * Trifft der Punkt das Objekt? Stiftstrich und Kontur: Abstand zur Linie; gefüllte Form: auch die Fläche.
+ * Trifft der Punkt das Objekt? Stiftstrich und Kontur: Abstand zur Linie; gefüllte Form: auch die Fläche;
+ * Füllfläche: Punkt in der Fläche (evenodd) oder näher als tol an einem ihrer Ränder.
  * Radierer-Striche sind nie wählbar.
  * @param {number} tol - Toleranz in Weltkoordinaten (zusätzlich zur halben Strichstärke)
  */
 export function hitTestStroke(stroke, x, y, tol) {
   if (stroke.tool === 'eraser') return false;
+  if (stroke.tool === 'fill') {
+    if (!isValidFill(stroke)) return false;
+    if (pointInFill(stroke.polys, x, y)) return true;
+    if (!(tol > 0)) return false;
+    for (const ring of stroke.polys) {
+      for (let i = 0; i < ring.length; i++) {
+        if (distToSegment(x, y, ring[i], ring[(i + 1) % ring.length]) <= tol) return true;
+      }
+    }
+    return false;
+  }
   const pts = stroke.points || [];
   if (pts.length < 2) return false;
   const reach = tol + (stroke.size || 1) / 2;

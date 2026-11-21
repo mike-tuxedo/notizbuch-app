@@ -36,7 +36,7 @@ manifest.json         — PWA manifest
 
 js/
 ├── app.js            — State, Init, UI (Popover, Dialoge, Toasts, Seitenübersicht), Input, Navigation, Sync-Integration
-├── canvas.js         — Drawing Engine (Catmull-Rom smoothing, polygon fill), Formen (Vektor, Umriss, SVG), Abbildung/Grenzen/Treffertest für Objekte
+├── canvas.js         — Drawing Engine (Catmull-Rom smoothing, polygon fill), Formen (Vektor, Umriss, SVG), Füllflächen (Zeichnen, Flutfüllung + Ränder verfolgen, Vereinfachen), Abbildung/Grenzen/Treffertest für Objekte
 ├── storage.js        — OPFS + IndexedDB Fallback
 ├── encryption.js     — AES-GCM 256 wrapper (generate/import/export/encrypt/decrypt)
 ├── p2p-sync.js       — Trystero multi-room P2P (Nostr signaling)
@@ -107,7 +107,7 @@ Since version `v2` each page stores an encrypted event-log (`page.events`) inste
 
 - Event format: `{ id, type, createdAt, deviceId, seq, ... }`
 - Types:
-  - `stroke` (carries `stroke`) — ein Objekt: Stiftstrich, Radierer-Strich oder Form
+  - `stroke` (carries `stroke`) — ein Objekt: Stiftstrich, Radierer-Strich, Form oder Füllfläche
   - `undo` mit `targetStrokeId` — blendet ein Objekt aus; mit `reason: 'delete'` ist es ein Löschen über die Auswahl
   - `undo` mit `targetEventId` — hebt ein `edit`-Event auf
   - `redo` mit `targetEventId` — hebt ein `undo`-Event auf (beide Arten)
@@ -133,7 +133,37 @@ stroke: { id, createdAt, tool: 'shape', shape: { type: 'rect'|'ellipse'|'line'|'
 - `shape` in Weltkoordinaten, auf 0.1 gerundet (`roundShape`). `fill` nur für Rechteck/Ellipse, sonst `null`.
 - `points` ist der **Umriss als Punktfolge** (`shapeOutlinePoints`): Versionen vor v47 kennen `shape` nicht und zeichnen ihn als Stiftstrich. Gleichmäßig dichte Punkte (keine doppelten Eckpunkte — die erzeugen im Catmull-Rom Schleifen), Rechteck beginnt mitten auf der Oberkante, Ellipse läuft zwei Punkte über den Anfang hinaus. Im alten Renderer sieht das fast wie die Vektorform aus (Ecken minimal rund, keine Füllung).
 - `drawStrokeToCanvas` zeichnet Formen als Vektor (`drawShapeToCanvas`) — damit in Hauptansicht, Aufzieh-Vorschau, Vorschaubildern, PNG und Grenzen. SVG-Export: `shapeToSvg` (`<rect>`, `<ellipse>`, `<line>`, Pfeil als `<path>`).
-- Eine spätere Füllfläche (Füllwerkzeug) soll genauso eine weitere Objektart sein: `stroke`-Event mit eigenem `tool`, `points` als Ersatzdarstellung; `edit`, Löschen und Auswahl gelten dann ohne Weiteres.
+- Füllflächen sind nach demselben Muster eine weitere Objektart (nächster Abschnitt). Jede neue Objektart: `stroke`-Event mit eigenem `tool`, `points` als Ersatzdarstellung; `edit`, Löschen und Auswahl gelten dann ohne Weiteres.
+
+## Füllflächen (stroke mit tool 'fill')
+
+Werkzeug „Füllen“ (F). Das Ergebnis ist eine **Vektorfläche**, kein Pixelbild — wieder ein gewöhnliches `stroke`-Event (kein neuer Event-Typ, keine neue Sync-Aktion).
+
+```
+stroke: { id, createdAt, tool: 'fill', color, size: 1,
+          polys: [[{x, y}, …], …],   // Ringe in Weltkoordinaten (0.1); erster = Außenkontur, weitere = Löcher
+          points: [...] }            // Außenkontur als dichte, geschlossene Punktfolge (fillOutlinePoints)
+```
+
+- **Zeichnen** (`drawFillToCanvas`, über `drawStrokeToCanvas` in allen Pfaden): `fill('evenodd')` mit `globalCompositeOperation = 'destination-over'`. Die Füllung legt sich **unter** alles, was zeitlich vor ihr gezeichnet wurde (Linien bleiben scharf, früher Wegradiertes wird mitgefüllt); spätere Striche und Radierer wirken normal darüber. `save()/restore()` setzt den Modus zurück.
+- **Folge daraus:** Striche müssen auf einer **transparenten Ebene** gezeichnet werden — nie direkt auf gemaltes Papier, sonst liegt die Füllung unsichtbar darunter. Hauptansicht (`strokeCacheCanvas`, Papier liegt auf `bgCanvas`), Vorschaubild (`_thumbLayer`), PNG-Export (eigene Ebene, dann `drawImage`) und `computeStrokeBounds` halten das ein. Wer einen neuen Zeichenpfad baut: erst Ebene, dann aufs Papier.
+- **Stapelfolge im Bild:** alle Füllflächen liegen unter allen Strichen/Formen (auch unter älteren); unter den Füllflächen liegt die ältere oben. `hitTestObjects` und der SVG-Export halten sich daran.
+- `transformStroke` bildet alle Ringe ab, `strokeGeomBounds` nimmt die Außenkontur, `hitTestStroke` prüft Punkt-in-Fläche nach evenodd (`pointInFill`; mit Toleranz auch die Nähe zum Rand). `edit` mit `patch.color` färbt um; `patch.fill` gilt nur für Formen.
+- `polys` reist im Event mit (`storablePageEvents`, Sicherung v3, Relay, P2P spreizen `event.stroke`); nur `notebookMeta().strokes` zählt Felder auf und nennt `polys` ausdrücklich. Wer dort oder anderswo stroke-Felder aufzählt, muss `shape`/`fill`/`polys` mitnehmen.
+- **Alte Versionen** (vor v48) zeichnen `points` als dünnen Stiftstrich: nur der Umriss, keine Füllung.
+
+### Füllen (Ablauf, `fillAtPoint` in `js/app.js`, `traceFillRegion`/`simplifyRing` in `js/canvas.js`)
+
+Ein Tipp ohne Ziehen (`_fillTap`, ausgelöst beim Loslassen, höchstens 12 px Weg) nach den Eingaberegeln des Stifts.
+
+1. Alle Objekte der Seite (ohne Papier/Raster) in ein Hilfs-Canvas rendern (`runFillProbe`, nicht im DOM, `willReadFrequently`). Auflösung = Bildschirm (`viewScale · DPR`), Pixelbudget `FILL_PIXEL_BUDGET` = 6 MP; der Rand je Seite ergibt sich aus dem Budget (höchstens 50 % des Ausschnitts; bei 1400×900/DPR 2 nur rund 6 %).
+2. Pixel unter dem Zeiger belegt (Alpha ≥ 16): oberstes Objekt dort (`hitTestObjects`, Toleranz 0) ist eine Füllfläche → `edit` mit `patch.color`; ist das Innere einer **gefüllten** Form (Rechteck/Ellipse) → `edit` mit `patch.fill`; sonst Hinweis „Zum Füllen in eine Fläche tippen“. Gleiche Farbe = kein Event. (Eine ungefüllte Form bekommt eine Füllfläche, kein `fill` — ihr Inneres ist frei.)
+3. Sonst Flutfüllung: Scanline mit Spannen-Stapel auf Typed Arrays, 4er-Nachbarschaft, frei = Alpha < 16 (Kantenglättung zählt als Grenze). Erreicht sie den Rand des Hilfs-Canvas → offen. War der Rand kleiner als 40 %, folgt **ein zweiter Durchgang** mit vollem Rand (50 %) und dafür gröberer Auflösung; erst wenn auch der den Rand erreicht: Hinweis „Fläche ist nicht geschlossen …“. Leere Seite: derselbe Hinweis ohne Rendern.
+4. Maske erweitern, nur in belegte Pixel: erst alle belegten 4er-Nachbarn, dann deren 8er-Nachbarn mit Alpha ≥ 128. So liegt der Rand der Fläche unter der Linie (kein heller Saum), schaut hinter dünnen Linien aber nicht heraus.
+5. Ränder der Maske entlang der Pixelkanten verfolgen (ein Ring je Rand, Inneres rechts; größter Ring zuerst, Ringe unter 4 px² fallen weg), mit Ramer-Douglas-Peucker vereinfachen (`FILL_SIMPLIFY_TOL` = 0,75 px; über `FILL_MAX_POINTS` = 3000 Punkten Toleranz × 1,5 bis höchstens ~6 px), in Weltkoordinaten umrechnen, auf 0.1 runden.
+6. Flächen unter 12 Pixeln: Hinweis „Fläche ist zu klein zum Füllen“. Sonst `stroke`-Event anlegen und wie einen Strich verteilen (speichern, Relay, P2P, Redo-Stapel verwerfen).
+
+Die letzte Messung steht im Diagnose-Overlay (`füllen: N ms (status, Größe, stufe, lesen, suchen, ringe, punkte, toleranz)`).
 
 ## Objekte ändern (edit-Events)
 
@@ -208,7 +238,11 @@ Drawing pipeline: raw points → Catmull-Rom smoothing → polygon with perpendi
 
 **Wichtig für Tests:** `document.querySelectorAll('canvas')[2]` ist die aktive Zeichenfläche. Weitere Canvases (Vorschaubilder, QR) stehen im DOM dahinter. Auf der aktiven Fläche liegt auch der Auswahlrahmen (im Werkzeug „Auswahl“ wird dort nicht gezeichnet); die Leiste `#selbar` steht als `<div>` hinter den drei Flächen im Container.
 
-**Radierer und Formen:** Radierer-Striche wirken pixelweise in Zeitreihenfolge auf alles davor Gezeichnete, auch auf Formen. Sie gehören nicht zum Objekt — siehe Known Issues.
+**Radierer, Formen, Füllflächen:** Radierer-Striche wirken pixelweise in Zeitreihenfolge auf alles davor Gezeichnete, auch auf Formen und Füllflächen. Sie gehören nicht zum Objekt — siehe Known Issues. Eine Füllfläche, die **nach** einem Radierer-Strich entstand, füllt dessen Spur mit (`destination-over`, siehe „Füllflächen“).
+
+**PNG-Export:** `drawBackground` leert die Fläche zuerst — das weiße Papier wird deshalb danach per `destination-over` daruntergelegt, die Striche kommen von einer eigenen Ebene.
+
+**SVG-Export:** Füllflächen als `<path fill-rule="evenodd">` (`fillToSvg`) vor allen anderen Elementen, die jüngste zuerst. Jede Füllfläche bekommt eine eigene Maske nur aus den Radierern, die **nach** ihr kamen (`fill-eraser-mask-N`). Für Striche und Formen gilt weiter die eine Maske `eraser-mask` aus **allen** Radierern — dort radiert das SVG also auch später Gezeichnetes weg (Abweichung vom Bild).
 
 ## Input
 
@@ -217,26 +251,27 @@ Drawing pipeline: raw points → Catmull-Rom smoothing → polygon with perpendi
 - **Touch** in pen/eraser tool: 1 finger draws. (`penOnlyMode` blocks this.)
 - **Hand ist ein Schalter, kein Werkzeug** (`#btn-hand`, `toggleHand()`, Taste H): an = 1 Finger/Maus bewegt, 2 Finger zoomen; aus = zurück zum zuletzt benutzten Werkzeug (`state.lastDrawTool`). Ein Werkzeug wählen schaltet die Hand aus. Leertaste halten = vorübergehend bewegen.
 - **Formen** (`state.tool === 'shape'`, Form in `state.shapeType`, gerätelokal gemerkt): aufziehen mit Stift/Maus/Finger nach denselben Regeln wie der Stift (Nur-Stift-Modus sperrt den Finger). Umschalt hält Quadrat/Kreis bzw. rastet Linie/Pfeil auf 45°. Unter 5 Bildschirm-Pixeln wird nichts angelegt. Farbe und Stärke kommen von den Knöpfen der Leiste.
+- **Füllen** (`state.tool === 'fill'`): ein Tipp mit Stift/Maus/Finger (Nur-Stift-Modus sperrt den Finger); Ziehen füllt nicht. Farbe = aktuelle Farbe. Siehe „Füllflächen“.
 - **Auswahl** (`state.tool === 'select'`): siehe Abschnitt „Auswahl“.
-- **Tasten:** P Stift, E Radierer, S Formen, V Auswahl, H Hand, 0 alles zeigen, Strg/Cmd+Z Rückgängig, Strg/Cmd+Umschalt+Z bzw. Strg/Cmd+Y Wiederholen, Esc schließt Dialog → Popover → Auswahl → Schublade. Nicht in Textfeldern und nicht bei offenem Dialog.
+- **Tasten:** P Stift, E Radierer, F Füllen, S Formen, V Auswahl, H Hand, 0 alles zeigen, Strg/Cmd+Z Rückgängig, Strg/Cmd+Umschalt+Z bzw. Strg/Cmd+Y Wiederholen, Esc schließt Dialog → Popover → Auswahl → Schublade. Nicht in Textfeldern und nicht bei offenem Dialog.
 - **No swipe page navigation** — explicit gestures removed.
 - DPR capped at 2.
 
 ## Hauptansicht
 
-- Leiste: Notizbuch-Titel (öffnet die Schublade), Hand-Schalter, Stift/Radierer/Formen/Auswahl (der Formen-Knopf zeigt die gewählte Form und öffnet `#pop-shapes`), Farbe, Strichstärke (je ein eigenes Popover), Undo/Redo, Sync-Status, Seiten-Menü „⋯“ (Papierart, Teilen, Export PNG/SVG, Vollbild, Seite leeren/löschen).
+- Leiste: Notizbuch-Titel (öffnet die Schublade), Hand-Schalter, Stift/Radierer/Füllen/Formen/Auswahl (der Formen-Knopf zeigt die gewählte Form und öffnet `#pop-shapes`), Farbe, Strichstärke (je ein eigenes Popover), Undo/Redo, Sync-Status, Seiten-Menü „⋯“ (Papierart, Teilen, Export PNG/SVG, Vollbild, Seite leeren/löschen).
 - Popover: `data-toggle="id"` am Auslöser, `data-pop` am Popover (`togglePopover`/`closePopovers`).
 - Seiten-Pille `‹ n / m › +`: „›“ legt keine Seite an, dafür „+“. Der Zähler (`#btn-page-overview`) öffnet die Seitenübersicht.
-- Breiten: ab 1180 px Werkzeuge mit Beschriftung, unter 760 px Werkzeugreihe unten. Bedienflächen mindestens 44 px.
+- Breiten: ab 1180 px Werkzeuge mit Beschriftung, unter 760 px Werkzeugreihe unten. Bedienflächen mindestens 44 px; Ausnahme: die acht Knöpfe der Werkzeugreihe unter 760 px sind 40 px breit und 44 px hoch (passt bei 360 px ohne Scrollen).
 
 ## Auswahl
 
 Werkzeug „Auswahl“ (V). Rein lokal, nicht synchronisiert; immer genau ein Objekt (keine Mehrfachauswahl). Code: Abschnitt „Auswahl“ in `js/app.js`, Geometrie in `js/canvas.js`.
 
-- **Treffer** (`hitTestObjects` → `hitTestStroke`): oberstes sichtbares Objekt; Stiftstrich und Kontur über den Abstand zur Linie, gefüllte Formen auch über die Fläche; Radierer-Striche nie. Toleranz in Bildschirm-Pixeln (Maus 8, Touch 20), unabhängig vom Zoom.
+- **Treffer** (`hitTestObjects` → `hitTestStroke`): oberstes sichtbares Objekt; Stiftstrich und Kontur über den Abstand zur Linie, gefüllte Formen auch über die Fläche, Füllflächen über die Fläche (evenodd — im Loch nicht); Radierer-Striche nie. Füllflächen liegen unter allen Linien: erst werden Striche/Formen geprüft (jüngste zuerst), dann Füllflächen (älteste zuerst). Toleranz in Bildschirm-Pixeln (Maus 8, Touch 20), unabhängig vom Zoom.
 - **Rahmen** mit 8 Griffen in Petrol `#0b7285` (beide Themes) auf `activeCanvas` (`drawSelectionOverlay`), folgt Pan/Zoom. Griff-Trefferfläche: Maus 20 px, Touch 44 px; nach innen höchstens ein Viertel des Rahmens, damit kleine Objekte verschiebbar bleiben.
 - **Ziehen** am Objekt bzw. im Rahmen verschiebt, an einem Griff ändert die Größe (gegenüberliegende Seite fest, kein Spiegeln — beim Überziehen bleibt die Mindestgröße von 8 Bildschirm-Pixeln). Tipp in den Rahmen ohne Ziehen wählt das Objekt darunter bzw. hebt auf.
-- **Leiste** `#selbar` am Objekt: Farbe, Füllung (nur Rechteck/Ellipse: „Keine Füllung“ + Palette), Duplizieren, Löschen (Hinweis „Objekt gelöscht“ mit „Rückgängig“).
+- **Leiste** `#selbar` am Objekt: Farbe (bei Füllflächen die Flächenfarbe), Füllung (nur Rechteck/Ellipse: „Keine Füllung“ + Palette; bei Füllflächen ausgeblendet), Duplizieren, Löschen (Hinweis „Objekt gelöscht“ mit „Rückgängig“).
 - **Tasten:** Entf/Rücktaste löscht, Esc hebt auf, Pfeiltasten schieben um 1 bzw. mit Umschalt 10 Bildschirm-Pixel; Tastendrücke innerhalb von 600 ms werden zu einem edit (`nudgeSelection`/`flushNudge`).
 - **Verschwindet** bei Seiten-/Notizbuchwechsel, Wechsel auf Stift/Radierer/Formen, Leeren der Seite und wenn das Objekt (auch durch ein anderes Gerät) verschwindet — geprüft bei jedem Neuzeichnen (`displayStrokes`). Der Hand-Schalter lässt sie stehen. Ändert ein anderes Gerät das Objekt, folgt der Rahmen; während des eigenen Ziehens gilt die lokale Vorschau.
 
@@ -334,6 +369,11 @@ LAN-IP changes per WiFi → cert must be regenerated. For mobile tests: install 
 ## Known Issues / Won't-fix
 
 - **Concurrent shared edits** are race-prone (~500ms window between fetch and push). Sub-second simultaneous strokes from two peers can lose one. Acceptable for typical async editing.
+- **Füllen sieht nur den Ausschnitt:** Die Fläche muss samt Umrandung in den Ausschnitt plus Rand passen (zweiter Durchgang: je 50 % Rand). Größere Flächen gelten als offen — herauszoomen. Die Genauigkeit der Ränder entspricht der Auflösung beim Füllen: stark herausgezoomt gefüllt, kann die Fläche beim Hineinzoomen bis etwa ein damaliges Pixel neben der Linie liegen. Über 6 MP Ausschnitt (z. B. 4K bei DPR 2) wird gröber als der Bildschirm gerechnet.
+- **Füllfläche folgt ihrer Umrandung nicht:** Wird die Linie darum verschoben, gelöscht oder radiert, bleibt die Fläche stehen (eigenes Objekt). Ein Tipp in eine Radierspur innerhalb einer Füllfläche legt eine neue Füllfläche in die Spur.
+- **Lücken unter der Schwelle:** Linien, die auf dem Bildschirm weniger als ~6 % decken (Alpha < 16, z. B. feinster Stift bei kleinstem Zoom an ungünstiger Stelle), halten die Flutfüllung nicht auf.
+- **Versionen vor v48** kennen `tool: 'fill'` nicht: sie zeichnen nur den Umriss der Fläche als dünnen Stiftstrich. Umfärben/Verschieben kommt dort (ab v47) als `edit` an und wirkt auf diesen Umriss.
+- **SVG-Export und Radierer:** siehe „Canvas“ — Striche/Formen werden von allen Radierern maskiert, auch von früheren. Außerdem stehen dort Papier-`<rect>` und Masken-`<rect>` mit `width="100%"` bei 0/0 statt am Anfang der `viewBox` (alt, unverändert).
 - **Versionen vor v47** kennen `edit` nicht: dort bleibt ein Objekt an alter Stelle, in alter Farbe und ungefüllt; Formen erscheinen als Umriss-Stiftstrich (`points`). Löschen über die Auswahl kommt an (es ist ein `undo`). Die Events bleiben dort im Log erhalten und werden weitergereicht.
 - **Radierspur wandert nicht mit:** Ein teilweise wegradiertes Objekt nimmt die Radierspur beim Verschieben/Skalieren nicht mit (Radierer-Striche sind eigene Objekte und wirken pixelweise). Ein Radierer-Strich, der *nach* einer Form gezeichnet wurde, radiert die Form auch an ihrer neuen Stelle, wenn sie dorthin geschoben wird. Der Treffertest sieht Radiertes nicht (ein wegradierter Strich bleibt anwählbar).
 - **Gleichzeitige edits** entscheidet `createdAt` (Geräte-Uhr), nicht die echte Reihenfolge — bei falsch gehender Uhr gewinnt evtl. das „frühere“ Gerät; alle Geräte zeigen aber denselben Stand.
@@ -350,7 +390,7 @@ Imperative, lowercase, concise. Examples: "Add pen-only mode toggle", "Fix share
 
 ## Debugging & Tests
 
-- **Sync-Diagnose-Overlay** (unten rechts): standardmäßig aus. Schalter unter Einstellungen → Verbindung (`localStorage notizbuch:debugOverlay`); Klick auf den Sync-Status öffnet diesen Abschnitt. Zeigt Version, ICE-Quelle, pro Peer den Candidate-Typ (`relay` = über TURN) `striche: N (events: M)` der aktuellen Seite (N = sichtbare Objekte inkl. Formen und Radierer-Striche) und `ansicht: scale x y`.
+- **Sync-Diagnose-Overlay** (unten rechts): standardmäßig aus. Schalter unter Einstellungen → Verbindung (`localStorage notizbuch:debugOverlay`); Klick auf den Sync-Status öffnet diesen Abschnitt. Zeigt Version, ICE-Quelle, pro Peer den Candidate-Typ (`relay` = über TURN) `striche: N (events: M)` der aktuellen Seite (N = sichtbare Objekte inkl. Formen, Füllflächen und Radierer-Striche), `ansicht: scale x y` und nach dem ersten Füllen `füllen: …` (Messung).
 - **Version prüfen:** Erste Overlay-Zeile muss zur `APP_VERSION` in `js/app.js` passen. Der Service Worker liefert HTML und `js/` network-first.
 - **Abnahmetest Sync** (zwei isolierte Chromium-Instanzen, braucht `playwright-core`):
   ```bash
@@ -370,6 +410,7 @@ Imperative, lowercase, concise. Examples: "Add pen-only mode toggle", "Fix share
   - `node tests/ui-c.cjs <URL>` — Hinweise statt nativer Dialoge, Leeren/Löschen mit „Rückgängig“ über zwei Geräte
   - `node tests/ui-d.cjs <URL>` — Seitenübersicht, gelöschte Seiten, Wiederherstellen über zwei Geräte, 40 Seiten, 360 px
 - **Redo-Test:** `node tests/redo.cjs <URL>` (zwei Kontexte, Geräte-Sync).
+- **Füllen:** `node tests/fill.cjs <URL>` (zwei Kontexte im Geräte-Sync, `NO_P2P=1` reicht; dazu je ein Kontext für die eingespielte Sicherung, die Zeitmessung bei 1400×900/DPR 2 und Touch über CDP). Form und Freihand-Schleife füllen (Saum-Probe entlang von Strahlen), offene Fläche/leere Seite/Tipp auf Linie, Insel mit Loch, Umfärben mit Strg+Z/Redo, Radierer davor und danach, Auswahl (verschieben, Größe, Farbe, Duplizieren, Löschen), Zoom 0,5/3 und Pan, Reload, Vorschau/PNG/SVG, Sicherung, alter Renderer (`altgeraet-fuellen.png`), 360 px. Gibt `ZEIT`-Zeilen aus; geprüft wird der Median aus vier Läufen < 150 ms.
 - **Formen + Auswahl:** `node tests/shapes.cjs <URL>` (zwei Kontexte im Geräte-Sync, `NO_P2P=1` reicht; dazu ein Kontext für die eingespielte Sicherung und einer mit Touch über CDP). Vier Formen, Verschieben/Größe/Füllung/Farbe mit Pixelproben auf beiden Geräten, Strg+Z/Redo je Änderung, gleichzeitige Änderung, Löschen/Duplizieren, Verhalten der Auswahl, Seite leeren, Reload, Vorschau/PNG/SVG, Sicherung, alter Renderer (`git show 176fc41:js/canvas.js`, Bild nach `/tmp/notes-ui/altgeraet-formen.png`), 360 px. Der Test rechnet in Weltkoordinaten und liest die Ansicht aus der Overlay-Zeile `ansicht: scale x y`.
 - **Nicht geladene Seite:** `node tests/unloaded-page.cjs <URL>` (echtes P2P, Relay für B per `routeWebSocket` blockiert). B hat Seite 2 nach dem Neuladen nur als Meta; Peer-Join-`full-sync`, `stroke` und Meta-`full-sync` dürfen deren Datei nicht verkleinern (OPFS-Dateigrößen) und die Strichzahl muss stimmen.
 - **Sicherung Export/Import:** `node tests/export-roundtrip.cjs <URL>` — Export mit Passphrase, Einspielen ohne Schlüssel (Erststart), mit demselben Schlüssel (Mischen, Relay blockiert), mit anderem Schlüssel (Rückfrage, Ersetzen), falsche/kurze/ungleiche Passphrase, Altformat v2 und altes Schlüsselbündel (beide im Test nachgebaut). WebRTC ist dort immer blockiert.
