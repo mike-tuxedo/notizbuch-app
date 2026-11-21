@@ -657,6 +657,24 @@
       flex: none;
     }
 
+    .selbar .sel-count {
+      padding: 0 var(--s2);
+      color: var(--text-2);
+      font: 600 var(--fs-sm)/1 var(--font-ui);
+      white-space: nowrap;
+    }
+
+    .selbar .sel-multi {
+      padding: 0 var(--s3);
+      color: var(--text-2);
+      font-size: var(--fs-sm);
+    }
+
+    .selbar .sel-multi[aria-pressed="true"] {
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+
     .selbar .dot {
       width: 22px;
       height: 22px;
@@ -2000,6 +2018,9 @@
           <button class="btn ghost icon danger" id="btn-sel-delete" aria-label="Objekt löschen" title="Löschen (Entf)">
             <svg class="i" aria-hidden="true"><use href="#i-trash" /></svg>
           </button>
+          <span class="sel-count" id="sel-count" aria-live="polite" hidden></span>
+          <button class="btn ghost sel-multi" id="btn-sel-multi" aria-pressed="false"
+            title="Mehrere auswählen: jeder Tipp fügt ein Objekt hinzu oder nimmt es heraus">Mehrere</button>
         </div>
       </div>
 

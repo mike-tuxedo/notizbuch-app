@@ -85,7 +85,7 @@ const unchecked = [];
   await sleep(8000);
   const a = A.page, b = B.page;
   if (process.env.NO_P2P) { const p2p = /↳[^;]*connected/.test(await a.evaluate(() => document.getElementById('console').innerText)); ok(!p2p, 'ohne P2P (nur Relay)'); }
-  ok(/fill-v48/.test(await a.evaluate(() => document.getElementById('console').innerText)), 'Version fill-v48');
+  ok(/select-v49/.test(await a.evaluate(() => document.getElementById('console').innerText)), 'Version select-v49');
   const v0 = [(await ovl(a)).view, (await ovl(b)).view];
   ok(v0.every(v => v && v.k === 1 && v.x === 0 && v.y === 0), 'Ausgangsansicht auf beiden 1:1', JSON.stringify(v0));
   ok(await a.evaluate(() => document.querySelectorAll('canvas')[2]?.id === 'active-canvas'), 'canvas[2] ist die aktive Zeichenfläche');

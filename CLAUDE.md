@@ -74,7 +74,7 @@ P2P-Verbindungen nutzen standardmäßig Trysteros eingebautes STUN. Hinter stren
 
 Im selben Abschnitt lässt sich die **Relay-Adresse** überschreiben (`device:relayUrl`, ebenfalls gerätelokal, nur `wss://`/`ws://`). Leer = Standard aus `defaultRelayUrl()` in `js/relay.js` (auf localhost das Relay des Dev-Servers). Beim Speichern baut `rebuildRelayConnections()` Live-Kanäle und Relay-Verbindung ohne Neuladen neu auf.
 
-**Actions:** `stroke`, `undo`, `redo`, `edit`, `clear`, `full-sync`, `nb-created`, `nb-deleted`, `nb-renamed`, `page-created`, `page-deleted`, `page-bg`
+**Actions:** `stroke`, `undo`, `redo`, `edit`, `batch` (mehrere Seiten-Events einer Gruppenaktion, siehe „Gruppen“), `clear`, `full-sync`, `nb-created`, `nb-deleted`, `nb-renamed`, `page-created`, `page-deleted`, `page-bg`
 
 **Cross-user notebook ID mapping:** Sharer and recipient have different local `notebookId` for the same notebook. `_resolveNbId(eventNbId, roomId)` maps incoming events from a shared room to the local notebookId via `notebookHash`.
 
@@ -112,6 +112,7 @@ Since version `v2` each page stores an encrypted event-log (`page.events`) inste
   - `undo` mit `targetEventId` — hebt ein `edit`-Event auf
   - `redo` mit `targetEventId` — hebt ein `undo`-Event auf (beide Arten)
   - `edit` mit `targetStrokeId` + `patch` — ändert ein Objekt (siehe „Objekte ändern“)
+- Jedes Event darf zusätzlich `groupId` tragen (siehe „Gruppen“ unter „Objekte ändern“).
 - Alles ist additiv: Versionen vor v47 behalten unbekannte Typen/Felder im Log und reichen sie weiter, werten sie aber nicht aus.
 - Storage blob: `{ version: 2, events: [...] }` (legacy stroke arrays are converted to `legacy:` events on read)
 - Merging is always a **union by `event.id`**. Remote data is never replaced; `mergePageEvents()` adds only unknown events.
@@ -170,11 +171,22 @@ Die letzte Messung steht im Diagnose-Overlay (`füllen: N ms (status, Größe, s
 `{ id, type: 'edit', createdAt, deviceId, seq, targetStrokeId, patch }` — `patch` enthält nur geänderte Felder:
 
 - `transform: [sx, sy, tx, ty]` — **absolute** Abbildung der *ursprünglichen* Geometrie (`x' = sx·x + tx`), kein Drehen. `sx`/`sy` auf 1e-6, `tx`/`ty` auf 0.1 gerundet. Gilt auch für Stiftstriche (Punkte werden abgebildet, Strichstärke bleibt).
+- `shape: { x1, y1, x2, y2 }` (ab v49) — **absolute neue Grundgeometrie** einer Form (Weltkoordinaten, 0.1 gerundet; der `type` bleibt der des Objekts). Gilt nur für Objekte mit `tool: 'shape'` und nur mit vier endlichen Werten, sonst wird das Feld übergangen. Entsteht beim Ziehen eines **Endpunkt-Griffs** von Linie/Pfeil (Drehen, Umklappen, exakt senkrecht — als `transform` nicht ausdrückbar). Ein Endpunkt-edit schreibt im selben Event `shape` **und** `transform: [1, 1, 0, 0]`, weil die neue Geometrie ein früheres Verschieben schon enthält. Angewendet wird erst `shape`, dann `transform` (`EDIT_FIELDS`, `applyStrokePatch`); ein späteres Verschieben schreibt wieder nur `transform`, relativ zur dann gültigen `shape`. Feld-weises „letzter gewinnt“ kann `shape` von Gerät A mit `transform` von Gerät B mischen (gleichzeitig Endpunkt ziehen und verschieben) — alle Geräte zeigen dann dasselbe.
 - `color`, `fill` (Farbe oder `null`), `size`.
 - `materializePageDetailed()` wendet pro Objekt und **pro Feld** den letzten nicht aufgehobenen edit an (Reihenfolge `sortPageEvents`: createdAt, deviceId, seq) — letzter gewinnt, unabhängig von der Ankunft. Das Ursprungs-Event wird nie verändert. edits für unbekannte/ausgeblendete Ziele bleiben wirkungslos im Log.
 - `page.strokes` / `materializePage()` liefern das **fertige Objekt** (`applyStrokePatch` → `transformStroke`); Renderer, Grenzen, Vorschau, Export und Sicherung wissen nichts von edits.
-- Live-Weg: Sync-Aktion `edit` (`onEdit`, wird wie `stroke`/`undo`/`redo` zwischen Haupt- und Shared-Room weitergereicht). Beim Ziehen entsteht **ein** Event beim Loslassen (`commitEdit`), vorher nur lokale Vorschau (`_selPreview`).
+- Live-Weg: Sync-Aktion `edit` (`onEdit`, wird wie `stroke`/`undo`/`redo` zwischen Haupt- und Shared-Room weitergereicht). Beim Ziehen entsteht **ein** Event je Objekt beim Loslassen (`commitEdits`), vorher nur lokale Vorschau (`_selPreview`).
 - Löschen = `undo`-Event mit `targetStrokeId` und `reason: 'delete'`; Duplizieren = neues `stroke`-Event mit der fertigen Geometrie, versetzt um 16 Bildschirm-Pixel.
+
+### Gruppen (`groupId`, ab v49)
+
+Eine Aktion auf mehreren Objekten (Mehrfachauswahl: verschieben, skalieren, färben, füllen, duplizieren, löschen) erzeugt **ein Event je Objekt** — `edit`, Lösch-`undo` bzw. `stroke` — und alle tragen dasselbe zusätzliche Feld `groupId` (eindeutig pro Aktion, `newId()`). Aktionen auf einem einzelnen Objekt tragen keine.
+
+- **Eine Aktion = ein Rückgängig-Schritt:** `lastPageAction` sucht wie bisher die letzte Aktion; hat deren Event eine `groupId`, gehören alle noch wirksamen Events mit derselben `groupId` dazu (`{ kind: 'group', members }`). `undo()` erzeugt je Mitglied das passende Gegen-Event (wie in der Tabelle unter „Undo / Redo“), diese wieder mit einer gemeinsamen `groupId`; der Redo-Stapel bekommt **einen** Eintrag `{ kind: 'group', entries }`.
+- **Speichern/Senden:** `applyPageEvents` hängt alle Events an und baut die Seite einmal neu auf; gespeichert wird einmal (`persistPage` bzw. `saveCurrentPage` beim Duplizieren). Gesendet wird über `sendPageEvents`: ein einzelnes Event in der alten Nachrichtenform (`stroke`/`undo`/`redo`/`edit`), mehrere gebündelt als Sync-Aktion **`batch`** (`{ eventId, notebookId, pageId, pageEvents: [...] }`, Empfang `onBatch` → ein `mergePageEvents`, ein Speichern; wird wie die anderen Seiten-Aktionen zwischen Haupt- und Shared-Room weitergereicht). Sehr große Gruppen gehen in mehreren Nachrichten (`BATCH_MAX_EVENTS` 250, `BATCH_MAX_CHARS` 150 000 — das Relay nimmt höchstens 512 kB je Live-Event).
+- **Teilweise angekommen:** Fehlt auf einem Gerät vorübergehend ein Teil einer Gruppe, wirkt der Rest wie einzelne Events; ein Rückgängig dort trifft nur, was da ist. Nach vollständigem Empfang zeigen alle dasselbe (Vereinigung nach `event.id`).
+- `groupId` reist wie `reason` und `patch.shape` im Event mit: Speichern (`storablePageEvents`), Sicherung v3, Relay-Blob, `full-sync` und Shared-Room reichen Nicht-Strich-Events unverändert weiter und spreizen bei `stroke`-Events alle Felder. Wer Event-Felder aufzählt, muss `groupId` mitnehmen.
+- Beim Duplizieren steigt `createdAt` je Kopie um 1 ms, damit die Stapelfolge der Kopien auf allen Geräten der der Vorlagen entspricht.
 
 ## Seiten-Meta (clearedAt / deletedAt / restoredAt)
 
@@ -253,7 +265,7 @@ Drawing pipeline: raw points → Catmull-Rom smoothing → polygon with perpendi
 - **Formen** (`state.tool === 'shape'`, Form in `state.shapeType`, gerätelokal gemerkt): aufziehen mit Stift/Maus/Finger nach denselben Regeln wie der Stift (Nur-Stift-Modus sperrt den Finger). Umschalt hält Quadrat/Kreis bzw. rastet Linie/Pfeil auf 45°. Unter 5 Bildschirm-Pixeln wird nichts angelegt. Farbe und Stärke kommen von den Knöpfen der Leiste.
 - **Füllen** (`state.tool === 'fill'`): ein Tipp mit Stift/Maus/Finger (Nur-Stift-Modus sperrt den Finger); Ziehen füllt nicht. Farbe = aktuelle Farbe. Siehe „Füllflächen“.
 - **Auswahl** (`state.tool === 'select'`): siehe Abschnitt „Auswahl“.
-- **Tasten:** P Stift, E Radierer, F Füllen, S Formen, V Auswahl, H Hand, 0 alles zeigen, Strg/Cmd+Z Rückgängig, Strg/Cmd+Umschalt+Z bzw. Strg/Cmd+Y Wiederholen, Esc schließt Dialog → Popover → Auswahl → Schublade. Nicht in Textfeldern und nicht bei offenem Dialog.
+- **Tasten:** P Stift, E Radierer, F Füllen, S Formen, V Auswahl, H Hand, 0 alles zeigen, Strg/Cmd+A alle Objekte wählen (nur im Auswahl-Werkzeug), Strg/Cmd+Z Rückgängig, Strg/Cmd+Umschalt+Z bzw. Strg/Cmd+Y Wiederholen, Esc schließt Dialog → Popover → Auswahl → Schublade. Nicht in Textfeldern und nicht bei offenem Dialog.
 - **No swipe page navigation** — explicit gestures removed.
 - DPR capped at 2.
 
@@ -266,14 +278,19 @@ Drawing pipeline: raw points → Catmull-Rom smoothing → polygon with perpendi
 
 ## Auswahl
 
-Werkzeug „Auswahl“ (V). Rein lokal, nicht synchronisiert; immer genau ein Objekt (keine Mehrfachauswahl). Code: Abschnitt „Auswahl“ in `js/app.js`, Geometrie in `js/canvas.js`.
+Werkzeug „Auswahl“ (V). Rein lokal, nicht synchronisiert; ein oder mehrere Objekte (`_selection.ids`). Code: Abschnitt „Auswahl“ in `js/app.js`, Geometrie in `js/canvas.js`.
 
 - **Treffer** (`hitTestObjects` → `hitTestStroke`): oberstes sichtbares Objekt; Stiftstrich und Kontur über den Abstand zur Linie, gefüllte Formen auch über die Fläche, Füllflächen über die Fläche (evenodd — im Loch nicht); Radierer-Striche nie. Füllflächen liegen unter allen Linien: erst werden Striche/Formen geprüft (jüngste zuerst), dann Füllflächen (älteste zuerst). Toleranz in Bildschirm-Pixeln (Maus 8, Touch 20), unabhängig vom Zoom.
-- **Rahmen** mit 8 Griffen in Petrol `#0b7285` (beide Themes) auf `activeCanvas` (`drawSelectionOverlay`), folgt Pan/Zoom. Griff-Trefferfläche: Maus 20 px, Touch 44 px; nach innen höchstens ein Viertel des Rahmens, damit kleine Objekte verschiebbar bleiben.
-- **Ziehen** am Objekt bzw. im Rahmen verschiebt, an einem Griff ändert die Größe (gegenüberliegende Seite fest, kein Spiegeln — beim Überziehen bleibt die Mindestgröße von 8 Bildschirm-Pixeln). Tipp in den Rahmen ohne Ziehen wählt das Objekt darunter bzw. hebt auf.
-- **Leiste** `#selbar` am Objekt: Farbe (bei Füllflächen die Flächenfarbe), Füllung (nur Rechteck/Ellipse: „Keine Füllung“ + Palette; bei Füllflächen ausgeblendet), Duplizieren, Löschen (Hinweis „Objekt gelöscht“ mit „Rückgängig“).
-- **Tasten:** Entf/Rücktaste löscht, Esc hebt auf, Pfeiltasten schieben um 1 bzw. mit Umschalt 10 Bildschirm-Pixel; Tastendrücke innerhalb von 600 ms werden zu einem edit (`nudgeSelection`/`flushNudge`).
-- **Verschwindet** bei Seiten-/Notizbuchwechsel, Wechsel auf Stift/Radierer/Formen, Leeren der Seite und wenn das Objekt (auch durch ein anderes Gerät) verschwindet — geprüft bei jedem Neuzeichnen (`displayStrokes`). Der Hand-Schalter lässt sie stehen. Ändert ein anderes Gerät das Objekt, folgt der Rahmen; während des eigenen Ziehens gilt die lokale Vorschau.
+- **Mehrere wählen:** (a) **Auswahlrechteck** — ein Zug, der auf leerer Fläche beginnt (gestrichelt, Petrol, leicht getönt); gewählt wird alles, dessen Geometrie-Grenzen (`strokeGeomBounds`) das Rechteck schneiden (`objectsInRect`). Ein Tipp ins Leere hebt die Auswahl auf. (b) **Umschalt+Klick bzw. Strg/Cmd+Klick** fügt hinzu oder nimmt heraus (`toggleSelected`); mit gehaltener Taste ergänzt auch das Auswahlrechteck. (c) **Strg/Cmd+A** wählt alle Objekte der Seite (`selectAllObjects`). (d) Für Touch der Umschalter **„Mehrere“** in der Leiste (`#btn-sel-multi`, `aria-pressed`, `_selMulti`): solange er an ist, wirkt jeder Tipp wie Umschalt+Klick und ein Tipp ins Leere lässt die Auswahl stehen; er endet mit der Auswahl (Esc).
+- **Rahmen** mit 8 Griffen in Petrol `#0b7285` (beide Themes) auf `activeCanvas` (`drawSelectionOverlay`), folgt Pan/Zoom; bei mehreren Objekten **ein** gemeinsamer Rahmen, dazu jedes Objekt dünn umrandet. Griff-Trefferfläche: Maus 20 px, Touch 44 px; nach innen höchstens ein Viertel des Rahmens. **Kleine Objekte:** ist die Geometrie am Bildschirm in einer Richtung kleiner als 60 px (`SELECT_SMALL_PX`), entfallen die Kantenmitte-Griffe dieser Richtung (schmal → ohne oben/unten Mitte, flach → ohne links/rechts Mitte; beides → nur 4 Eckgriffe, `frameHandles`), und die Griffe reichen dort nicht mehr nach innen — Ziehen im Rahmen verschiebt immer.
+- **Linie/Pfeil (genau eines gewählt):** statt des Rahmens zwei runde **Endpunkt-Griffe** und eine dezente Hervorhebung der Linie (`frame.line`, `hitLineEnd`; Trefferfläche Maus 20 px, Touch 44 px, bei kurzen Linien höchstens ein Drittel der Länge). Ziehen an einem Griff bewegt nur diesen Endpunkt (`endpointShape`), Umschalt rastet auf 45°; beliebig drehen und umklappen. Unter 4 Bildschirm-Pixeln Länge (`LINE_MIN_PX`) bleibt der letzte gültige Zustand. Ergebnis: edit mit `patch.shape` + `transform [1,1,0,0]`. Ziehen an der Linie selbst verschiebt (kein Rahmen-Inneres). In einer Gruppe verhält sich eine Linie wie jedes Objekt (nur `transform`).
+- **Ziehen** am Objekt bzw. im Rahmen verschiebt alle gewählten, an einem Griff ändert die Größe aller gemeinsam um die gegenüberliegende Seite des (Gruppen-)Rahmens (kein Spiegeln — beim Überziehen bleibt die Mindestgröße von 8 Bildschirm-Pixeln). Die Geste liefert eine gemeinsame Abbildung `g`; jedes Objekt bekommt `g ∘ eigene transform` (`composeTransform`, `resizeTransform`). Tipp in den Rahmen ohne Ziehen wählt das Objekt darunter (allein) bzw. hebt auf.
+- **Leiste** `#selbar`: Farbe (Linien- bzw. Flächenfarbe aller), Füllung (nur sichtbar, wenn ein Rechteck/eine Ellipse dabei ist; wirkt nur auf diese), Duplizieren (Kopien sind danach gewählt), Löschen (Hinweis „Objekt gelöscht“ bzw. „N Objekte gelöscht“ mit „Rückgängig“ → `restoreDeletedObjects`), Anzeige „N Objekte“ (`#sel-count`, ab 2), Umschalter „Mehrere“.
+- **Tasten:** Entf/Rücktaste löscht, Esc hebt auf, Pfeiltasten schieben um 1 bzw. mit Umschalt 10 Bildschirm-Pixel; Tastendrücke innerhalb von 600 ms werden zu einer Aktion (`nudgeSelection`/`flushNudge`).
+- Jede Aktion auf mehreren Objekten ist **eine Gruppe** (`groupId`) und damit ein Rückgängig-Schritt — siehe „Gruppen“.
+- **Verschwindet** bei Seiten-/Notizbuchwechsel, Wechsel auf Stift/Radierer/Füllen/Formen und Leeren der Seite. Objekte, die (auch durch ein anderes Gerät) verschwinden, fallen aus der Auswahl; der Rest bleibt gewählt — geprüft bei jedem Neuzeichnen (`displayStrokes`). Der Hand-Schalter lässt sie stehen. Ändert ein anderes Gerät ein Objekt, folgt der Rahmen; während des eigenen Ziehens gilt bis zum Loslassen die lokale Vorschau (Abbildungen vom Beginn der Geste).
+- **Leistung:** Die Vorschau baut die Seite nicht pro Bild neu auf — `pageDetail()` merkt sich `materializePageDetailed` so lange, wie Event-Log (nur Anhängen) und Leeren unverändert sind; pro Bild werden nur die gewählten Objekte abgebildet und die Seite gezeichnet (rAF-gedrosselt). Gemessen (Chromium headless, 200 Stiftstriche): ~0,03 ms je Pointer-Move, ~9 ms je Bild, Loslassen ~13 ms (200 edits anhängen, zeichnen, eine `batch`-Nachricht), gespeichert nach ~50 ms.
+- **Diagnose-Overlay:** `auswahl: N (art, G griffe[, mehrere])` (art = linie, pfeil, rechteck, ellipse, stift, fläche, gruppe) und nach einem Ziehen `auswahl-zeit: …` (Messung der letzten Geste).
 
 ## Seitenübersicht
 
@@ -329,14 +346,17 @@ Einstellungen → Daten & Schlüssel; Import zusätzlich im Erststart-Dialog (�
 | Objekt geändert (`edit`) | nicht aufgehoben, Ziel sichtbar, Patch gültig | `createdAt` des Events | `undo` mit `targetEventId` |
 | Objekt gelöscht (`undo` mit `reason: 'delete'`) | nicht aufgehoben, Objekt existiert (nach `clearedAt`), kein zweites Undo auf demselben Objekt | `createdAt` des Events | `redo` mit `targetEventId` |
 
+Trägt das Event der letzten Aktion eine `groupId`, ist die ganze Gruppe die Aktion: Rückgängig erzeugt je Mitglied das passende Gegen-Event (siehe „Gruppen“).
+
 Die späteste Zeit gewinnt; bei Gleichstand edit/Löschen vor Strich, sonst deviceId, seq. Ein gewöhnliches Rückgängig (`undo` ohne `reason`) und `redo` sind selbst **keine** Aktionen — deshalb ändert sich für reine Stiftstriche nichts (letzter sichtbarer Strich). Wie bisher zählt die Seite, nicht das Gerät: Rückgängig trifft auch die letzte Aktion eines anderen Geräts. Gespeichert wird sofort (`persistPage`, kein Debounce).
 
 `redo()` arbeitet den Redo-Stapel ab (`_redoStacks`, pro Seite, nur im Speicher, nur eigenes Rückgängig). Einträge:
 
 - `{ kind: 'undo', eventId }` — eigenes `undo`-Event (auf Strich oder edit): Wiederholen hängt `redo` mit `targetEventId` an.
 - `{ kind: 'delete', strokeId }` — zurückgenommenes Löschen: Wiederholen hängt ein neues Lösch-`undo` (`reason: 'delete'`) an, sofern das Objekt noch sichtbar ist.
+- `{ kind: 'group', entries: [...] }` — zurückgenommene Gruppenaktion als **ein** Eintrag (je Mitglied einer der beiden oberen): Wiederholen erzeugt alle Events mit einer gemeinsamen `groupId`, speichert einmal und sendet gebündelt.
 
-Ein neuer eigener Strich, eine eigene Änderung (edit, Löschen, Duplizieren) oder ein festgeschriebenes Leeren verwirft den Stapel; Remote-Events ändern ihn nicht. Solange ein Hinweis „Seite geleert/gelöscht“ läuft, nimmt Strg+Z zuerst diesen zurück. Der Hinweis „Objekt gelöscht → Rückgängig“ hebt genau dieses Löschen auf (`restoreDeletedObject`), ohne den Stapel zu berühren.
+Ein neuer eigener Strich, eine eigene Änderung (edit, Löschen, Duplizieren) oder ein festgeschriebenes Leeren verwirft den Stapel; Remote-Events ändern ihn nicht. Solange ein Hinweis „Seite geleert/gelöscht“ läuft, nimmt Strg+Z zuerst diesen zurück. Der Hinweis „Objekt gelöscht“ / „N Objekte gelöscht“ → „Rückgängig“ hebt genau dieses Löschen auf (`restoreDeletedObjects`), ohne den Stapel zu berühren.
 
 ## Relay Server (backup-relay/)
 
@@ -377,7 +397,11 @@ LAN-IP changes per WiFi → cert must be regenerated. For mobile tests: install 
 - **Versionen vor v47** kennen `edit` nicht: dort bleibt ein Objekt an alter Stelle, in alter Farbe und ungefüllt; Formen erscheinen als Umriss-Stiftstrich (`points`). Löschen über die Auswahl kommt an (es ist ein `undo`). Die Events bleiben dort im Log erhalten und werden weitergereicht.
 - **Radierspur wandert nicht mit:** Ein teilweise wegradiertes Objekt nimmt die Radierspur beim Verschieben/Skalieren nicht mit (Radierer-Striche sind eigene Objekte und wirken pixelweise). Ein Radierer-Strich, der *nach* einer Form gezeichnet wurde, radiert die Form auch an ihrer neuen Stelle, wenn sie dorthin geschoben wird. Der Treffertest sieht Radiertes nicht (ein wegradierter Strich bleibt anwählbar).
 - **Gleichzeitige edits** entscheidet `createdAt` (Geräte-Uhr), nicht die echte Reihenfolge — bei falsch gehender Uhr gewinnt evtl. das „frühere“ Gerät; alle Geräte zeigen aber denselben Stand.
-- **Kein Spiegeln** beim Ändern der Größe: eine Linie von links oben nach rechts unten lässt sich nicht zur Gegendiagonale umziehen (neu zeichnen).
+- **Kein Spiegeln** über die Griffe des Rahmens (Rechteck, Ellipse, Stiftstrich, Füllfläche, Gruppen). Linie und Pfeil lassen sich einzeln über die Endpunkt-Griffe beliebig drehen und umklappen, in einer Gruppe nicht. Kein Drehen für andere Objekte.
+- **Auswahlrechteck nimmt Grenzen, nicht die Linie:** Es wählt alles, dessen umschließendes Rechteck es schneidet — auch eine Diagonale, deren Linie selbst außerhalb liegt. Füllflächen zählen mit ihrer Außenkontur.
+- **Gruppen und alte bzw. halb versorgte Geräte:** Die Sync-Aktion `batch` kennen nur Versionen ab v49; ältere bekommen Gruppen-Events nicht live, sondern erst über Relay-Blob bzw. `full-sync`. Erreicht ein Gerät nur ein Teil einer Gruppe (mehrere `batch`-Nachrichten bei sehr großen Gruppen, Verbindungsabbruch), nimmt ein Rückgängig **dort** nur den vorhandenen Teil zurück; die restlichen Mitglieder bilden danach eine eigene (kleinere) Gruppe.
+- **`patch.shape` und Rückgängig über Kreuz:** Ein Verschieben nach einem Endpunkt-edit ist relativ zur neuen Geometrie gespeichert. Wird (durch gleichzeitige Arbeit zweier Geräte) der Endpunkt-edit aufgehoben, das spätere Verschieben aber nicht, gilt dessen `transform` für die alte Geometrie — überall gleich, aber nicht unbedingt, was man erwartet.
+- **Duplizieren vieler Objekte** datiert die Kopien bis zu N ms voraus (1 ms je Kopie, für die Stapelfolge).
 - **Versionen vor v44** kennen `restoredAt` nicht: dort bleibt eine anderswo wiederhergestellte Seite gelöscht, und ein Wiederherstellen von dort kommt bei anderen nicht an.
 - **Empty pages** in shared notebooks: `pushSharedNotebook` pushes pages that have events (a page whose strokes were all undone has events but zero strokes). Empty pages without events still exist only in meta. Recipient creates them from meta.
 - **Firefox Stable + OPFS:** `GetDirectory` throws `SecurityError`. Falls back to IndexedDB.
@@ -390,7 +414,7 @@ Imperative, lowercase, concise. Examples: "Add pen-only mode toggle", "Fix share
 
 ## Debugging & Tests
 
-- **Sync-Diagnose-Overlay** (unten rechts): standardmäßig aus. Schalter unter Einstellungen → Verbindung (`localStorage notizbuch:debugOverlay`); Klick auf den Sync-Status öffnet diesen Abschnitt. Zeigt Version, ICE-Quelle, pro Peer den Candidate-Typ (`relay` = über TURN) `striche: N (events: M)` der aktuellen Seite (N = sichtbare Objekte inkl. Formen, Füllflächen und Radierer-Striche), `ansicht: scale x y` und nach dem ersten Füllen `füllen: …` (Messung).
+- **Sync-Diagnose-Overlay** (unten rechts): standardmäßig aus. Schalter unter Einstellungen → Verbindung (`localStorage notizbuch:debugOverlay`); Klick auf den Sync-Status öffnet diesen Abschnitt. Zeigt Version, ICE-Quelle, pro Peer den Candidate-Typ (`relay` = über TURN) `striche: N (events: M)` der aktuellen Seite (N = sichtbare Objekte inkl. Formen, Füllflächen und Radierer-Striche), `ansicht: scale x y`, nach dem ersten Füllen `füllen: …` (Messung), `auswahl: N (art, G griffe)` und nach dem ersten Ziehen einer Auswahl `auswahl-zeit: …`.
 - **Version prüfen:** Erste Overlay-Zeile muss zur `APP_VERSION` in `js/app.js` passen. Der Service Worker liefert HTML und `js/` network-first.
 - **Abnahmetest Sync** (zwei isolierte Chromium-Instanzen, braucht `playwright-core`):
   ```bash
@@ -411,9 +435,10 @@ Imperative, lowercase, concise. Examples: "Add pen-only mode toggle", "Fix share
   - `node tests/ui-d.cjs <URL>` — Seitenübersicht, gelöschte Seiten, Wiederherstellen über zwei Geräte, 40 Seiten, 360 px
 - **Redo-Test:** `node tests/redo.cjs <URL>` (zwei Kontexte, Geräte-Sync).
 - **Füllen:** `node tests/fill.cjs <URL>` (zwei Kontexte im Geräte-Sync, `NO_P2P=1` reicht; dazu je ein Kontext für die eingespielte Sicherung, die Zeitmessung bei 1400×900/DPR 2 und Touch über CDP). Form und Freihand-Schleife füllen (Saum-Probe entlang von Strahlen), offene Fläche/leere Seite/Tipp auf Linie, Insel mit Loch, Umfärben mit Strg+Z/Redo, Radierer davor und danach, Auswahl (verschieben, Größe, Farbe, Duplizieren, Löschen), Zoom 0,5/3 und Pan, Reload, Vorschau/PNG/SVG, Sicherung, alter Renderer (`altgeraet-fuellen.png`), 360 px. Gibt `ZEIT`-Zeilen aus; geprüft wird der Median aus vier Läufen < 150 ms.
+- **Auswahl (Endpunkt-Griffe, Mehrfachauswahl):** `node tests/select.cjs <URL>` (zwei Kontexte im Geräte-Sync, `NO_P2P=1` reicht; dazu je ein Kontext für Touch über CDP und für die eingespielte Sicherung; vier Seiten). Endpunkt ziehen/umklappen/senkrecht/verschieben mit Strg+Z- und Redo-Kette, gleichzeitig Endpunkt und Verschieben, kleine Objekte, Auswahlrechteck, Umschalt/Strg+Klick, Strg+A, „Mehrere“ per Touch, Gruppe verschieben/skalieren/färben/füllen/duplizieren/löschen mit je einem Rückgängig-Schritt, Löschen durch das andere Gerät, gemischte Gruppe, 200 Striche ziehen (`ZEIT`-Zeile; geprüft: Pointer-Move < 4 ms, Bild < 50 ms, Loslassen < 500 ms), Sicherung, 360 px. Liest die Overlay-Zeilen `auswahl:` und `auswahl-zeit:`.
 - **Formen + Auswahl:** `node tests/shapes.cjs <URL>` (zwei Kontexte im Geräte-Sync, `NO_P2P=1` reicht; dazu ein Kontext für die eingespielte Sicherung und einer mit Touch über CDP). Vier Formen, Verschieben/Größe/Füllung/Farbe mit Pixelproben auf beiden Geräten, Strg+Z/Redo je Änderung, gleichzeitige Änderung, Löschen/Duplizieren, Verhalten der Auswahl, Seite leeren, Reload, Vorschau/PNG/SVG, Sicherung, alter Renderer (`git show 176fc41:js/canvas.js`, Bild nach `/tmp/notes-ui/altgeraet-formen.png`), 360 px. Der Test rechnet in Weltkoordinaten und liest die Ansicht aus der Overlay-Zeile `ansicht: scale x y`.
 - **Nicht geladene Seite:** `node tests/unloaded-page.cjs <URL>` (echtes P2P, Relay für B per `routeWebSocket` blockiert). B hat Seite 2 nach dem Neuladen nur als Meta; Peer-Join-`full-sync`, `stroke` und Meta-`full-sync` dürfen deren Datei nicht verkleinern (OPFS-Dateigrößen) und die Strichzahl muss stimmen.
 - **Sicherung Export/Import:** `node tests/export-roundtrip.cjs <URL>` — Export mit Passphrase, Einspielen ohne Schlüssel (Erststart), mit demselben Schlüssel (Mischen, Relay blockiert), mit anderem Schlüssel (Rückfrage, Ersetzen), falsche/kurze/ungleiche Passphrase, Altformat v2 und altes Schlüsselbündel (beide im Test nachgebaut). WebRTC ist dort immer blockiert.
-- Die Tests prüfen `APP_VERSION` (ui.cjs, ui-b.cjs) — beim Hochzählen anpassen.
+- Die Tests prüfen `APP_VERSION` (ui.cjs, ui-b.cjs, shapes.cjs, fill.cjs, select.cjs) — beim Hochzählen anpassen.
 - **Drei-Peer-Test:** `node tests/three.cjs` baut ein Teilnetz (Handy und Tablet ohne direkte Verbindung) und prüft, dass der mittlere Peer Striche und Undo weiterreicht — auch zwischen Haupt-Room und Shared-Room (`forwardSyncEvent`).
 - **TURN-Test:** `node tests/turntest.cjs` prüft jeden TURN-Eintrag des ICE-Endpunkts mit erzwungenem Relay.

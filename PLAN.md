@@ -43,8 +43,10 @@ Noch offen aus Etappe 1:
 - [x] Formen: Rechteck, Ellipse, Linie, Pfeil (Objektart `shape`)
 - [x] Auswahl-Werkzeug: verschieben, Größe, Farbe, Füllung, Duplizieren, Löschen; Rahmen in Petrol; Änderungen als `edit`-Events (letzter gewinnt)
 - [x] Rückgängig nimmt die letzte Aktion der Seite zurück (Strich, Änderung oder Löschen)
+- [x] Endpunkt-Griffe für Linie und Pfeil (drehen, umklappen; `patch.shape`), kleine Objekte nur mit Eckgriffen (Version `2026-11-21-select-v49`)
+- [x] Mehrfachauswahl: Auswahlrechteck, Umschalt/Strg+Klick, Strg+A, Umschalter „Mehrere“; Gruppenaktionen als ein Rückgängig-Schritt (`groupId`, Sync-Aktion `batch`)
 
-Bekannte Grenzen (Details in `CLAUDE.md`): Füllfläche folgt ihrer Umrandung nicht, wenn die Linie verschoben oder gelöscht wird; Radierspur wandert nicht mit einem verschobenen Objekt; keine Mehrfachauswahl, kein Drehen; Linie/Pfeil haben einen Rahmen statt Endpunkt-Griffen.
+Bekannte Grenzen (Details in `CLAUDE.md`): Füllfläche folgt ihrer Umrandung nicht, wenn die Linie verschoben oder gelöscht wird; Radierspur wandert nicht mit einem verschobenen Objekt; kein Drehen und kein Spiegeln außer bei Linie/Pfeil über die Endpunkt-Griffe; das Auswahlrechteck wählt nach umschließenden Grenzen.
 
 ### Im Klickdummy enthalten, aber nicht entschieden
 

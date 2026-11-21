@@ -11,6 +11,7 @@
 //   'undo'         — Letzter Stroke gelöscht
 //   'redo'         — Undo aufgehoben (Redo-Event mit targetEventId)
 //   'edit'         — Objekt geändert (Edit-Event: verschieben, Größe, Farbe, Füllung)
+//   'batch'        — mehrere Seiten-Events einer Aktion (pageEvents: [...], Mehrfachauswahl)
 //   'clear'        — Seite geleert
 //   'full-sync'    — Kompletter State (alle Notebooks, Pages, Strokes)
 //   'nb-created'   — Neues Notebook
@@ -30,7 +31,7 @@ const APP_ID = 'notizbuch-v2';
 // jede URL prüfen, viele öffentliche Nostr-Relays nehmen keine Events an.
 
 const ACTION_NAMES = [
-  'stroke', 'undo', 'redo', 'edit', 'clear', 'full-sync',
+  'stroke', 'undo', 'redo', 'edit', 'batch', 'clear', 'full-sync',
   'nb-created', 'nb-deleted', 'nb-renamed',
   'page-created', 'page-deleted', 'page-restored', 'page-bg'
 ];
