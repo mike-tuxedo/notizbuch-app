@@ -249,7 +249,8 @@ export function drawShapeToCanvas(ctx, stroke) {
 /** Form als SVG-Element (<rect>, <ellipse>, <line>, Pfeil als <path>). Farben müssen schon maskiert sein. */
 export function shapeToSvg(stroke, color, fill) {
   const { type, x1, y1, x2, y2 } = stroke.shape;
-  const size = stroke.size || 2;
+  // Kommt aus Sync-Daten: nur als Zahl ins Markup übernehmen
+  const size = Number.isFinite(Number(stroke.size)) && Number(stroke.size) > 0 ? Number(stroke.size) : 2;
   const line = `stroke="${color}" stroke-width="${size}"`;
   const inner = `fill="${fill || 'none'}"`;
   if (type === 'rect') {

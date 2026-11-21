@@ -33,16 +33,18 @@ Abgenommener Klickdummy: `artifacts/redesign/index.html` (Absichten, Token-Tabel
 Noch offen aus Etappe 1:
 
 - [ ] Auf echten Geräten prüfen (Zeichen-Tablet mit Stift, Tablet, Handy; Touch, Kamera-Scan, Safe-Area), dann deployen
-- [ ] Export/Import: die exportierte `.enc`-Datei lässt sich nicht importieren (Export mit MasterKey, Import erwartet Passphrase; `tests/export-roundtrip.cjs` zeigt es). Entscheidung nötig, wie die Sicherung aussehen soll
-- [ ] Mischbetrieb: Geräte mit alter Version zeigen Redo und wiederhergestellte Seiten nicht, bis sie die neue Version laden
+- [x] Sicherung: Export mit Passphrase, enthält Schlüssel und vollständigen Inhalt; Import auf leerem Gerät, als Mischen bei gleichem Schlüssel, mit Rückfrage bei anderem Schlüssel
+- [ ] Mischbetrieb: Geräte mit alter Version zeigen Redo, wiederhergestellte Seiten, verschobene Objekte und Füllungen nicht bzw. nur als Umriss, bis sie die neue Version laden
+- [ ] Schlüsselwechsel per Link/Scan räumt alte Seiten-Dateien und Schlüssel nicht auf (nur der Sicherungs-Import tut das)
 
-### Etappe 2 — Füllen, Formen, Auswahl
+### Etappe 2 — Füllen, Formen, Auswahl (umgesetzt 2026-11-20, lokal, Version `2026-11-20-fill-v48`)
 
-Braucht neue Event-Typen und greift in Sync und Rendering ein.
+- [x] Füllwerkzeug als Vektorfläche (Objektart `fill`, liegt unter älteren Linien; erneuter Tipp färbt um)
+- [x] Formen: Rechteck, Ellipse, Linie, Pfeil (Objektart `shape`)
+- [x] Auswahl-Werkzeug: verschieben, Größe, Farbe, Füllung, Duplizieren, Löschen; Rahmen in Petrol; Änderungen als `edit`-Events (letzter gewinnt)
+- [x] Rückgängig nimmt die letzte Aktion der Seite zurück (Strich, Änderung oder Löschen)
 
-- [ ] Füllwerkzeug als Vektorfläche (bleibt beim Zoomen scharf, liegt als Event im Log)
-- [ ] Formen: Rechteck, Ellipse, Linie, Pfeil
-- [ ] Auswahl-Werkzeug: Größe und Position ändern, Duplizieren, Löschen; Auswahlrahmen in Petrol
+Bekannte Grenzen (Details in `CLAUDE.md`): Füllfläche folgt ihrer Umrandung nicht, wenn die Linie verschoben oder gelöscht wird; Radierspur wandert nicht mit einem verschobenen Objekt; keine Mehrfachauswahl, kein Drehen; Linie/Pfeil haben einen Rahmen statt Endpunkt-Griffen.
 
 ### Im Klickdummy enthalten, aber nicht entschieden
 
