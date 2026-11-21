@@ -40,7 +40,7 @@ const ok = (cond, label, extra = '') => { if (!cond) fails++; console.log(`${con
   const ovlText = p => p.evaluate(() => document.getElementById('console')?.innerText || '');
   const ovl = async p => { const t = await ovlText(p); const m = t.match(/striche: (\d+) \(events: (\d+)\)/); const v = t.match(/ansicht: ([\d.]+) (-?[\d.]+) (-?[\d.]+)/); return { s: m ? Number(m[1]) : -1, e: m ? Number(m[2]) : -1, view: v ? { k: Number(v[1]), x: Number(v[2]), y: Number(v[3]) } : null }; };
   /** Auswahl laut Overlay: { n, kind, handles, multi } */
-  const sel = async p => { const m = (await ovlText(p)).match(/auswahl: (\d+)(?: \(([^,]+), (\d+) griffe(, mehrere)?\))?/); return m ? { n: Number(m[1]), kind: m[2] || '', handles: Number(m[3] || 0), multi: !!m[4] } : { n: -1 }; };
+  const sel = async p => { const m = (await ovlText(p)).match(/auswahl: (\d+)(?: \(([^,]+), (\d+) griffe(, mehrere)?(?:, winkel: -?\d+°)?\))?/); return m ? { n: Number(m[1]), kind: m[2] || '', handles: Number(m[3] || 0), multi: !!m[4] } : { n: -1 }; };
   const cnt = async p => (await ovl(p)).s;
   const box = p => p.evaluate(() => { const c = document.querySelectorAll('canvas')[2].getBoundingClientRect(); return { x: c.x, y: c.y, w: c.width, h: c.height }; });
   /** Weltkoordinate [wx, wy, +px, +py] → Position im Fenster */
@@ -98,7 +98,7 @@ const ok = (cond, label, extra = '') => { if (!cond) fails++; console.log(`${con
   await sleep(8000);
   const a = A.page, b = B.page;
   if (process.env.NO_P2P) { const p2p = /↳[^;]*connected/.test(await ovlText(a)); ok(!p2p, 'ohne P2P (nur Relay)'); }
-  ok(/select-v49/.test(await ovlText(a)), 'Version select-v49');
+  ok(/rotate-v50/.test(await ovlText(a)), 'Version rotate-v50');
   ok(await a.evaluate(() => document.querySelectorAll('canvas')[2]?.id === 'active-canvas'), 'canvas[2] ist die aktive Zeichenfläche');
   ok((await sel(a)).n === 0, 'Overlay-Zeile „auswahl: 0“ ohne Auswahl', JSON.stringify(await sel(a)));
 

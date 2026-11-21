@@ -7,7 +7,7 @@ import {
   roundPoints, drawStrokeToCanvas, drawBackground,
   SHAPE_TYPES, isValidShape, roundShape, shapeOutlinePoints, shapeToSvg,
   isValidFill, fillOutlinePoints, fillToSvg, traceFillRegion, simplifyRing,
-  isValidTransform, transformStroke, strokeGeomBounds, hitTestStroke
+  isValidTransform, normalizeTransform, composeTransform, invertTransform, transformPoint, transformStroke, strokeGeomBounds, hitTestStroke
 } from './canvas.js';
 import {
   initP2P, send as p2pSend, sendToAll as p2pSendToAll,
@@ -42,7 +42,7 @@ const PEN_SIZES = [
   { name: 'XL', label: 'Sehr dick', size: 16, dot: 24 }
 ];
 
-const APP_VERSION = '2026-11-21-select-v49';
+const APP_VERSION = '2026-11-21-rotate-v50';
 const PRESENCE_INTERVAL_MS = 5000;
 const PRESENCE_TIMEOUT_MS = 15000;
 
@@ -644,6 +644,7 @@ function notebookMeta(notebook, opts = {}) {
           ? (page.strokes || []).map(s => ({
               id: s.id, points: s.points, color: s.color, size: s.size, tool: s.tool, createdAt: strokeCreatedAt(s),
               ...(s.shape ? { shape: s.shape, fill: s.fill ?? null } : {}),
+              ...(s.matrix ? { matrix: s.matrix } : {}),
               ...(s.polys ? { polys: s.polys } : {})
             }))
           : [],
@@ -2622,9 +2623,7 @@ function pageDetail(page) {
 }
 
 /** g ∘ t: erst t (Ursprung → jetzige Lage), dann die gemeinsame Abbildung g der Auswahl. */
-function composeTransform(g, t) {
-  return [g[0] * t[0], g[1] * t[1], g[0] * t[2] + g[2], g[1] * t[3] + g[3]];
-}
+let _selProportional = false;
 
 function isLineShape(stroke) {
   return stroke?.tool === 'shape' && (stroke.shape?.type === 'line' || stroke.shape?.type === 'arrow');
@@ -2779,16 +2778,35 @@ function selectionFrame() {
     p1: { x: single.shape.x1 * k + state.viewX, y: single.shape.y1 * k + state.viewY },
     p2: { x: single.shape.x2 * k + state.viewX, y: single.shape.y2 * k + state.viewY }
   } : null;
+  let basis = null, geom = { minX: gx0, minY: gy0, maxX: gx1, maxY: gy1 };
+  if (single && !line) {
+    const m = normalizeTransform(single.matrix || selectionInfo()?.items[0]?.transform || IDENTITY_TRANSFORM);
+    if (m && Math.abs(m[0]*m[2]+m[1]*m[3]) < 1e-6*Math.hypot(m[0],m[1])*Math.hypot(m[2],m[3])) {
+      const a = Math.atan2(m[1],m[0]);
+      basis = [Math.cos(a),Math.sin(a),-Math.sin(a),Math.cos(a),0,0];
+      geom = strokeGeomBounds(transformStroke(single,invertTransform(basis)));
+      const pad = 6+(single.size || 1)*k/2;
+      x0=geom.minX*k-pad; x1=geom.maxX*k+pad; y0=geom.minY*k-pad; y1=geom.maxY*k+pad;
+    }
+  }
   return {
-    strokes, bounds, stroke: strokes[0], line, x0, y0, x1, y1,
-    geom: { minX: gx0, minY: gy0, maxX: gx1, maxY: gy1 },
-    smallX: (gx1 - gx0) * k < SELECT_SMALL_PX, smallY: (gy1 - gy0) * k < SELECT_SMALL_PX
+    basis, strokes, bounds, stroke: strokes[0], line, x0, y0, x1, y1,
+    geom,
+    smallX: (geom.maxX - geom.minX) * k < SELECT_SMALL_PX, smallY: (geom.maxY - geom.minY) * k < SELECT_SMALL_PX
   };
+}
+
+function framePoint(frame, p, inverse = false) {
+  if (!frame.basis) return p;
+  if (inverse) return transformPoint({x:p.x-state.viewX,y:p.y-state.viewY},invertTransform(frame.basis));
+  const q=transformPoint(p,frame.basis);
+  return {x:q.x+state.viewX,y:q.y+state.viewY};
 }
 
 /** Griffe des Rahmens: bei kleinen Objekten entfallen die Kantenmitte-Griffe (oben/unten bzw. links/rechts). */
 function frameHandles(frame) {
-  return SELECT_HANDLES.filter(([name]) => name.length === 2 || (name === 'n' || name === 's' ? !frame.smallX : !frame.smallY));
+  const forced = frame.strokes.length > 1 && frame.strokes.some(s => isFillableShape(s) && s.matrix && Math.abs(s.matrix[0]*s.matrix[1]) > 1e-8);
+  return SELECT_HANDLES.filter(([name]) => name.length === 2 || (!forced && (name === 'n' || name === 's' ? !frame.smallX : !frame.smallY)));
 }
 
 /** Zeile fürs Diagnose-Overlay: „auswahl: N (art, G griffe)“. */
@@ -2799,7 +2817,9 @@ function refreshSelDebug(frame = selectionFrame()) {
     const kind = frame.strokes.length > 1 ? 'gruppe'
       : s.tool === 'shape' ? ({ line: 'linie', arrow: 'pfeil', rect: 'rechteck', ellipse: 'ellipse' }[s.shape?.type] || 'form')
       : s.tool === 'fill' ? 'fläche' : 'stift';
-    line = `auswahl: ${frame.strokes.length} (${kind}, ${frame.line ? 2 : frameHandles(frame).length} griffe${_selMulti ? ', mehrere' : ''})`;
+    const m = normalizeTransform(s.matrix || selectionInfo()?.items[0]?.transform);
+    const angle = _selDrag?.angle ?? (m ? Math.atan2(m[1],m[0]) : 0);
+    line = `auswahl: ${frame.strokes.length} (${kind}, ${frame.line ? 2 : frameHandles(frame).length} griffe${_selMulti ? ', mehrere' : ''}, winkel: ${Math.round(angle*180/Math.PI)}°)`;
   }
   if (line === _selDebugLine) return;
   _selDebugLine = line;
@@ -2861,6 +2881,8 @@ function drawSelectionOverlay() {
       ctx.stroke();
       ctx.restore();
     }
+    ctx.save();
+    if (frame.basis) { const [a,b,c,d]=frame.basis; ctx.transform(a,b,c,d,state.viewX,state.viewY); }
     const w = frame.x1 - frame.x0, h = frame.y1 - frame.y0;
     ctx.lineWidth = 2;
     ctx.setLineDash([7, 6]);
@@ -2871,6 +2893,14 @@ function drawSelectionOverlay() {
       ctx.fillRect(x - 6, y - 6, 12, 12);
       ctx.strokeRect(x - 6, y - 6, 12, 12);
     }
+    const mx = (frame.x0+frame.x1)/2;
+    ctx.beginPath(); ctx.moveTo(mx,frame.y0); ctx.lineTo(mx,frame.y0-36); ctx.stroke();
+    ctx.beginPath(); ctx.arc(mx,frame.y0-36,7,0,Math.PI*2); ctx.fill(); ctx.stroke();
+    if (_selDrag?.angle !== undefined) {
+      ctx.fillStyle = SELECT_COLOR; ctx.font = '12px sans-serif';
+      ctx.fillText(Math.round(_selDrag.angle*180/Math.PI)+'°',mx+12,frame.y0-42);
+    }
+    ctx.restore();
   }
   if (marquee) {
     const x = Math.min(marquee.x0, marquee.x1), y = Math.min(marquee.y0, marquee.y1);
@@ -2931,6 +2961,8 @@ function updateSelbar(frame = selectionFrame()) {
     }
     return;
   }
+  const corners=[[frame.x0,frame.y0],[frame.x1,frame.y0],[frame.x0,frame.y1],[frame.x1,frame.y1]].map(([x,y])=>framePoint(frame,{x,y}));
+  frame={...frame,x0:Math.min(...corners.map(p=>p.x)),x1:Math.max(...corners.map(p=>p.x)),y0:Math.min(...corners.map(p=>p.y)),y1:Math.max(...corners.map(p=>p.y))};
   const strokes = frame.strokes;
   const n = strokes.length;
   const fillables = strokes.filter(isFillableShape);
@@ -2954,7 +2986,7 @@ function updateSelbar(frame = selectionFrame()) {
   // Über dem Rahmen, sonst darunter; immer ganz im Bild
   const cw = container.clientWidth, ch = container.clientHeight;
   const bw = bar.offsetWidth, bh = bar.offsetHeight, gap = 14;
-  let top = frame.y0 - bh - gap;
+  let top = frame.y0 - bh - 72;
   if (top < 4) top = frame.y1 + gap;
   if (top + bh > ch - 4) top = Math.max(4, Math.min(ch - bh - 4, frame.y0 + gap));
   const left = Math.max(4, Math.min(cw - bw - 4, (frame.x0 + frame.x1) / 2 - bw / 2));
@@ -3009,6 +3041,7 @@ function objectsInRect(r) {
  * bei kleinen Objekten gar nichts: dort verschiebt Ziehen im Rahmen immer.
  */
 function hitSelectionHandle(frame, pos, tol) {
+  pos=framePoint(frame,pos,true);
   const w = frame.x1 - frame.x0, h = frame.y1 - frame.y0;
   const inX = frame.smallX ? 0 : Math.min(tol, w / 4), inY = frame.smallY ? 0 : Math.min(tol, h / 4);
   const within = (d, f, inner) => f === 0 ? (d >= -tol && d <= inner) : f === 1 ? (d <= tol && d >= -inner) : Math.abs(d) <= inner;
@@ -3035,14 +3068,24 @@ function hitLineEnd(frame, pos, tol) {
 }
 
 function roundTransform(t) {
-  return [Math.round(t[0] * 1e6) / 1e6, Math.round(t[1] * 1e6) / 1e6, Math.round(t[2] * 10) / 10, Math.round(t[3] * 10) / 10];
+  const m = normalizeTransform(t);
+  if (!m) return null;
+  const rounded = m.map((v, i) => {
+    const n = i < 4 ? 1e6 : 10;
+    return Math.round(v * n) / n;
+  });
+  // Rundung kann eine zuvor gültige Matrix singulär machen.
+  if (!isValidTransform(rounded)) return null;
+  return rounded[1] === 0 && rounded[2] === 0
+    ? [rounded[0], rounded[3], rounded[4], rounded[5]] : rounded;
 }
 
 /**
  * Gemeinsame Abbildung beim Ziehen an einem Griff: die gegenüberliegende Seite des (Gruppen-)Rahmens bleibt
  * fest. Kein Spiegeln — beim Überziehen bleibt die Mindestgröße stehen.
  */
-function resizeTransform(drag, dx, dy) {
+function resizeTransform(drag, dx, dy, proportional) {
+  if (drag.basis) { const p=transformPoint({x:dx,y:dy},invertTransform(drag.basis)); dx=p.x; dy=p.y; }
   const b = drag.b0;
   let sx = 1, sy = 1, tx = 0, ty = 0;
   const minSize = 8 / state.viewScale;
@@ -3061,7 +3104,13 @@ function resizeTransform(drag, dx, dy) {
     sy = Math.max(Math.min(minSize, h0), south ? h0 + dy : h0 - dy) / h0;
     ty = anchor * (1 - sy);
   }
-  return [sx, sy, tx, ty];
+  if (h.length === 2 && (proportional || drag.forceProportional)) {
+    sx = sy = Math.max(sx, sy);
+    tx = (h.includes('e') ? b.minX : b.maxX) * (1-sx);
+    ty = (h.includes('s') ? b.minY : b.maxY) * (1-sy);
+  }
+  const g=[sx,sy,tx,ty];
+  return drag.basis ? composeTransform(drag.basis,composeTransform(g,invertTransform(drag.basis))) : g;
 }
 
 /**
@@ -3109,7 +3158,14 @@ function beginSelDrag(drag) {
     b0 = b0 ? { minX: Math.min(b0.minX, b.minX), minY: Math.min(b0.minY, b.minY), maxX: Math.max(b0.maxX, b.maxX), maxY: Math.max(b0.maxY, b.maxY) } : { ...b };
   }
   if (!b0) return false;
-  drag.b0 = b0;
+  const frame=selectionFrame();
+  drag.basis=frame?.basis;
+  drag.b0 = drag.basis ? frame.geom : b0;
+  drag.center = { x:(b0.minX+b0.maxX)/2, y:(b0.minY+b0.maxY)/2 };
+  drag.startAngle = Math.atan2(drag.startWorld.y-drag.center.y,drag.startWorld.x-drag.center.x);
+  const m = normalizeTransform(info.items[0].stroke.matrix || info.items[0].transform);
+  drag.baseAngle = info.items.length === 1 && m ? Math.atan2(m[1],m[0]) : 0;
+  drag.forceProportional = info.items.length > 1 && info.items.some(it => isFillableShape(it.stroke) && it.stroke.matrix && Math.abs(it.stroke.matrix[0]*it.stroke.matrix[1]) > 1e-8);
   if (drag.mode === 'endpoint') {
     if (info.items.length !== 1 || !isLineShape(info.items[0].stroke)) return false;
     drag.strokeId = info.items[0].id;
@@ -3135,11 +3191,14 @@ function selectPointerDown(e, pos, world) {
     } else {
       handle = hitSelectionHandle(frame, pos, touch ? 22 : 10);
       if (handle) mode = 'resize';
+      const grip=framePoint(frame,{x:(frame.x0+frame.x1)/2,y:frame.y0-36});
+      if (Math.hypot(pos.x-grip.x,pos.y-grip.y) <= (touch ? 22 : 12)) mode = 'rotate';
     }
   }
   if (!mode) {
     // Linie/Pfeil hat keinen Rahmen: dort verschiebt nur das Ziehen an der Linie selbst
-    const inFrame = !!frame && !frame.line && pos.x >= frame.x0 && pos.x <= frame.x1 && pos.y >= frame.y0 && pos.y <= frame.y1;
+    const lp=frame ? framePoint(frame,pos,true) : pos;
+    const inFrame = !!frame && !frame.line && lp.x >= frame.x0 && lp.x <= frame.x1 && lp.y >= frame.y0 && lp.y <= frame.y1;
     const hit = additive || !inFrame ? hitTestObjects(world, tol) : null;
     if (additive) {
       // Tipp schaltet das Objekt um; Ziehen nimmt es dazu und verschiebt die Auswahl
@@ -3160,14 +3219,15 @@ function selectPointerDown(e, pos, world) {
     startPos: pos, startWorld: world, slop: touch ? 8 : 4,
     t0: null, b0: null, moveMs: 0, moves: 0, frameMs: 0, frames: 0
   };
-  if ((mode === 'resize' || mode === 'endpoint') && !beginSelDrag(drag)) return;
+  if (['resize','endpoint','rotate'].includes(mode) && !beginSelDrag(drag)) return;
   _selDrag = drag;
-  if (mode === 'resize' || mode === 'endpoint') updateSelbar();
+  if (['resize','endpoint','rotate'].includes(mode)) updateSelbar();
 }
 
 function selectPointerMove(e) {
   const drag = _selDrag;
   const pos = getCanvasPos(e);
+  drag.lastPos=pos;
   if (drag.mode === 'pending' || drag.mode === 'marquee-pending') {
     if (Math.hypot(pos.x - drag.startPos.x, pos.y - drag.startPos.y) < drag.slop) return;
     if (drag.mode === 'marquee-pending') {
@@ -3196,8 +3256,14 @@ function selectPointerMove(e) {
     const shape = endpointShape(drag, world, e.shiftKey);
     // Zu kurz: der letzte gültige Zustand bleibt
     if (shape) _selPreview = { strokeId: drag.strokeId, shape };
+  } else if (drag.mode === 'rotate') {
+    let a = Math.atan2(world.y-drag.center.y,world.x-drag.center.x)-drag.startAngle;
+    if (e.shiftKey) a = Math.round((a+drag.baseAngle)/(Math.PI/12))*(Math.PI/12)-drag.baseAngle;
+    drag.angle = a+drag.baseAngle;
+    const c=Math.cos(a), sn=Math.sin(a), p=drag.center;
+    _selPreview = {g:[c,sn,-sn,c,p.x-c*p.x+sn*p.y,p.y-sn*p.x-c*p.y],t0:drag.t0};
   } else {
-    _selPreview = { g: drag.mode === 'move' ? [1, 1, dx, dy] : resizeTransform(drag, dx, dy), t0: drag.t0 };
+    _selPreview = { g: drag.mode === 'move' ? [1, 1, dx, dy] : resizeTransform(drag, dx, dy, e.shiftKey || e.ctrlKey || e.metaKey || _selProportional), t0: drag.t0 };
   }
   drag.moved = true;
   scheduleSelRedraw();
@@ -3273,6 +3339,16 @@ function selectPointerUp() {
  */
 function commitEdits(notebookId, page, edits) {
   if (!page || isPageDeleted(page) || !edits.length) return null;
+  edits = edits.flatMap(ed => {
+    if (!Object.hasOwn(ed.patch, 'transform')) return [ed];
+    const transform = roundTransform(ed.patch.transform);
+    return transform ? [{ ...ed, patch: { ...ed.patch, transform } }] : [];
+  });
+  if (!edits.length) {
+    // Eine verworfene Zieh-Vorschau darf nicht auf der Zeichenfläche stehen bleiben.
+    if (notebookId === state.currentNotebookId && page === currentPage()) redrawStrokes();
+    return null;
+  }
   if (_pendingPageOp) commitPendingPageOp();
   const group = edits.length > 1 ? { groupId: newId() } : {};
   const events = edits.map(ed => newPageEvent('edit', { targetStrokeId: ed.strokeId, patch: ed.patch, ...group }));
@@ -7266,6 +7342,20 @@ function setupEvents() {
     else if (key === 'h') toggleHand();
     else if (key === '0') fitToContent();
   });
+  const liveConstraints = e => {
+    if (_selDrag && !['pending','marquee','marquee-pending'].includes(_selDrag.mode)) {
+      const r=activeCanvas.getBoundingClientRect();
+      const p=_selDrag.lastPos || _selDrag.startPos;
+      selectPointerMove({clientX:p.x+r.left,clientY:p.y+r.top,shiftKey:e.shiftKey,ctrlKey:e.ctrlKey,metaKey:e.metaKey});
+    }
+    if (state.tool === 'shape' && isDrawing && currentPoints.length > 1) {
+      _shapeConstrain=e.shiftKey;
+      activeCtx.clearRect(0,0,activeCanvas.width,activeCanvas.height);
+      drawStrokeToCanvas(activeCtx,newShapeStroke(shapeFromDrag(currentPoints[0],currentPoints[1],state.shapeType,_shapeConstrain)));
+    }
+  };
+  document.addEventListener('keydown',liveConstraints);
+  document.addEventListener('keyup',liveConstraints);
   document.addEventListener('keyup', (e) => { if (e.code === 'Space') releaseSpace(); });
   window.addEventListener('blur', releaseSpace);
 
@@ -7338,6 +7428,16 @@ function setupEvents() {
   document.getElementById('btn-sel-nofill')?.addEventListener('click', () => { closePopovers(); setSelectedFill(null); });
   document.getElementById('btn-sel-duplicate')?.addEventListener('click', (e) => { duplicateSelected(); if (e.detail > 0) e.currentTarget.blur(); });
   document.getElementById('btn-sel-delete')?.addEventListener('click', deleteSelected);
+  const lock = document.getElementById('btn-sel-proportional');
+  settingsGet('device:selectionProportional').then(value => {
+    _selProportional = !!value;
+    lock?.setAttribute('aria-pressed', String(_selProportional));
+  });
+  lock?.addEventListener('click', () => {
+    _selProportional = !_selProportional;
+    lock.setAttribute('aria-pressed', String(_selProportional));
+    settingsPut('device:selectionProportional', _selProportional);
+  });
   document.getElementById('btn-sel-multi')?.addEventListener('click', (e) => { setSelMulti(!_selMulti); updateSelbar(); if (e.detail > 0) e.currentTarget.blur(); });
 
   // Mausrad-Zoom

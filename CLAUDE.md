@@ -276,6 +276,13 @@ Drawing pipeline: raw points → Catmull-Rom smoothing → polygon with perpendi
 - Seiten-Pille `‹ n / m › +`: „›“ legt keine Seite an, dafür „+“. Der Zähler (`#btn-page-overview`) öffnet die Seitenübersicht.
 - Breiten: ab 1180 px Werkzeuge mit Beschriftung, unter 760 px Werkzeugreihe unten. Bedienflächen mindestens 44 px; Ausnahme: die acht Knöpfe der Werkzeugreihe unter 760 px sind 40 px breit und 44 px hoch (passt bei 360 px ohne Scrollen).
 
+## Rotation und proportionales Skalieren (v50)
+
+- `patch.transform` akzeptiert affine Matrizen `[a,b,c,d,e,f]`; alte vierteilige Skalierung/Translation bleibt lesbar. Rotierte Formen tragen `matrix`.
+- Drehgriff über dem Rahmen: Rotation um die Mitte; Linie/Pfeil behalten zwei Endpunkt-Griffe. Einzelobjekte skalieren entlang lokaler Achsen ohne Scherung.
+- „Proportional“ sperrt das Seitenverhältnis; Shift/Strg schalten während der Geste um. Gruppen mit gedrehten Rechtecken/Ellipsen skalieren zwangsweise proportional.
+- Abnahme: `node tests/rotate.cjs <URL>`; Screenshots `/tmp/notes-ui/drehen-*.png` und `proportional-leiste.png`.
+
 ## Auswahl
 
 Werkzeug „Auswahl“ (V). Rein lokal, nicht synchronisiert; ein oder mehrere Objekte (`_selection.ids`). Code: Abschnitt „Auswahl“ in `js/app.js`, Geometrie in `js/canvas.js`.
@@ -397,7 +404,7 @@ LAN-IP changes per WiFi → cert must be regenerated. For mobile tests: install 
 - **Versionen vor v47** kennen `edit` nicht: dort bleibt ein Objekt an alter Stelle, in alter Farbe und ungefüllt; Formen erscheinen als Umriss-Stiftstrich (`points`). Löschen über die Auswahl kommt an (es ist ein `undo`). Die Events bleiben dort im Log erhalten und werden weitergereicht.
 - **Radierspur wandert nicht mit:** Ein teilweise wegradiertes Objekt nimmt die Radierspur beim Verschieben/Skalieren nicht mit (Radierer-Striche sind eigene Objekte und wirken pixelweise). Ein Radierer-Strich, der *nach* einer Form gezeichnet wurde, radiert die Form auch an ihrer neuen Stelle, wenn sie dorthin geschoben wird. Der Treffertest sieht Radiertes nicht (ein wegradierter Strich bleibt anwählbar).
 - **Gleichzeitige edits** entscheidet `createdAt` (Geräte-Uhr), nicht die echte Reihenfolge — bei falsch gehender Uhr gewinnt evtl. das „frühere“ Gerät; alle Geräte zeigen aber denselben Stand.
-- **Kein Spiegeln** über die Griffe des Rahmens (Rechteck, Ellipse, Stiftstrich, Füllfläche, Gruppen). Linie und Pfeil lassen sich einzeln über die Endpunkt-Griffe beliebig drehen und umklappen, in einer Gruppe nicht. Kein Drehen für andere Objekte.
+- **Kein Spiegeln** über die Griffe des Rahmens (Rechteck, Ellipse, Stiftstrich, Füllfläche, Gruppen). Linie und Pfeil lassen sich einzeln über die Endpunkt-Griffe beliebig drehen und umklappen, in einer Gruppe nicht. Andere Objekte und Gruppen lassen sich über den Drehgriff drehen (v50).
 - **Auswahlrechteck nimmt Grenzen, nicht die Linie:** Es wählt alles, dessen umschließendes Rechteck es schneidet — auch eine Diagonale, deren Linie selbst außerhalb liegt. Füllflächen zählen mit ihrer Außenkontur.
 - **Gruppen und alte bzw. halb versorgte Geräte:** Die Sync-Aktion `batch` kennen nur Versionen ab v49; ältere bekommen Gruppen-Events nicht live, sondern erst über Relay-Blob bzw. `full-sync`. Erreicht ein Gerät nur ein Teil einer Gruppe (mehrere `batch`-Nachrichten bei sehr großen Gruppen, Verbindungsabbruch), nimmt ein Rückgängig **dort** nur den vorhandenen Teil zurück; die restlichen Mitglieder bilden danach eine eigene (kleinere) Gruppe.
 - **`patch.shape` und Rückgängig über Kreuz:** Ein Verschieben nach einem Endpunkt-edit ist relativ zur neuen Geometrie gespeichert. Wird (durch gleichzeitige Arbeit zweier Geräte) der Endpunkt-edit aufgehoben, das spätere Verschieben aber nicht, gilt dessen `transform` für die alte Geometrie — überall gleich, aber nicht unbedingt, was man erwartet.

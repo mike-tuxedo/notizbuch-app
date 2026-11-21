@@ -46,7 +46,9 @@ Noch offen aus Etappe 1:
 - [x] Endpunkt-Griffe für Linie und Pfeil (drehen, umklappen; `patch.shape`), kleine Objekte nur mit Eckgriffen (Version `2026-11-21-select-v49`)
 - [x] Mehrfachauswahl: Auswahlrechteck, Umschalt/Strg+Klick, Strg+A, Umschalter „Mehrere“; Gruppenaktionen als ein Rückgängig-Schritt (`groupId`, Sync-Aktion `batch`)
 
-Bekannte Grenzen (Details in `CLAUDE.md`): Füllfläche folgt ihrer Umrandung nicht, wenn die Linie verschoben oder gelöscht wird; Radierspur wandert nicht mit einem verschobenen Objekt; kein Drehen und kein Spiegeln außer bei Linie/Pfeil über die Endpunkt-Griffe; das Auswahlrechteck wählt nach umschließenden Grenzen.
+- [x] Proportionales Skalieren und Drehen für Objekte und Gruppen (v50, affine Matrizen)
+
+Bekannte Grenzen (Details in `CLAUDE.md`): Füllfläche folgt ihrer Umrandung nicht, wenn die Linie verschoben oder gelöscht wird; Radierspur wandert nicht mit einem verschobenen Objekt; kein Spiegeln außer bei Linie/Pfeil über die Endpunkt-Griffe; das Auswahlrechteck wählt nach umschließenden Grenzen.
 
 ### Im Klickdummy enthalten, aber nicht entschieden
 

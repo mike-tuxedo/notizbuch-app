@@ -224,6 +224,9 @@ export function drawShapeToCanvas(ctx, stroke) {
   ctx.lineCap = 'round';
   ctx.lineJoin = type === 'rect' ? 'miter' : 'round';
   ctx.beginPath();
+  // Nur die Geometrie abbilden, nicht die Strichstärke (auch bei Scherung).
+  ctx.save();
+  if (isValidTransform(stroke.matrix)) ctx.transform(...normalizeTransform(stroke.matrix));
   if (type === 'rect') {
     ctx.rect(Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1));
   } else if (type === 'ellipse') {
@@ -238,6 +241,7 @@ export function drawShapeToCanvas(ctx, stroke) {
       ctx.lineTo(b.x, b.y);
     }
   }
+  ctx.restore();
   if (stroke.fill && (type === 'rect' || type === 'ellipse')) {
     ctx.fillStyle = stroke.fill;
     ctx.fill();
@@ -251,7 +255,9 @@ export function shapeToSvg(stroke, color, fill) {
   const { type, x1, y1, x2, y2 } = stroke.shape;
   // Kommt aus Sync-Daten: nur als Zahl ins Markup übernehmen
   const size = Number.isFinite(Number(stroke.size)) && Number(stroke.size) > 0 ? Number(stroke.size) : 2;
-  const line = `stroke="${color}" stroke-width="${size}"`;
+  const matrix = isValidTransform(stroke.matrix)
+    ? ` transform="matrix(${normalizeTransform(stroke.matrix).join(' ')})" vector-effect="non-scaling-stroke"` : '';
+  const line = `stroke="${color}" stroke-width="${size}"${matrix}`;
   const inner = `fill="${fill || 'none'}"`;
   if (type === 'rect') {
     return `<rect x="${r1(Math.min(x1, x2))}" y="${r1(Math.min(y1, y2))}" width="${r1(Math.abs(x2 - x1))}" height="${r1(Math.abs(y2 - y1))}" ${inner} ${line} stroke-linejoin="miter"/>`;
@@ -510,24 +516,65 @@ export function simplifyRing(pts, tol) {
 
 // ─── Objekte: Abbildung, Grenzen, Treffertest ───────────────────────────────
 
-/** @returns {boolean} t ist [sx, sy, tx, ty] mit endlichen Werten und ohne Null-Skalierung */
+/** Legacy [sx, sy, tx, ty] oder Canvas-affin [a, b, c, d, e, f]; nicht singulär. */
 export function isValidTransform(t) {
-  return Array.isArray(t) && t.length === 4 && t.every(Number.isFinite) && t[0] !== 0 && t[1] !== 0;
+  if (!Array.isArray(t) || ![4, 6].includes(t.length) || !t.every(Number.isFinite)) return false;
+  const det = t.length === 4 ? t[0] * t[1] : t[0] * t[3] - t[1] * t[2];
+  return Number.isFinite(det) && det !== 0;
+}
+
+/** Normalisierung ohne Rundung; ungültige Eingaben liefern null. */
+export function normalizeTransform(t) {
+  if (!isValidTransform(t)) return null;
+  return t.length === 4 ? [t[0], 0, 0, t[1], t[2], t[3]] : [...t];
+}
+
+/** left ∘ right; Ergebnis immer im Canvas-Format. */
+export function composeTransform(left, right) {
+  const l = normalizeTransform(left), r = normalizeTransform(right);
+  if (!l || !r) return null;
+  const [a, b, c, d, e, f] = l, [g, h, i, j, k, m] = r;
+  return [a*g+c*h, b*g+d*h, a*i+c*j, b*i+d*j, a*k+c*m+e, b*k+d*m+f];
+}
+
+export function invertTransform(t) {
+  const m = normalizeTransform(t);
+  if (!m) return null;
+  const [a, b, c, d, e, f] = m, det = a*d-b*c;
+  return [d/det, -b/det, -c/det, a/det, (c*f-d*e)/det, (b*e-a*f)/det];
+}
+
+export function transformPoint(p, t) {
+  const m = normalizeTransform(t);
+  if (!m) return { ...p };
+  const [a, b, c, d, e, f] = m;
+  return { ...p, x: a*p.x+c*p.y+e, y: b*p.x+d*p.y+f };
 }
 
 /**
- * Objekt (Strich, Form oder Füllfläche) mit [sx, sy, tx, ty] abbilden: x' = sx·x + tx, y' = sy·y + ty.
- * Liefert ein neues Objekt; die Strichstärke bleibt. Bei Formen wird der Umriss neu berechnet,
- * bei Füllflächen werden alle Ringe abgebildet.
+ * Objekt mit Legacy- oder affiner Abbildung transformieren; die Strichstärke bleibt.
+ * Gedrehte/gescherte Rechtecke und Ellipsen behalten ihre lokale shape und tragen zusätzlich
+ * matrix (Canvas-Format). points bleibt eine Ersatzdarstellung in Weltkoordinaten.
+ * Linien/Pfeile, Freihandpunkte und alle Füllringe werden direkt abgebildet.
  */
 export function transformStroke(stroke, t) {
-  const [sx, sy, tx, ty] = t;
-  const map = p => ({ x: p.x * sx + tx, y: p.y * sy + ty });
+  const m = normalizeTransform(t);
+  if (!m) return { ...stroke };
+  const map = p => transformPoint(p, m);
   if (stroke.tool === 'shape' && isValidShape(stroke.shape)) {
-    const p1 = map({ x: stroke.shape.x1, y: stroke.shape.y1 });
-    const p2 = map({ x: stroke.shape.x2, y: stroke.shape.y2 });
+    // matrix gehört zur Grundgeometrie, points sind bereits Weltkoordinaten.
+    // Deshalb beim Duplizieren nie points nochmals mit der Grundmatrix abbilden.
+    const combined = composeTransform(m, isValidTransform(stroke.matrix) ? stroke.matrix : [1, 1, 0, 0]);
+    if (['rect', 'ellipse'].includes(stroke.shape.type) && (combined[1] !== 0 || combined[2] !== 0)) {
+      return { ...stroke, matrix: combined,
+        points: roundPoints(shapeOutlinePoints(stroke.shape, stroke.size).map(p => transformPoint(p, combined))) };
+    }
+    const p1 = transformPoint({ x: stroke.shape.x1, y: stroke.shape.y1 }, combined);
+    const p2 = transformPoint({ x: stroke.shape.x2, y: stroke.shape.y2 }, combined);
     const shape = roundShape({ type: stroke.shape.type, x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y });
-    return { ...stroke, shape, points: shapeOutlinePoints(shape, stroke.size) };
+    const result = { ...stroke, shape, points: shapeOutlinePoints(shape, stroke.size) };
+    delete result.matrix;
+    return result;
   }
   if (isValidFill(stroke)) {
     const polys = stroke.polys.map(ring => roundPoints(ring.map(map)));
@@ -538,6 +585,20 @@ export function transformStroke(stroke, t) {
 
 /** Grenzen der Geometrie (ohne Strichstärke) in Weltkoordinaten, oder null. */
 export function strokeGeomBounds(stroke) {
+  if (stroke.tool === 'shape' && isValidShape(stroke.shape) && isValidTransform(stroke.matrix)) {
+    const { type, x1, y1, x2, y2 } = stroke.shape;
+    if (type === 'ellipse') {
+      const [a, b, c, d] = normalizeTransform(stroke.matrix);
+      const center = transformPoint({ x: (x1+x2)/2, y: (y1+y2)/2 }, stroke.matrix);
+      const rx = Math.abs(x2-x1)/2, ry = Math.abs(y2-y1)/2;
+      const dx = Math.hypot(a*rx, c*ry), dy = Math.hypot(b*rx, d*ry);
+      return { minX: center.x-dx, minY: center.y-dy, maxX: center.x+dx, maxY: center.y+dy };
+    }
+    const corners = [{x:x1,y:y1}, {x:x2,y:y1}, {x:x2,y:y2}, {x:x1,y:y2}]
+      .map(p => transformPoint(p, stroke.matrix));
+    return { minX: Math.min(...corners.map(p => p.x)), minY: Math.min(...corners.map(p => p.y)),
+      maxX: Math.max(...corners.map(p => p.x)), maxY: Math.max(...corners.map(p => p.y)) };
+  }
   const pts = stroke.tool === 'shape' && isValidShape(stroke.shape)
     ? [{ x: stroke.shape.x1, y: stroke.shape.y1 }, { x: stroke.shape.x2, y: stroke.shape.y2 }]
     : (isValidFill(stroke) ? stroke.polys[0] : (stroke.points || []));
@@ -578,10 +639,24 @@ export function hitTestStroke(stroke, x, y, tol) {
     }
     return false;
   }
-  const pts = stroke.points || [];
+  const affineShape = stroke.tool === 'shape' && isValidShape(stroke.shape) && isValidTransform(stroke.matrix);
+  const pts = affineShape
+    ? shapeOutlinePoints(stroke.shape, stroke.size).map(p => transformPoint(p, stroke.matrix))
+    : (stroke.points || []);
   if (pts.length < 2) return false;
+  if (affineShape && stroke.fill) {
+    // Innenraum im lokalen System prüfen, Randabstand weiter in Weltkoordinaten.
+    const p = transformPoint({ x, y }, invertTransform(stroke.matrix));
+    const { type, x1, y1, x2, y2 } = stroke.shape;
+    if (type === 'rect' && p.x >= Math.min(x1,x2) && p.x <= Math.max(x1,x2)
+      && p.y >= Math.min(y1,y2) && p.y <= Math.max(y1,y2)) return true;
+    if (type === 'ellipse') {
+      const rx = Math.abs(x2-x1)/2, ry = Math.abs(y2-y1)/2;
+      if (rx && ry && ((p.x-(x1+x2)/2)/rx)**2 + ((p.y-(y1+y2)/2)/ry)**2 <= 1) return true;
+    }
+  }
   const reach = tol + (stroke.size || 1) / 2;
-  if (stroke.tool === 'shape' && isValidShape(stroke.shape) && stroke.fill) {
+  if (!affineShape && stroke.tool === 'shape' && isValidShape(stroke.shape) && stroke.fill) {
     const { type, x1, y1, x2, y2 } = stroke.shape;
     if (type === 'rect' && x >= Math.min(x1, x2) - reach && x <= Math.max(x1, x2) + reach
       && y >= Math.min(y1, y2) - reach && y <= Math.max(y1, y2) + reach) return true;
